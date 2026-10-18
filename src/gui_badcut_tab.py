@@ -4,7 +4,7 @@
 분리해뒀다 — 미리보기 버튼으로 한 번 스코어링해두면, 그 뒤로 임계값(민감도)
 스핀박스를 바꿀 때마다 사진을 다시 읽지 않고 즉시 재분류해 결과가 갱신된다.
 
-선명도(라플라시안 분산)는 해상도·피사체에 따라 범위가 크게 달라 숫자만으로는
+선명도(라플라시안 분산)는 피사체에 따라 범위가 크게 달라 숫자만으로는
 감이 오지 않으므로, 표에서(또는 크게 보기 창에서) 사진을 골라 "이 사진까지는
 정상" 기준 사진으로 지정하면 그 사진의 점수가 임계값이 되게 했다. 눈뜸도 같은
 방식이다. 숫자를 직접 넣는 스핀박스는 미세 조정용으로 그대로 둔다.
@@ -39,7 +39,13 @@ from PySide6.QtWidgets import (
 from badcut import BadCutThresholds, classify_badcut, score_for_badcut
 from file_ops import FileOpResult, apply_selection
 from gui_dnd import extract_dropped_folders
-from gui_format import format_apply_summary, format_badcut_header, format_threshold_reference
+from gui_format import (
+    format_apply_summary,
+    format_badcut_header,
+    format_sharpness_region,
+    format_threshold_reference,
+    sharpness_measure_help,
+)
 from gui_photo_viewer import PhotoViewerDialog
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow
@@ -51,8 +57,8 @@ from thumbnails import make_thumbnail
 _SHARPNESS_TOOLTIP = (
     "<p><b>선명도</b>: 사진 속 경계선(디테일)이 얼마나 또렷한지를 나타내는 값입니다. "
     "흔들리거나 초점이 나가면 낮아지고, 또렷할수록 높아집니다.</p>"
-    "<p>해상도·피사체(배경이 단순한지 복잡한지)에 따라 숫자 범위가 크게 달라서, "
-    "절대적인 숫자보다는 <b>같은 폴더 사진끼리 비교</b>하는 용도입니다.</p>"
+    + sharpness_measure_help()
+    + "<p>그래서 절대적인 숫자보다는 <b>같은 폴더 사진끼리 비교</b>하는 용도입니다.</p>"
     "<p>쉽게 정하는 법: 표의 '선명도' 머리글을 눌러 정렬하고, 사진을 더블클릭해 크게 "
     "보면서 '이 정도까지는 쓸 만하다' 싶은 사진을 고른 뒤 "
     "<b>[선택한 사진을 선명도 기준으로]</b>를 누르세요. 그 사진보다 선명도가 낮은 "
@@ -548,7 +554,9 @@ class BadCutTab(QWidget):
             name_item.setData(_PATH_ROLE, row.path)
             self._table.setItem(i, 1, name_item)
             self._table.setItem(i, 2, QTableWidgetItem("C컷" if row.selected else "정상"))
-            self._table.setItem(i, 3, _NumberItem(row.sharpness, 1))
+            sharpness_item = _NumberItem(row.sharpness, 1)
+            sharpness_item.setToolTip(format_sharpness_region(row.sharpness_region))
+            self._table.setItem(i, 3, sharpness_item)
             self._table.setItem(i, 4, _NumberItem(row.face, 2))
             self._table.setItem(i, 5, QTableWidgetItem(row.reason))
         self._table.setSortingEnabled(True)

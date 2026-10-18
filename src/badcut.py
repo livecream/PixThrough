@@ -99,6 +99,8 @@ def classify_badcut(
                 total=score.sharpness,
                 selected=is_bad_cut,
                 reason=reason,
+                sharpness_region=score.sharpness_region,
+                sharpness_global=score.sharpness_global,
             )
         )
 

@@ -10,6 +10,13 @@ from grouping import DEFAULT_SCENE_GAP_SECONDS
 from organize import DuplicateGroup, FolderSummary
 from rename_by_time import RenamePlanRow, RenameResult
 from report import ReportRow
+from scoring import (
+    FOCUS_GRID,
+    FOCUS_LONG_SIDE,
+    FOCUS_TOP_FRACTION,
+    SHARPNESS_REGION_FACE,
+    SHARPNESS_REGION_TILES,
+)
 from selector import DEFAULT_WEIGHTS
 
 
@@ -48,6 +55,29 @@ def format_preview_header(rows: list[ReportRow]) -> str:
     return f"{len(scene_ids)}개 장면, {total}장 중 {selected}장 선택"
 
 
+def sharpness_measure_help() -> str:
+    """선명도를 어디서·어떻게 재는지 설명하는 툴팁 문단. 숫자는 scoring.py의 실제
+    상수에서 가져온다."""
+    return (
+        "<p>초점이 맞은 부분 기준으로 잽니다. 얼굴이 검출되면 가장 선명한 얼굴 영역에서, "
+        f"없으면 사진을 {FOCUS_GRID}×{FOCUS_GRID}칸으로 나눠 가장 선명한 상위 "
+        f"{FOCUS_TOP_FRACTION:.0%} 칸에서 잽니다. 그래서 배경을 일부러 흐리게 찍은 "
+        "사진도 피사체가 또렷하면 선명하게 평가됩니다.</p>"
+        f"<p>사진을 긴 변 {FOCUS_LONG_SIDE}px로 줄여서 재므로, 화소가 다른 카메라를 "
+        "섞어도 비슷한 범위의 숫자가 나옵니다. 다만 피사체(디테일이 많은지)에 따라서는 "
+        "여전히 달라집니다.</p>"
+    )
+
+
+def format_sharpness_region(region: str | None) -> str:
+    """선명도를 어디서 쟀는지 사람이 읽을 말로. 점수 칸 툴팁/크게 보기 창에 쓴다."""
+    if region == SHARPNESS_REGION_FACE:
+        return "얼굴 영역 기준"
+    if region == SHARPNESS_REGION_TILES:
+        return "가장 선명한 부분 기준"
+    return ""
+
+
 def bestcut_grouping_help(gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS) -> str:
     """베스트컷 탭 "장면은 어떻게 묶나요?" 툴팁. 실제 그룹핑 간격 상수에서 숫자를
     가져와, 코드 값이 바뀌어도 설명이 어긋나지 않게 한다."""
@@ -74,8 +104,9 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS) -> str:
         "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
         f"<p><b>종합점수(0~1)</b> = 선명도 {sharpness}% + 노출 {exposure}% + 눈뜸 {face}%</p>"
         "<ul>"
-        "<li><b>선명도</b>: 경계선이 얼마나 또렷한지. 원래 값은 사진마다 범위가 달라, "
-        "같은 장면 안에서 가장 흐린 컷 0 ~ 가장 선명한 컷 1로 바꿔서 씁니다.</li>"
+        "<li><b>선명도</b>: 초점이 맞은 부분(얼굴, 없으면 가장 선명한 부분)이 얼마나 "
+        "또렷한지. 같은 장면 안에서 가장 흐린 컷 0 ~ 가장 선명한 컷 1로 바꿔서 "
+        "씁니다.</li>"
         "<li><b>노출</b>: 완전히 까맣게 뭉개지거나 하얗게 날아간 픽셀이 적을수록 1에 "
         "가깝습니다.</li>"
         "<li><b>눈뜸</b>: 얼굴이 검출된 사진에서 눈을 뜬 정도(0~1). 얼굴이 없는 사진은 "
