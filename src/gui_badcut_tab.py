@@ -3,6 +3,11 @@
 스코어링(사진마다 ~100ms대, 장 수가 많으면 분 단위)과 임계값 재분류(즉시 끝남)를
 분리해뒀다 — 미리보기 버튼으로 한 번 스코어링해두면, 그 뒤로 임계값(민감도)
 스핀박스를 바꿀 때마다 사진을 다시 읽지 않고 즉시 재분류해 결과가 갱신된다.
+
+선명도(라플라시안 분산)는 해상도·피사체에 따라 범위가 크게 달라 숫자만으로는
+감이 오지 않으므로, 표에서(또는 크게 보기 창에서) 사진을 골라 "이 사진까지는
+정상" 기준 사진으로 지정하면 그 사진의 점수가 임계값이 되게 했다. 눈뜸도 같은
+방식이다. 숫자를 직접 넣는 스핀박스는 미세 조정용으로 그대로 둔다.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -33,12 +39,45 @@ from PySide6.QtWidgets import (
 from badcut import BadCutThresholds, classify_badcut, score_for_badcut
 from file_ops import FileOpResult, apply_selection
 from gui_dnd import extract_dropped_folders
-from gui_format import format_apply_summary, format_badcut_header
+from gui_format import format_apply_summary, format_badcut_header, format_threshold_reference
+from gui_photo_viewer import PhotoViewerDialog
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow
 from scanner import PhotoMetadata, scan_and_extract_many
 from scoring import PhotoScore
 from thumbnails import make_thumbnail
+
+
+_SHARPNESS_TOOLTIP = (
+    "<p><b>선명도</b>: 사진 속 경계선(디테일)이 얼마나 또렷한지를 나타내는 값입니다. "
+    "흔들리거나 초점이 나가면 낮아지고, 또렷할수록 높아집니다.</p>"
+    "<p>해상도·피사체(배경이 단순한지 복잡한지)에 따라 숫자 범위가 크게 달라서, "
+    "절대적인 숫자보다는 <b>같은 폴더 사진끼리 비교</b>하는 용도입니다.</p>"
+    "<p>쉽게 정하는 법: 표의 '선명도' 머리글을 눌러 정렬하고, 사진을 더블클릭해 크게 "
+    "보면서 '이 정도까지는 쓸 만하다' 싶은 사진을 고른 뒤 "
+    "<b>[선택한 사진을 선명도 기준으로]</b>를 누르세요. 그 사진보다 선명도가 낮은 "
+    "사진이 C컷(블러)이 되고, 기준 사진 자체는 정상으로 남습니다.</p>"
+)
+_EYES_TOOLTIP = (
+    "<p><b>눈뜸</b>: 얼굴이 검출된 사진에서 눈을 뜬 정도입니다. "
+    "0이면 완전히 감음, 1이면 완전히 뜬 상태입니다.</p>"
+    "<p>한쪽 눈만 감아도 더 감긴 쪽 눈을 기준으로 보고, 여러 명이 찍혔으면 "
+    "얼굴별 값의 평균을 씁니다. 얼굴이 검출되지 않은 사진(측면·뒷모습·풍경 등)은 "
+    "눈뜸 판정에서 빠집니다(표에 빈칸으로 표시).</p>"
+    "<p>쉽게 정하는 법: '눈뜸'으로 정렬해 크게 보면서 '이 정도 감은 건 괜찮다' 싶은 "
+    "사진을 고른 뒤 <b>[선택한 사진을 눈뜸 기준으로]</b>를 누르세요. 그보다 눈이 더 "
+    "감긴 사진이 C컷(눈감음)이 됩니다.</p>"
+)
+_MANUAL_SPIN_TOOLTIP = (
+    "<p>숫자를 직접 넣어 미세 조정할 수도 있습니다. 직접 바꾸면 기준 사진 지정은 "
+    "풀리고 입력한 값이 그대로 임계값이 됩니다.</p>"
+    "<p>한 번 미리보기(스코어링)한 뒤에는 값을 바꿀 때마다 다시 스캔하지 않고 즉시 "
+    "재판정합니다.</p>"
+)
+
+# 표에 넣는 행 → ReportRow를 찾기 위해 파일명 칸에 경로를 함께 넣어둔다.
+# (정렬하면 표의 행 순서가 self._rows 순서와 달라지기 때문)
+_PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
 def _percent(done: int, total: int) -> int:
@@ -136,6 +175,15 @@ class BadCutTab(QWidget):
         self._score_worker: ScoreWorker | None = None
         self._apply_worker: ApplyWorker | None = None
         self._busy = False
+        # 실제 판정에 쓰는 임계값. 스핀박스는 소수 1~2자리로 반올림해 보여주기만
+        # 하므로(예: 기준 사진 눈뜸 0.456이 0.46으로 반올림되면 기준 사진 자신이
+        # C컷이 돼버림), 기준 사진을 고른 경우엔 그 사진의 정확한 점수를 여기 둔다.
+        self._sharpness_threshold = 0.0
+        self._eyes_threshold = 0.0
+        self._sharpness_ref_name: str | None = None
+        self._eyes_ref_name: str | None = None
+        self._viewer: PhotoViewerDialog | None = None
+        self._viewer_paths: list[Path] = []
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
         self._scan_cache: dict = {}
@@ -161,26 +209,59 @@ class BadCutTab(QWidget):
         self._min_sharpness_spin.setRange(0.0, 1_000_000.0)
         self._min_sharpness_spin.setDecimals(1)
         self._min_sharpness_spin.setSingleStep(10.0)
-        self._min_sharpness_spin.setToolTip(
-            "선명도 점수(라플라시안 분산)가 이 값 미만이면 블러로 판정. "
-            "한 번 미리보기(스코어링)한 뒤에는 이 값을 바꿀 때마다 다시 스캔하지 "
-            "않고 즉시 재판정합니다 — 민감도를 마음껏 올렸다 내렸다 해보세요."
-        )
-        self._min_sharpness_spin.valueChanged.connect(self._on_threshold_changed)
+        self._min_sharpness_spin.setToolTip(_SHARPNESS_TOOLTIP + _MANUAL_SPIN_TOOLTIP)
+        self._min_sharpness_spin.valueChanged.connect(self._on_sharpness_spin_changed)
 
         self._min_eyes_open_spin = QDoubleSpinBox()
         self._min_eyes_open_spin.setRange(0.0, 1.0)
         self._min_eyes_open_spin.setDecimals(2)
         self._min_eyes_open_spin.setSingleStep(0.05)
-        self._min_eyes_open_spin.setToolTip(
-            "눈 뜬 정도(0~1) 점수가 이 값 미만이면 눈감음으로 판정. 얼굴이 없는 사진엔 적용 안 됨. "
-            "선명도 임계값과 마찬가지로 재스코어링 없이 즉시 재판정됩니다."
-        )
-        self._min_eyes_open_spin.valueChanged.connect(self._on_threshold_changed)
+        self._min_eyes_open_spin.setToolTip(_EYES_TOOLTIP + _MANUAL_SPIN_TOOLTIP)
+        self._min_eyes_open_spin.valueChanged.connect(self._on_eyes_spin_changed)
+
+        self._sharpness_ref_label = QLabel()
+        self._sharpness_ref_label.setToolTip(_SHARPNESS_TOOLTIP)
+        self._eyes_ref_label = QLabel()
+        self._eyes_ref_label.setToolTip(_EYES_TOOLTIP)
+        self._update_reference_labels()
+
+        sharpness_label = QLabel("선명도 임계값 (블러) ⓘ:")
+        sharpness_label.setToolTip(_SHARPNESS_TOOLTIP)
+        eyes_label = QLabel("눈뜸 임계값 (눈감음) ⓘ:")
+        eyes_label.setToolTip(_EYES_TOOLTIP)
+
+        sharpness_row = QHBoxLayout()
+        sharpness_row.addWidget(self._min_sharpness_spin)
+        sharpness_row.addWidget(self._sharpness_ref_label, stretch=1)
+        eyes_row = QHBoxLayout()
+        eyes_row.addWidget(self._min_eyes_open_spin)
+        eyes_row.addWidget(self._eyes_ref_label, stretch=1)
 
         threshold_form = QFormLayout()
-        threshold_form.addRow("선명도 임계값 (미만이면 블러):", self._min_sharpness_spin)
-        threshold_form.addRow("눈뜸 임계값 (미만이면 눈감음, 0~1):", self._min_eyes_open_spin)
+        threshold_form.addRow(sharpness_label, sharpness_row)
+        threshold_form.addRow(eyes_label, eyes_row)
+
+        self._sharpness_ref_button = QPushButton("선택한 사진을 선명도 기준으로")
+        self._sharpness_ref_button.setToolTip(
+            "<p>표에서 고른 사진의 선명도까지는 정상으로 보고, 이보다 선명도가 낮은 "
+            "사진을 C컷(블러)으로 판정합니다.</p>"
+        )
+        self._sharpness_ref_button.clicked.connect(self._use_selected_as_sharpness_reference)
+        self._eyes_ref_button = QPushButton("선택한 사진을 눈뜸 기준으로")
+        self._eyes_ref_button.setToolTip(
+            "<p>표에서 고른 사진의 눈 뜬 정도까지는 정상으로 보고, 이보다 눈이 더 "
+            "감긴 사진을 C컷(눈감음)으로 판정합니다. 얼굴이 검출된 사진만 고를 수 "
+            "있습니다.</p>"
+        )
+        self._eyes_ref_button.clicked.connect(self._use_selected_as_eyes_reference)
+        self._view_button = QPushButton("크게 보기")
+        self._view_button.setToolTip("<p>선택한 사진을 크게 엽니다. 표에서 사진을 더블클릭해도 됩니다.</p>")
+        self._view_button.clicked.connect(self._open_viewer_for_selected)
+
+        reference_button_row = QHBoxLayout()
+        reference_button_row.addWidget(self._view_button)
+        reference_button_row.addWidget(self._sharpness_ref_button)
+        reference_button_row.addWidget(self._eyes_ref_button)
 
         self._preview_button = QPushButton("미리보기")
         self._preview_button.clicked.connect(self._run_preview)
@@ -200,6 +281,15 @@ class BadCutTab(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setIconSize(QSize(64, 64))
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setSortingEnabled(True)
+        self._table.sortByColumn(3, Qt.SortOrder.AscendingOrder)
+        self._table.horizontalHeaderItem(3).setToolTip(_SHARPNESS_TOOLTIP)
+        self._table.horizontalHeaderItem(4).setToolTip(_EYES_TOOLTIP)
+        self._table.itemSelectionChanged.connect(self._update_reference_buttons)
+        self._table.cellDoubleClicked.connect(self._open_viewer)
+        self._update_reference_buttons()
 
         input_button_row = QHBoxLayout()
         input_button_row.addWidget(add_input_button)
@@ -221,6 +311,10 @@ class BadCutTab(QWidget):
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._status_label)
         layout.addWidget(self._summary_text)
+        layout.addWidget(
+            QLabel("표 머리글을 누르면 정렬, 사진을 더블클릭하면 크게 볼 수 있습니다.")
+        )
+        layout.addLayout(reference_button_row)
         layout.addWidget(self._table)
 
         for folder in load_folder_list(self._settings, "badcut/input_dirs"):
@@ -289,6 +383,7 @@ class BadCutTab(QWidget):
         self._rows = None
         self._apply_button.setEnabled(False)
         self._table.setRowCount(0)
+        self._update_reference_buttons()
 
     def _run_preview(self) -> None:
         if self._busy:
@@ -331,13 +426,103 @@ class BadCutTab(QWidget):
     def _on_threshold_changed(self) -> None:
         # 아직 스코어링 전이면(입력 폴더를 막 바꿨거나 미리보기 전) 할 일이 없다 —
         # 미리보기를 눌러야 점수가 생기고, 그 뒤부터 이 핸들러가 즉시 재판정한다.
+        self._update_reference_labels()
         if self._scores is not None:
             self._reclassify()
 
+    def _on_sharpness_spin_changed(self, value: float) -> None:
+        self._sharpness_threshold = value
+        self._sharpness_ref_name = None
+        self._on_threshold_changed()
+
+    def _on_eyes_spin_changed(self, value: float) -> None:
+        self._eyes_threshold = value
+        self._eyes_ref_name = None
+        self._on_threshold_changed()
+
+    def _set_sharpness_reference(self, row: ReportRow) -> None:
+        self._sharpness_threshold = row.sharpness
+        self._sharpness_ref_name = row.path.name
+        # 스핀박스는 보여주기만 갱신한다 — valueChanged가 불리면 기준 사진 지정이
+        # 풀리고 반올림된 값이 임계값이 돼버린다.
+        self._min_sharpness_spin.blockSignals(True)
+        self._min_sharpness_spin.setValue(row.sharpness)
+        self._min_sharpness_spin.blockSignals(False)
+        self._on_threshold_changed()
+
+    def _set_eyes_reference(self, row: ReportRow) -> None:
+        if row.face is None:
+            return
+        self._eyes_threshold = row.face
+        self._eyes_ref_name = row.path.name
+        self._min_eyes_open_spin.blockSignals(True)
+        self._min_eyes_open_spin.setValue(row.face)
+        self._min_eyes_open_spin.blockSignals(False)
+        self._on_threshold_changed()
+
+    def _update_reference_labels(self) -> None:
+        self._sharpness_ref_label.setText(
+            format_threshold_reference(self._sharpness_ref_name, self._sharpness_threshold, 1)
+        )
+        self._eyes_ref_label.setText(
+            format_threshold_reference(self._eyes_ref_name, self._eyes_threshold, 2)
+        )
+
+    def _selected_row(self) -> ReportRow | None:
+        selected = self._table.selectionModel().selectedRows()
+        if not selected or not self._rows:
+            return None
+        path = self._table.item(selected[0].row(), 1).data(_PATH_ROLE)
+        return next((r for r in self._rows if r.path == path), None)
+
+    def _update_reference_buttons(self) -> None:
+        row = self._selected_row()
+        scored = row is not None and not row.reason.startswith("판정 불가")
+        self._view_button.setEnabled(row is not None)
+        self._sharpness_ref_button.setEnabled(scored)
+        self._eyes_ref_button.setEnabled(scored and row.face is not None)
+
+    def _use_selected_as_sharpness_reference(self) -> None:
+        row = self._selected_row()
+        if row is not None:
+            self._set_sharpness_reference(row)
+
+    def _use_selected_as_eyes_reference(self) -> None:
+        row = self._selected_row()
+        if row is not None:
+            self._set_eyes_reference(row)
+
+    def _open_viewer_for_selected(self) -> None:
+        selected = self._table.selectionModel().selectedRows()
+        if selected:
+            self._open_viewer(selected[0].row())
+
+    def _open_viewer(self, table_row: int, _column: int = 0) -> None:
+        if not self._rows:
+            return
+        # 크게 보기 창에서 ←/→로 넘기는 순서는 지금 표에 보이는 정렬 순서를 따른다.
+        self._viewer_paths = [
+            self._table.item(i, 1).data(_PATH_ROLE) for i in range(self._table.rowCount())
+        ]
+        if self._viewer is not None:
+            self._viewer.close()
+        self._viewer = PhotoViewerDialog(self._rows_in_viewer_order(), table_row, self)
+        self._viewer.sharpness_reference_chosen.connect(self._set_sharpness_reference)
+        self._viewer.eyes_reference_chosen.connect(self._set_eyes_reference)
+        self._viewer.finished.connect(self._on_viewer_closed)
+        self._viewer.show()
+
+    def _on_viewer_closed(self) -> None:
+        self._viewer = None
+
+    def _rows_in_viewer_order(self) -> list[ReportRow]:
+        by_path = {r.path: r for r in self._rows or []}
+        return [by_path[p] for p in self._viewer_paths if p in by_path]
+
     def _reclassify(self) -> None:
         thresholds = BadCutThresholds(
-            min_sharpness=self._min_sharpness_spin.value(),
-            min_eyes_open=self._min_eyes_open_spin.value(),
+            min_sharpness=self._sharpness_threshold,
+            min_eyes_open=self._eyes_threshold,
         )
         rows = classify_badcut(self._photos, self._scores, thresholds)
         self._rows = rows
@@ -345,8 +530,13 @@ class BadCutTab(QWidget):
         self._apply_button.setEnabled(bad_count > 0 and self._output_dir is not None)
         self._summary_text.setPlainText(format_badcut_header(rows))
         self._populate_table(rows)
+        if self._viewer is not None:
+            self._viewer.update_rows(self._rows_in_viewer_order())
 
     def _populate_table(self, rows: list[ReportRow]) -> None:
+        selected = self._selected_row()
+        # 채우는 도중에 정렬이 켜져 있으면 setItem마다 행이 재배치돼 칸이 뒤섞인다.
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             thumb_item = QTableWidgetItem()
@@ -354,12 +544,24 @@ class BadCutTab(QWidget):
             if pixmap is not None:
                 thumb_item.setData(Qt.ItemDataRole.DecorationRole, pixmap)
             self._table.setItem(i, 0, thumb_item)
-            self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
+            name_item = QTableWidgetItem(row.path.name)
+            name_item.setData(_PATH_ROLE, row.path)
+            self._table.setItem(i, 1, name_item)
             self._table.setItem(i, 2, QTableWidgetItem("C컷" if row.selected else "정상"))
-            self._table.setItem(i, 3, QTableWidgetItem(f"{row.sharpness:.1f}"))
-            self._table.setItem(i, 4, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
+            self._table.setItem(i, 3, _NumberItem(row.sharpness, 1))
+            self._table.setItem(i, 4, _NumberItem(row.face, 2))
             self._table.setItem(i, 5, QTableWidgetItem(row.reason))
+        self._table.setSortingEnabled(True)
         self._table.resizeRowsToContents()
+        if selected is not None:
+            self._reselect(selected.path)
+        self._update_reference_buttons()
+
+    def _reselect(self, path: Path) -> None:
+        for i in range(self._table.rowCount()):
+            if self._table.item(i, 1).data(_PATH_ROLE) == path:
+                self._table.selectRow(i)
+                return
 
     def _thumbnail_pixmap(self, path: Path) -> QPixmap | None:
         cached = self._thumbnail_cache.get(path)
@@ -427,3 +629,18 @@ class BadCutTab(QWidget):
         bad_count = sum(1 for r in (self._rows or []) if r.selected)
         self._apply_button.setEnabled(bad_count > 0 and self._output_dir is not None)
         QMessageBox.critical(self, "오류", message)
+
+
+class _NumberItem(QTableWidgetItem):
+    """문자열이 아니라 숫자 크기로 정렬되는 칸. 값이 없는(얼굴 미검출) 칸은 맨 뒤로."""
+
+    def __init__(self, value: float | None, decimals: int) -> None:
+        super().__init__("" if value is None else f"{value:.{decimals}f}")
+        self._value = value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if not isinstance(other, _NumberItem):
+            return super().__lt__(other)
+        if self._value is None or other._value is None:
+            return self._value is not None and other._value is None
+        return self._value < other._value

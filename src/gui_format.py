@@ -94,6 +94,16 @@ def format_badcut_header(rows: list[ReportRow]) -> str:
     return "\n".join(lines)
 
 
+def format_threshold_reference(file_name: str | None, value: float, decimals: int) -> str:
+    """C컷 임계값 옆에 "지금 기준이 무엇인지"를 보여주는 문구.
+
+    기준 사진을 골랐으면 그 사진 이름과 점수를, 스핀박스에 직접 숫자를 넣었으면
+    직접 입력값임을 알린다."""
+    if file_name is None:
+        return f"기준: 직접 입력값 {value:.{decimals}f}"
+    return f"기준 사진: {file_name} ({value:.{decimals}f}) — 이보다 낮으면 C컷"
+
+
 def format_badcut_preview(rows: list[ReportRow]) -> str:
     """M10 C컷 판정 dry-run 미리보기 결과를 사람이 읽을 요약 텍스트로 만든다.
 

@@ -12,6 +12,7 @@ from gui_format import (
     format_preview_summary,
     format_rename_apply_summary,
     format_rename_preview,
+    format_threshold_reference,
 )
 from organize import DuplicateGroup, FolderSummary
 from rename_by_time import RenamePlanRow, RenameResult
@@ -210,3 +211,17 @@ def test_format_badcut_header_counts_and_no_scores_when_all_error():
     header = format_badcut_header(rows)
 
     assert "1장 중 0장 C컷 판정" in header
+
+
+def test_format_threshold_reference_names_reference_photo():
+    text = format_threshold_reference("IMG_0012.JPG", 152.34, 1)
+
+    assert "IMG_0012.JPG" in text
+    assert "152.3" in text
+
+
+def test_format_threshold_reference_marks_manual_value():
+    text = format_threshold_reference(None, 0.5, 2)
+
+    assert "직접 입력" in text
+    assert "0.50" in text
