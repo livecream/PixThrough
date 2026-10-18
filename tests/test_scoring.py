@@ -435,3 +435,23 @@ def test_download_keeps_file_with_matching_checksum(tmp_path):
     scoring._download(source.as_uri(), target, sha256=hashlib.sha256(b"model bytes").hexdigest())
 
     assert target.read_bytes() == b"model bytes"
+
+
+def test_detect_faces_drops_background_faces_much_smaller_than_the_largest(monkeypatch):
+    rgb = np.zeros((1000, 1000, 3), dtype="uint8")
+    subject = _face((0.1, 0.1, 0.4, 0.4), eyes_open=1.0)  # 300px
+    companion = _face((0.5, 0.1, 0.66, 0.4), eyes_open=0.9)  # 긴 변 300px
+    passer_by = _face((0.8, 0.8, 0.9, 0.9), eyes_open=0.0)  # 100px, 가장 큰 얼굴의 1/3
+    monkeypatch.setattr(scoring, "_detect_all_faces", lambda rgb: [subject, companion, passer_by])
+
+    faces = scoring._detect_faces(rgb)
+
+    assert faces == [subject, companion]
+    assert scoring._eyes_open_of(faces) == pytest.approx(0.95)
+
+
+def test_is_main_face_keeps_faces_at_the_ratio_boundary():
+    big = _face((0.0, 0.0, 0.5, 0.5))
+    half = _face((0.5, 0.5, 0.75, 0.75))
+
+    assert scoring._is_main_face(half, [big, half], 1000, 1000)

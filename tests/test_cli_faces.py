@@ -20,6 +20,7 @@ def test_faces_command_writes_one_row_per_face_and_compares_with_legacy(tmp_path
     faces = [
         scoring._DetectedFace(eyes_open=0.8, bbox=(0.0, 0.0, 0.1, 0.2), source="yunet", confidence=0.9),
         scoring._DetectedFace(eyes_open=None, bbox=(0.5, 0.5, 0.6, 0.6), source="yunet", confidence=0.7),
+        scoring._DetectedFace(eyes_open=0.1, bbox=(0.9, 0.9, 0.91, 0.92), source="yunet", confidence=0.8),
     ]
     results = {
         with_faces: scoring.FaceDiagnosis(with_faces, 1000, 500, faces, legacy_faces=[]),
@@ -35,8 +36,10 @@ def test_faces_command_writes_one_row_per_face_and_compares_with_legacy(tmp_path
     assert [(Path(r["file"]).name, r["face_index"], r["eyes_open"]) for r in rows] == [
         ("a.jpg", "1", "0.800"),
         ("a.jpg", "2", ""),
+        ("a.jpg", "3", "0.100"),
         ("b.jpg", "", ""),
     ]
+    assert [r["background"] for r in rows[:3]] == ["", "", "Y"]
     assert rows[0]["face_width_px"] == "100" and rows[0]["face_height_px"] == "100"
     out = capsys.readouterr().out
     assert "얼굴을 찾은 사진: 1장 (예전 방식 0장)" in out

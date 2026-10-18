@@ -19,6 +19,9 @@
      합쳐서, 예전에 찾던 얼굴은 계속 찾게 한다.
 잘라낸 얼굴에서 랜드마크를 못 잡으면(옆얼굴 등) 눈을 판정할 수 없는 얼굴로 보고
 선명도 측정 영역으로만 쓰고 눈뜸 평균에서는 뺀다(사용자와 정한 규칙).
+가장 큰 얼굴보다 많이 작은 얼굴(FACE_MAIN_MIN_RATIO)은 배경 인물로 보고 눈뜸과
+선명도 계산 모두에서 뺀다(사용자와 정한 규칙). 지나가던 사람이 눈을 감았다고 C컷이
+되거나, 배경 인물이 또렷하다고 초점이 맞았다고 보는 일을 막기 위해서다.
 
 PROJECT_SPEC.md 4.3절: 선명도 → 노출 → 얼굴/눈감음 순으로 단계적으로 점수를 추가한다.
 total을 여러 지표의 가중합으로 확정하는 것은 CLAUDE.md가 금지하는 "임의의 점수
@@ -89,6 +92,9 @@ FACE_DETECT_LONG_SIDES = (1600, 640)
 FACE_CROP_MARGIN = 0.4
 # 두 검출 결과의 상자가 이만큼(IoU) 겹치면 같은 얼굴로 본다.
 FACE_DEDUP_IOU = 0.3
+# 가장 큰 얼굴의 긴 변 대비 이 비율보다 작은 얼굴은 배경 인물로 보고 눈뜸·선명도
+# 계산에서 뺀다(사용자와 정한 규칙: 배경 얼굴 제외. 비율은 초기값).
+FACE_MAIN_MIN_RATIO = 0.5
 
 FACE_SOURCE_YUNET = "yunet"
 FACE_SOURCE_LANDMARKER = "landmarker"
@@ -375,9 +381,27 @@ def _detect_faces_whole_image(rgb: np.ndarray) -> list[_DetectedFace]:
     return faces
 
 
+def _face_side_px(face: _DetectedFace, width: int, height: int) -> float:
+    x0, y0, x1, y1 = face.bbox
+    return max((x1 - x0) * width, (y1 - y0) * height)
+
+
+def _is_main_face(face: _DetectedFace, faces: list[_DetectedFace], width: int, height: int) -> bool:
+    """가장 큰 얼굴 대비 FACE_MAIN_MIN_RATIO 이상이면 주인공 얼굴, 아니면 배경 얼굴."""
+    largest = max(_face_side_px(f, width, height) for f in faces)
+    return _face_side_px(face, width, height) >= largest * FACE_MAIN_MIN_RATIO
+
+
 def _detect_faces(rgb: np.ndarray) -> list[_DetectedFace]:
-    """얼굴마다 눈 뜬 정도와 경계 상자를 구한다. 경계 상자는 선명도를 얼굴
-    영역에서 재는 데 쓴다. 2단계 검출 방식은 모듈 설명 참고."""
+    """주인공 얼굴(배경 얼굴 제외)마다 눈 뜬 정도와 경계 상자를 구한다. 경계 상자는
+    선명도를 얼굴 영역에서 재는 데 쓴다. 2단계 검출 방식은 모듈 설명 참고."""
+    h, w = rgb.shape[:2]
+    faces = _detect_all_faces(rgb)
+    return [f for f in faces if _is_main_face(f, faces, w, h)]
+
+
+def _detect_all_faces(rgb: np.ndarray) -> list[_DetectedFace]:
+    """배경 얼굴까지 포함한 검출 결과."""
     rgb = np.ascontiguousarray(rgb)
     yunet_faces = [
         _DetectedFace(
@@ -405,9 +429,12 @@ class FaceDiagnosis:
     path: Path
     width: int
     height: int
-    faces: list[_DetectedFace]
+    faces: list[_DetectedFace]  # 배경 얼굴 포함
     legacy_faces: list[_DetectedFace]
     error: str | None = None
+
+    def is_main(self, face: _DetectedFace) -> bool:
+        return _is_main_face(face, self.faces, self.width, self.height)
 
 
 def diagnose_faces(path: Path) -> FaceDiagnosis:
@@ -415,7 +442,7 @@ def diagnose_faces(path: Path) -> FaceDiagnosis:
         _, rgb = _decode(path)
         rgb = np.ascontiguousarray(rgb)
         legacy = _detect_faces_whole_image(rgb)
-        faces = _detect_faces(rgb)
+        faces = _detect_all_faces(rgb)
     except Exception as e:
         return FaceDiagnosis(path, 0, 0, [], [], error=f"얼굴 검출 실패: {e}")
     h, w = rgb.shape[:2]

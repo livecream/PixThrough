@@ -146,7 +146,7 @@ def cmd_badcut(args: argparse.Namespace) -> None:
 
 _FACES_CSV_FIELDS = [
     "file", "width", "height", "legacy_face_count", "face_index", "source",
-    "confidence", "face_width_px", "face_height_px", "eyes_open", "error",
+    "confidence", "face_width_px", "face_height_px", "background", "eyes_open", "error",
 ]
 
 
@@ -169,9 +169,10 @@ def cmd_faces(args: argparse.Namespace) -> None:
                 "file": str(d.path), "width": d.width, "height": d.height,
                 "legacy_face_count": len(d.legacy_faces), "error": d.error or "",
             }
-            with_faces += bool(d.faces)
+            main_faces = [face for face in d.faces if d.is_main(face)]
+            with_faces += bool(main_faces)
             with_legacy += bool(d.legacy_faces)
-            with_eyes += any(face.eyes_open is not None for face in d.faces)
+            with_eyes += any(face.eyes_open is not None for face in main_faces)
             if not d.faces:
                 writer.writerow(base)
             for i, face in enumerate(d.faces, start=1):
@@ -183,12 +184,14 @@ def cmd_faces(args: argparse.Namespace) -> None:
                     "confidence": f"{face.confidence:.3f}" if face.confidence is not None else "",
                     "face_width_px": round((x1 - x0) * d.width),
                     "face_height_px": round((y1 - y0) * d.height),
+                    "background": "" if d.is_main(face) else "Y",
                     "eyes_open": f"{face.eyes_open:.3f}" if face.eyes_open is not None else "",
                 })
     print(
         f"총 {len(photos)}장 중 얼굴을 찾은 사진: {with_faces}장 "
         f"(예전 방식 {with_legacy}장), 눈뜸을 판정할 수 있는 사진: {with_eyes}장\n"
         f"얼굴별 결과: {output} (source={FACE_SOURCE_YUNET}이면 새 검출기로 찾은 얼굴, "
+        "background=Y면 가장 큰 얼굴보다 많이 작아 계산에서 뺀 배경 얼굴, "
         "eyes_open이 빈칸이면 옆얼굴 등이라 눈을 판정하지 못한 얼굴)"
     )
 
