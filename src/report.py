@@ -27,6 +27,9 @@ class ReportRow:
     total: float
     selected: bool
     reason: str
+    # 선명도를 어디서 쟀는지(얼굴/칸)와 예전 방식(사진 전체) 값 — 리포트 비교용
+    sharpness_region: str | None = None
+    sharpness_global: float | None = None
 
 
 def _reason_for(index: int, selection: SceneSelection) -> str:
@@ -78,6 +81,8 @@ def build_report(
                     total=selection.combined_scores[i],
                     selected=i == selection.best_index,
                     reason=_reason_for(i, selection),
+                    sharpness_region=score.sharpness_region,
+                    sharpness_global=score.sharpness_global,
                 )
             )
     return rows

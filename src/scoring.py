@@ -1,5 +1,15 @@
 """M3: 품질 스코어링 — 선명도 + 노출 + 얼굴/눈감음.
 
+선명도는 "초점이 맞은 부분" 기준이다. 사진 전체의 라플라시안 분산은 배경을 일부러
+흐리게 찍은(아웃포커싱) 인물 사진을 초점이 정확해도 흐리다고 판정하고, 해상도가
+다른 바디를 섞으면 숫자 범위 자체가 달라져 비교할 수 없었다. 그래서
+  1) 긴 변을 FOCUS_LONG_SIDE로 줄인 뒤 계산하고(해상도 차이 제거),
+  2) 얼굴이 검출되면 가장 선명한 얼굴 영역의 값을,
+  3) 없으면 사진을 FOCUS_GRID×FOCUS_GRID 칸으로 나눠 가장 선명한 상위
+     FOCUS_TOP_FRACTION 칸의 평균을 쓴다.
+세 숫자는 사용자와 정한 초기값이며 test_photos 결과로 조정할 수 있다. 예전 방식
+(원본 해상도·사진 전체) 값은 비교용으로 sharpness_global에 함께 남긴다.
+
 PROJECT_SPEC.md 4.3절: 선명도 → 노출 → 얼굴/눈감음 순으로 단계적으로 점수를 추가한다.
 total을 여러 지표의 가중합으로 확정하는 것은 CLAUDE.md가 금지하는 "임의의 점수
 가중치 확정"에 해당하므로, 사용자와 가중치를 정하기 전까지는 total = sharpness로
@@ -42,6 +52,16 @@ _MODEL_URL = (
 
 _landmarker: mp_vision.FaceLandmarker | None = None
 
+FOCUS_LONG_SIDE = 2000
+FOCUS_GRID = 8
+FOCUS_TOP_FRACTION = 0.1
+# 줄인 이미지 기준 이보다 작은 얼굴은 픽셀이 너무 적어 선명도 값이 들쭉날쭉하므로
+# 얼굴 기준 측정에서 뺀다(눈뜸 점수에는 그대로 쓴다).
+MIN_FACE_SIDE_PX = 32
+
+SHARPNESS_REGION_FACE = "face"
+SHARPNESS_REGION_TILES = "tiles"
+
 
 @dataclass(frozen=True)
 class PhotoScore:
@@ -51,6 +71,15 @@ class PhotoScore:
     face: float | None
     total: float
     error: str | None = None
+    sharpness_global: float | None = None  # 예전 방식(원본 해상도·사진 전체), 비교용
+    sharpness_region: str | None = None  # SHARPNESS_REGION_FACE / _TILES
+
+
+@dataclass(frozen=True)
+class _DetectedFace:
+    eyes_open: float
+    # 정규화 좌표(0~1) 경계 상자: (x0, y0, x1, y1)
+    bbox: tuple[float, float, float, float]
 
 
 def _decode(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -71,15 +100,69 @@ def _sharpness_from_gray(gray: np.ndarray) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
+def _downscale(gray: np.ndarray, long_side: int = FOCUS_LONG_SIDE) -> np.ndarray:
+    """긴 변이 long_side보다 크면 비율 유지한 채 줄인다(작으면 그대로, 키우지 않음)."""
+    h, w = gray.shape
+    if max(h, w) <= long_side:
+        return gray
+    scale = long_side / max(h, w)
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    return cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
+
+
+def _tile_sharpness(laplacian: np.ndarray) -> float:
+    """라플라시안 결과를 FOCUS_GRID×FOCUS_GRID 칸으로 나눠, 분산이 가장 큰 상위
+    FOCUS_TOP_FRACTION 칸의 평균을 낸다 — 초점이 맞은 부분만의 선명도."""
+    h, w = laplacian.shape
+    rows = min(FOCUS_GRID, h)
+    cols = min(FOCUS_GRID, w)
+    ys = np.linspace(0, h, rows + 1, dtype=int)
+    xs = np.linspace(0, w, cols + 1, dtype=int)
+    tile_vars = sorted(
+        (
+            float(laplacian[ys[r] : ys[r + 1], xs[c] : xs[c + 1]].var())
+            for r in range(rows)
+            for c in range(cols)
+        ),
+        reverse=True,
+    )
+    top_n = max(1, round(len(tile_vars) * FOCUS_TOP_FRACTION))
+    return sum(tile_vars[:top_n]) / top_n
+
+
+def _face_sharpness(laplacian: np.ndarray, faces: list[_DetectedFace]) -> float | None:
+    """검출된 얼굴 중 가장 선명한 얼굴 영역의 라플라시안 분산. 쓸 만한 크기의
+    얼굴이 없으면 None."""
+    h, w = laplacian.shape
+    values = []
+    for face in faces:
+        x0, y0, x1, y1 = face.bbox
+        left, right = max(0, int(x0 * w)), min(w, int(np.ceil(x1 * w)))
+        top, bottom = max(0, int(y0 * h)), min(h, int(np.ceil(y1 * h)))
+        if right - left < MIN_FACE_SIDE_PX or bottom - top < MIN_FACE_SIDE_PX:
+            continue
+        values.append(float(laplacian[top:bottom, left:right].var()))
+    return max(values) if values else None
+
+
+def _focus_sharpness(gray: np.ndarray, faces: list[_DetectedFace]) -> tuple[float, str]:
+    """초점 영역 기준 선명도와, 어디서 쟀는지(얼굴/칸)를 함께 반환한다."""
+    laplacian = cv2.Laplacian(_downscale(gray), cv2.CV_64F)
+    face_value = _face_sharpness(laplacian, faces)
+    if face_value is not None:
+        return face_value, SHARPNESS_REGION_FACE
+    return _tile_sharpness(laplacian), SHARPNESS_REGION_TILES
+
+
 def _exposure_from_gray(gray: np.ndarray) -> float:
     clipped = np.count_nonzero(gray == 0) + np.count_nonzero(gray == 255)
     return 1.0 - clipped / gray.size
 
 
 def sharpness_score(path: Path) -> float:
-    """라플라시안 분산 기반 선명도 점수. 높을수록 선명(블러 적음)."""
-    gray, _ = _decode(path)
-    return _sharpness_from_gray(gray)
+    """초점 영역 기준 라플라시안 분산 선명도 점수. 높을수록 선명(블러 적음)."""
+    gray, rgb = _decode(path)
+    return _focus_sharpness(gray, _detect_faces(rgb))[0]
 
 
 def exposure_score(path: Path) -> float:
@@ -118,21 +201,31 @@ def _eyes_open_from_scores(blink_left: float, blink_right: float) -> float:
     return 1.0 - max(blink_left, blink_right)
 
 
-def _face_from_rgb(rgb: np.ndarray) -> float | None:
+def _detect_faces(rgb: np.ndarray) -> list[_DetectedFace]:
+    """얼굴마다 눈 뜬 정도와 경계 상자를 구한다. 경계 상자는 선명도를 얼굴
+    영역에서 재는 데 쓴다."""
     image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     result = _get_landmarker().detect(image)
-    if not result.face_blendshapes:
-        return None
-
-    per_face_scores = []
-    for face in result.face_blendshapes:
-        scores = {c.category_name: c.score for c in face}
-        per_face_scores.append(
-            _eyes_open_from_scores(
-                scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)
+    faces = []
+    for blendshapes, landmarks in zip(result.face_blendshapes, result.face_landmarks):
+        scores = {c.category_name: c.score for c in blendshapes}
+        xs = [lm.x for lm in landmarks]
+        ys = [lm.y for lm in landmarks]
+        faces.append(
+            _DetectedFace(
+                eyes_open=_eyes_open_from_scores(
+                    scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)
+                ),
+                bbox=(min(xs), min(ys), max(xs), max(ys)),
             )
         )
-    return sum(per_face_scores) / len(per_face_scores)
+    return faces
+
+
+def _eyes_open_of(faces: list[_DetectedFace]) -> float | None:
+    if not faces:
+        return None
+    return sum(f.eyes_open for f in faces) / len(faces)
 
 
 def face_score(path: Path) -> float | None:
@@ -142,7 +235,7 @@ def face_score(path: Path) -> float | None:
     없는 경우는 페널티 없이 "적용 대상 아님"으로 취급한다.
     """
     _, rgb = _decode(path)
-    return _face_from_rgb(rgb)
+    return _eyes_open_of(_detect_faces(rgb))
 
 
 def score_photo(meta: PhotoMetadata) -> PhotoScore:
@@ -163,9 +256,11 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
 
     try:
         gray, rgb = _decode(meta.path)
-        sharpness = _sharpness_from_gray(gray)
+        faces = _detect_faces(rgb)
+        sharpness, sharpness_region = _focus_sharpness(gray, faces)
+        sharpness_global = _sharpness_from_gray(gray)
         exposure = _exposure_from_gray(gray)
-        face = _face_from_rgb(rgb)
+        face = _eyes_open_of(faces)
     except Exception as e:
         return PhotoScore(
             path=meta.path,
@@ -182,6 +277,8 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
         exposure=exposure,
         face=face,
         total=sharpness,
+        sharpness_global=sharpness_global,
+        sharpness_region=sharpness_region,
     )
 
 

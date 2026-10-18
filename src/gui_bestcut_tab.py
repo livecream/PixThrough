@@ -35,6 +35,8 @@ from gui_format import (
     bestcut_scoring_help,
     format_apply_summary,
     format_preview_header,
+    format_sharpness_region,
+    sharpness_measure_help,
 )
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow, build_report
@@ -48,8 +50,8 @@ _TOTAL_TOOLTIP = (
 )
 _SHARPNESS_TOOLTIP = (
     "<p><b>선명도</b>: 경계선이 얼마나 또렷한지를 나타내는 원래 값입니다. "
-    "해상도·피사체에 따라 범위가 달라, 종합점수에는 같은 장면 안에서 0~1로 바꿔 "
-    "반영합니다(장면 안에서 가장 선명하면 1).</p>"
+    "종합점수에는 같은 장면 안에서 0~1로 바꿔 반영합니다(장면 안에서 가장 선명하면 "
+    "1).</p>" + sharpness_measure_help()
 )
 _EXPOSURE_TOOLTIP = (
     "<p><b>노출(0~1)</b>: 완전히 까맣게 뭉개지거나 하얗게 날아간 픽셀이 적을수록 "
@@ -372,7 +374,9 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
             self._table.setItem(i, 3, QTableWidgetItem("선택" if row.selected else "제외"))
             self._table.setItem(i, 4, QTableWidgetItem(f"{row.total:.2f}"))
-            self._table.setItem(i, 5, QTableWidgetItem(f"{row.sharpness:.1f}"))
+            sharpness_item = QTableWidgetItem(f"{row.sharpness:.1f}")
+            sharpness_item.setToolTip(format_sharpness_region(row.sharpness_region))
+            self._table.setItem(i, 5, sharpness_item)
             self._table.setItem(i, 6, QTableWidgetItem(f"{row.exposure:.2f}"))
             self._table.setItem(i, 7, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
             self._table.setItem(i, 8, QTableWidgetItem(row.reason))

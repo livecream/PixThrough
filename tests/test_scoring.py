@@ -1,5 +1,6 @@
 import sys
 
+import cv2
 import numpy as np
 import pytest
 from pathlib import Path
@@ -186,3 +187,134 @@ def test_default_model_dir_uses_repo_relative_path_when_not_frozen(monkeypatch):
     result = _default_model_dir()
 
     assert result == Path(scoring.__file__).resolve().parent.parent / "models"
+
+
+# --- 초점 영역 기준 선명도 ---------------------------------------------------
+
+
+def _texture(h, w, seed=0):
+    """실사진처럼 굵은 형태부터 잔디테일까지 고루 섞인(1/f 스펙트럼) 회색 텍스처."""
+    rng = np.random.default_rng(seed)
+    fy = np.fft.fftfreq(h)[:, None]
+    fx = np.fft.rfftfreq(w)[None, :]
+    f = np.sqrt(fx**2 + fy**2)
+    f[0, 0] = 1
+    spectrum = (rng.normal(size=f.shape) + 1j * rng.normal(size=f.shape)) / f
+    img = np.fft.irfft2(spectrum, s=(h, w))
+    return ((img - img.min()) / (img.max() - img.min()) * 255).astype("uint8")
+
+
+def _blur(arr, sigma):
+    return cv2.GaussianBlur(arr, (0, 0), sigma)
+
+
+def _save_gray(path, arr):
+    Image.fromarray(arr).convert("RGB").save(path, "png")
+    return path
+
+
+def test_downscale_shrinks_long_side_and_never_upscales():
+    big = np.zeros((3000, 6000), dtype="uint8")
+    small = np.zeros((100, 200), dtype="uint8")
+
+    assert scoring._downscale(big, long_side=2000).shape == (1000, 2000)
+    assert scoring._downscale(small, long_side=2000).shape == (100, 200)
+
+
+def test_focus_sharpness_is_not_penalised_by_blurred_background(tmp_path, monkeypatch):
+    """아웃포커싱 사진(피사체만 또렷, 배경은 크게 흐림)도 피사체가 또렷하면 전부
+    또렷한 사진과 비슷하게 선명해야 한다. 예전 방식(사진 전체)은 크게 깎았다."""
+    monkeypatch.setattr(scoring, "_get_landmarker", _no_face_landmarker)
+    base = _texture(400, 400)
+    bokeh = _blur(base, 8)
+    bokeh[100:300, 100:300] = base[100:300, 100:300]
+    bokeh_path = _save_gray(tmp_path / "bokeh.png", bokeh)
+    sharp_path = _save_gray(tmp_path / "sharp.png", base)
+
+    bokeh_score = score_photo(PhotoMetadata(path=bokeh_path, datetime_original=None, exif_source="exif"))
+    sharp_score = score_photo(PhotoMetadata(path=sharp_path, datetime_original=None, exif_source="exif"))
+
+    assert bokeh_score.sharpness / sharp_score.sharpness > 0.8
+    assert bokeh_score.sharpness_global / sharp_score.sharpness_global < 0.5
+    assert bokeh_score.sharpness_region == scoring.SHARPNESS_REGION_TILES
+
+
+def test_focus_sharpness_still_flags_whole_image_blur(monkeypatch):
+    base = _texture(400, 400)
+
+    sharp, _ = scoring._focus_sharpness(base, [])
+    shaken, _ = scoring._focus_sharpness(_blur(base, 1.5), [])
+
+    assert shaken < sharp * 0.2
+
+
+def test_focus_sharpness_narrows_gap_across_resolutions():
+    """같은 장면을 화소가 다른 두 바디(6000px/3000px)로 찍은 경우. 예전 방식은 몇 배씩
+    차이 났지만, 줄여서 재므로 차이가 크게 줄어야 한다."""
+    high_res = _blur(_texture(4000, 6000, seed=1), 1.0)
+    low_res = cv2.resize(high_res, (3000, 2000), interpolation=cv2.INTER_AREA)
+
+    high, _ = scoring._focus_sharpness(high_res, [])
+    low, _ = scoring._focus_sharpness(low_res, [])
+    old_high = scoring._sharpness_from_gray(high_res)
+    old_low = scoring._sharpness_from_gray(low_res)
+
+    new_ratio = max(high, low) / min(high, low)
+    old_ratio = max(old_high, old_low) / min(old_high, old_low)
+    assert new_ratio < 1.5
+    assert old_ratio > 3
+
+
+def test_focus_sharpness_uses_sharpest_face_region():
+    gray = np.full((400, 400), 128, dtype="uint8")
+    gray[0:100, 0:100] = _texture(100, 100)  # 왼쪽 위: 또렷한 얼굴
+    gray[300:400, 300:400] = np.array(
+        Image.fromarray(_texture(100, 100, seed=1)).filter(ImageFilter.GaussianBlur(radius=3))
+    )  # 오른쪽 아래: 흐린 얼굴
+    sharp_face = scoring._DetectedFace(eyes_open=1.0, bbox=(0.0, 0.0, 0.25, 0.25))
+    blurred_face = scoring._DetectedFace(eyes_open=1.0, bbox=(0.75, 0.75, 1.0, 1.0))
+
+    value, region = scoring._focus_sharpness(gray, [blurred_face, sharp_face])
+    blurred_only, _ = scoring._focus_sharpness(gray, [blurred_face])
+
+    assert region == scoring.SHARPNESS_REGION_FACE
+    assert value > blurred_only
+
+
+def test_focus_sharpness_ignores_tiny_faces_and_falls_back_to_tiles():
+    gray = _texture(400, 400)
+    tiny_face = scoring._DetectedFace(eyes_open=1.0, bbox=(0.5, 0.5, 0.52, 0.52))  # 8px
+
+    _, region = scoring._focus_sharpness(gray, [tiny_face])
+
+    assert region == scoring.SHARPNESS_REGION_TILES
+
+
+def test_score_photo_keeps_eyes_open_average_and_global_sharpness(tmp_path, monkeypatch):
+    path = _save_gray(tmp_path / "faces.png", _texture(200, 200))
+    faces = [
+        scoring._DetectedFace(eyes_open=1.0, bbox=(0.0, 0.0, 0.5, 0.5)),
+        scoring._DetectedFace(eyes_open=0.5, bbox=(0.5, 0.5, 1.0, 1.0)),
+    ]
+    monkeypatch.setattr(scoring, "_detect_faces", lambda rgb: faces)
+
+    result = score_photo(PhotoMetadata(path=path, datetime_original=None, exif_source="exif"))
+
+    assert result.face == pytest.approx(0.75)
+    assert result.sharpness_region == scoring.SHARPNESS_REGION_FACE
+    assert result.sharpness_global == pytest.approx(scoring._sharpness_from_gray(_texture(200, 200)))
+    assert result.total == result.sharpness
+
+
+class _NoFaceResult:
+    face_blendshapes: list = []
+    face_landmarks: list = []
+
+
+class _NoFaceDetector:
+    def detect(self, image):
+        return _NoFaceResult()
+
+
+def _no_face_landmarker():
+    return _NoFaceDetector()

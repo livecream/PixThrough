@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gui_format import format_sharpness_region
 from report import ReportRow
 from thumbnails import load_preview_image
 
@@ -122,8 +123,10 @@ class PhotoViewerDialog(QDialog):
         unscored = row.reason.startswith("판정 불가")
         verdict = "C컷" if row.selected else ("판정 불가" if unscored else "정상")
         eyes = "얼굴 없음" if row.face is None else f"{row.face:.2f}"
+        region = format_sharpness_region(row.sharpness_region)
+        sharpness = f"{row.sharpness:.1f}" + (f" ({region})" if region else "")
         self._info_label.setText(
-            f"{row.path.name}  |  판정: {verdict}  |  선명도 {row.sharpness:.1f}  |  "
+            f"{row.path.name}  |  판정: {verdict}  |  선명도 {sharpness}  |  "
             f"눈뜸 {eyes}  |  {row.reason}"
         )
         self._sharpness_ref_button.setEnabled(not unscored)
