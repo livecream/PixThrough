@@ -3,6 +3,8 @@ from pathlib import Path
 
 from file_ops import FileOpResult
 from gui_format import (
+    bestcut_grouping_help,
+    bestcut_scoring_help,
     format_apply_summary,
     format_badcut_header,
     format_badcut_preview,
@@ -225,3 +227,15 @@ def test_format_threshold_reference_marks_manual_value():
 
     assert "직접 입력" in text
     assert "0.50" in text
+
+
+def test_bestcut_grouping_help_shows_gap_seconds():
+    assert "5초 이내" in bestcut_grouping_help(5)
+
+
+def test_bestcut_scoring_help_shows_weights_as_percent():
+    text = bestcut_scoring_help({"sharpness": 0.5, "exposure": 0.3, "face": 0.2})
+
+    assert "선명도 50%" in text
+    assert "노출 30%" in text
+    assert "눈뜸 20%" in text

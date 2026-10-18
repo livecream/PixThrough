@@ -1,4 +1,8 @@
-"""M8: 베스트컷(A컷) 선별 탭. gui.py에서 분리해 QTabWidget의 탭 하나로 얹는다."""
+"""M8: 베스트컷(A컷) 선별 탭. gui.py에서 분리해 QTabWidget의 탭 하나로 얹는다.
+
+장면을 어떻게 묶고 어떤 점수로 고르는지가 화면에 드러나지 않으면 결과를 믿고
+쓰기 어려워, 설명 툴팁(ⓘ)과 사진별 점수 칸을 함께 보여준다.
+"""
 
 from __future__ import annotations
 
@@ -26,11 +30,35 @@ from PySide6.QtWidgets import (
 from file_ops import FileOpResult, apply_selection
 from grouping import group_by_time_gap
 from gui_dnd import extract_dropped_folders
-from gui_format import format_apply_summary, format_preview_header
+from gui_format import (
+    bestcut_grouping_help,
+    bestcut_scoring_help,
+    format_apply_summary,
+    format_preview_header,
+)
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow, build_report
 from scanner import scan_and_extract_many
 from thumbnails import make_thumbnail
+
+
+_TOTAL_TOOLTIP = (
+    "<p><b>종합점수(0~1)</b>: 선명도·노출·눈뜸을 비율대로 합친 값입니다. "
+    "장면 안에서 이 값이 가장 높은 컷이 선택됩니다.</p>"
+)
+_SHARPNESS_TOOLTIP = (
+    "<p><b>선명도</b>: 경계선이 얼마나 또렷한지를 나타내는 원래 값입니다. "
+    "해상도·피사체에 따라 범위가 달라, 종합점수에는 같은 장면 안에서 0~1로 바꿔 "
+    "반영합니다(장면 안에서 가장 선명하면 1).</p>"
+)
+_EXPOSURE_TOOLTIP = (
+    "<p><b>노출(0~1)</b>: 완전히 까맣게 뭉개지거나 하얗게 날아간 픽셀이 적을수록 "
+    "1에 가깝습니다.</p>"
+)
+_EYES_TOOLTIP = (
+    "<p><b>눈뜸(0~1)</b>: 얼굴이 검출된 사진에서 눈을 뜬 정도입니다. 빈칸은 얼굴이 "
+    "검출되지 않은 사진으로, 종합점수에서 이 항목을 빼고 계산합니다.</p>"
+)
 
 
 def _percent(done: int, total: int) -> int:
@@ -154,7 +182,20 @@ class BestCutTab(QWidget):
         self._move_radio = QRadioButton("이동")
 
         self._preview_button = QPushButton("미리보기")
+        self._preview_button.setToolTip(
+            "<p>사진을 장면별로 묶고 장면마다 베스트컷 1장을 고른 결과를 보여줍니다. "
+            "파일은 아직 복사/이동하지 않습니다.</p>"
+        )
         self._preview_button.clicked.connect(self._run_preview)
+
+        grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
+        grouping_help_label.setToolTip(bestcut_grouping_help())
+        scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
+        scoring_help_label.setToolTip(bestcut_scoring_help())
+        help_row = QHBoxLayout()
+        help_row.addWidget(grouping_help_label)
+        help_row.addWidget(scoring_help_label)
+        help_row.addStretch()
 
         self._apply_button = QPushButton("적용")
         self._apply_button.setEnabled(False)
@@ -170,8 +211,20 @@ class BestCutTab(QWidget):
         self._summary_text.setReadOnly(True)
         self._summary_text.setAcceptDrops(False)
 
-        self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["썸네일", "파일명", "장면", "선택여부", "사유"])
+        self._table = QTableWidget(0, 9)
+        self._table.setHorizontalHeaderLabels(
+            ["썸네일", "파일명", "장면", "선택여부", "종합점수", "선명도", "노출", "눈뜸", "사유"]
+        )
+        for column, tooltip in (
+            (2, bestcut_grouping_help()),
+            (3, bestcut_scoring_help()),
+            (4, _TOTAL_TOOLTIP),
+            (5, _SHARPNESS_TOOLTIP),
+            (6, _EXPOSURE_TOOLTIP),
+            (7, _EYES_TOOLTIP),
+            (8, bestcut_scoring_help()),
+        ):
+            self._table.horizontalHeaderItem(column).setToolTip(tooltip)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setIconSize(QSize(64, 64))
@@ -196,6 +249,7 @@ class BestCutTab(QWidget):
         layout.addWidget(self._output_label)
         layout.addWidget(output_button)
         layout.addLayout(radio_row)
+        layout.addLayout(help_row)
         layout.addLayout(button_row)
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._status_label)
@@ -317,7 +371,11 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
             self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
             self._table.setItem(i, 3, QTableWidgetItem("선택" if row.selected else "제외"))
-            self._table.setItem(i, 4, QTableWidgetItem(row.reason))
+            self._table.setItem(i, 4, QTableWidgetItem(f"{row.total:.2f}"))
+            self._table.setItem(i, 5, QTableWidgetItem(f"{row.sharpness:.1f}"))
+            self._table.setItem(i, 6, QTableWidgetItem(f"{row.exposure:.2f}"))
+            self._table.setItem(i, 7, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
+            self._table.setItem(i, 8, QTableWidgetItem(row.reason))
         self._table.resizeRowsToContents()
 
     def _thumbnail_pixmap(self, path: Path) -> QPixmap | None:
