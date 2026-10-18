@@ -88,3 +88,27 @@ def test_load_folder_returns_none_when_unset(tmp_path):
     settings = _settings(tmp_path)
 
     assert load_folder(settings, "test/unset") is None
+
+
+def test_load_float_returns_default_when_missing(tmp_path):
+    from gui_settings import load_float
+
+    assert load_float(_settings(tmp_path), "bestcut/scene_gap_seconds", 3.0) == 3.0
+
+
+def test_save_then_load_float_round_trips(tmp_path):
+    from gui_settings import load_float, save_float
+
+    settings = _settings(tmp_path)
+    save_float(settings, "bestcut/scene_gap_seconds", 7.5)
+
+    assert load_float(_settings(tmp_path), "bestcut/scene_gap_seconds", 3.0) == 7.5
+
+
+def test_load_float_falls_back_to_default_for_garbage(tmp_path):
+    from gui_settings import load_float
+
+    settings = _settings(tmp_path)
+    settings.setValue("bestcut/scene_gap_seconds", "abc")
+
+    assert load_float(settings, "bestcut/scene_gap_seconds", 3.0) == 3.0

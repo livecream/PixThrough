@@ -42,3 +42,16 @@ def load_folder(settings: QSettings, key: str) -> Path | None:
 
 def save_folder(settings: QSettings, key: str, folder: Path | None) -> None:
     settings.setValue(key, str(folder) if folder is not None else "")
+
+
+def load_float(settings: QSettings, key: str, default: float) -> float:
+    """숫자 설정값. 백엔드에 따라 문자열로 돌아오기도 하고, 값이 깨져 있으면 기본값."""
+    raw = settings.value(key, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def save_float(settings: QSettings, key: str, value: float) -> None:
+    settings.setValue(key, float(value))
