@@ -1,9 +1,10 @@
 """CLI 진입점. `scan`(M1) + `group`(M2) + `score`(M3) + `select`(M4) + `report`(M5) +
-`apply`(M6) + `rename`(M9) + `badcut`(M10)."""
+`apply`(M6) + `rename`(M9) + `badcut`(M10) + `faces`(얼굴 검출 진단)."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 from badcut import BadCutThresholds, build_badcut_rows
@@ -19,7 +20,7 @@ from rename_by_time import (
 )
 from report import build_report, write_report
 from scanner import scan_and_extract
-from scoring import score_photos
+from scoring import FACE_SOURCE_YUNET, diagnose_faces, score_photos
 from selector import select_best
 
 
@@ -141,6 +142,55 @@ def cmd_badcut(args: argparse.Namespace) -> None:
 
     op_results = apply_selection(rows, Path(args.output), move=True)
     print(f"이동 완료: {len(op_results)}장 → {args.output} (리포트: {args.report})")
+
+
+_FACES_CSV_FIELDS = [
+    "file", "width", "height", "legacy_face_count", "face_index", "source",
+    "confidence", "face_width_px", "face_height_px", "eyes_open", "error",
+]
+
+
+def cmd_faces(args: argparse.Namespace) -> None:
+    """사진마다 찾은 얼굴(위치·크기·신뢰도·눈뜸)을 CSV로 남기고, 예전 방식(사진 전체를
+    FaceLandmarker에)과 몇 장에서 얼굴을 찾았는지 비교해 보여준다. 파일은 건드리지 않는다."""
+    photos = scan_and_extract(Path(args.input), recursive=args.recursive)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with_faces = with_legacy = with_eyes = 0
+    with output.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=_FACES_CSV_FIELDS)
+        writer.writeheader()
+        for meta in photos:
+            if meta.error is not None:
+                writer.writerow({"file": str(meta.path), "error": meta.error})
+                continue
+            d = diagnose_faces(meta.path)
+            base = {
+                "file": str(d.path), "width": d.width, "height": d.height,
+                "legacy_face_count": len(d.legacy_faces), "error": d.error or "",
+            }
+            with_faces += bool(d.faces)
+            with_legacy += bool(d.legacy_faces)
+            with_eyes += any(face.eyes_open is not None for face in d.faces)
+            if not d.faces:
+                writer.writerow(base)
+            for i, face in enumerate(d.faces, start=1):
+                x0, y0, x1, y1 = face.bbox
+                writer.writerow({
+                    **base,
+                    "face_index": i,
+                    "source": face.source,
+                    "confidence": f"{face.confidence:.3f}" if face.confidence is not None else "",
+                    "face_width_px": round((x1 - x0) * d.width),
+                    "face_height_px": round((y1 - y0) * d.height),
+                    "eyes_open": f"{face.eyes_open:.3f}" if face.eyes_open is not None else "",
+                })
+    print(
+        f"총 {len(photos)}장 중 얼굴을 찾은 사진: {with_faces}장 "
+        f"(예전 방식 {with_legacy}장), 눈뜸을 판정할 수 있는 사진: {with_eyes}장\n"
+        f"얼굴별 결과: {output} (source={FACE_SOURCE_YUNET}이면 새 검출기로 찾은 얼굴, "
+        "eyes_open이 빈칸이면 옆얼굴 등이라 눈을 판정하지 못한 얼굴)"
+    )
 
 
 def main() -> None:
@@ -269,6 +319,14 @@ def main() -> None:
         help="실제로 이동을 수행. 없으면 dry-run(리포트만 생성)으로 끝남",
     )
     p_badcut.set_defaults(func=cmd_badcut)
+
+    p_faces = sub.add_parser(
+        "faces", help="얼굴 검출 진단: 사진별 얼굴 위치·크기·눈뜸을 CSV로 저장 (파일 작업 없음)"
+    )
+    p_faces.add_argument("--input", required=True, help="스캔할 사진 폴더 경로")
+    p_faces.add_argument("--recursive", action="store_true", help="하위 폴더까지 재귀 탐색")
+    p_faces.add_argument("--output", required=True, help="결과 CSV 저장 경로")
+    p_faces.set_defaults(func=cmd_faces)
 
     args = parser.parse_args()
     args.func(args)
