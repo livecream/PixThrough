@@ -1,0 +1,93 @@
+# 릴리스가 발행되면 macOS 러너에서 PixThrough.app을 빌드해 PixThrough-macOS.zip으로
+# 같은 릴리스에 첨부하고, 릴리스 노트의 "macOS: 추후 추가 예정" 줄을 다운로드 안내로 바꾼다.
+# 이미 발행된 릴리스에 붙이려면 Actions 탭에서 수동 실행(workflow_dispatch)하고 태그를 입력한다.
+name: Release macOS build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "첨부할 릴리스 태그 (예: v1.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    # macos-14 = Apple Silicon(arm64). 인텔 맥용 빌드는 포함하지 않는다.
+    runs-on: macos-14
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check version.py matches tag
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); from version import __version__; print(__version__)")
+          echo "version.py: $version / tag: $TAG"
+          test "v$version" = "$TAG"
+
+      - name: Check window title
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, "src")
+          from PySide6.QtWidgets import QApplication
+          app = QApplication([])
+          from gui import MainWindow
+          title = MainWindow().windowTitle()
+          expected = f"PixThrough {os.environ['TAG']}"
+          print(f"window title: {title!r}")
+          assert title == expected, f"expected {expected!r}"
+          EOF
+
+      - name: Build .app
+        run: pyinstaller packaging/PixThrough.spec --noconfirm --distpath dist --workpath build
+
+      - name: Smoke-test built app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # 번들된 실행 파일이 기동 직후 죽지 않는지만 확인 (10초간 살아있으면 통과)
+          dist/PixThrough.app/Contents/MacOS/PixThrough &
+          pid=$!
+          sleep 10
+          kill -0 "$pid"
+          kill "$pid"
+
+      - name: Zip .app
+        run: ditto -c -k --keepParent dist/PixThrough.app PixThrough-macOS.zip
+
+      - name: Upload to release
+        run: gh release upload "$TAG" PixThrough-macOS.zip --clobber
+
+      - name: Update release notes
+        run: |
+          gh release view "$TAG" --json body -q .body > notes.md
+          python - <<'EOF'
+          import re
+          from pathlib import Path
+          path = Path("notes.md")
+          body = path.read_text(encoding="utf-8")
+          new_line = "- **macOS**: `PixThrough-macOS.zip` — 압축 풀고 `PixThrough.app` 우클릭 → 열기"
+          body, count = re.subn(r"^- \*\*macOS\*\*: 추후 추가 예정[ \t]*$", new_line, body, flags=re.M)
+          print(f"replaced {count} line(s)")
+          path.write_text(body, encoding="utf-8")
+          EOF
+          gh release edit "$TAG" --notes-file notes.md

@@ -40,6 +40,13 @@ python3 -m venv .venv
 .venv/bin/pyinstaller packaging/PixThrough.spec --distpath dist --workpath build
 ```
 
+## macOS 릴리스 자동 빌드
+
+GitHub에서 릴리스를 발행하면 `.github/workflows/release-macos.yml`이 macOS(Apple Silicon)
+러너에서 `.app`을 빌드해 `PixThrough-macOS.zip`을 같은 릴리스에 첨부하고, 릴리스 노트의
+`- **macOS**: 추후 추가 예정` 줄을 다운로드 안내로 바꾼다. 이미 발행된 릴리스에 붙이려면
+Actions 탭 → "Release macOS build" → Run workflow에서 태그(예: `v1.1.0`)를 입력한다.
+
 ## Windows에서 빌드하기
 
 PyInstaller는 크로스 컴파일을 지원하지 않는다 — macOS에서 빌드하면 macOS용
