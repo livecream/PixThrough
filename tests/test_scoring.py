@@ -318,3 +318,140 @@ class _NoFaceDetector:
 
 def _no_face_landmarker():
     return _NoFaceDetector()
+
+
+# --- 2단계 얼굴 검출 (YuNet → 잘라낸 얼굴에서 FaceLandmarker) -------------------
+
+
+def _face(bbox, eyes_open=1.0, source=scoring.FACE_SOURCE_YUNET, confidence=0.9):
+    return scoring._DetectedFace(eyes_open=eyes_open, bbox=bbox, source=source, confidence=confidence)
+
+
+def test_eyes_open_of_skips_faces_whose_eyes_could_not_be_judged():
+    faces = [_face((0, 0, 0.2, 0.2), eyes_open=0.4), _face((0.5, 0.5, 0.7, 0.7), eyes_open=None)]
+
+    assert scoring._eyes_open_of(faces) == pytest.approx(0.4)
+
+
+def test_eyes_open_of_is_none_when_only_profile_faces():
+    assert scoring._eyes_open_of([_face((0, 0, 0.2, 0.2), eyes_open=None)]) is None
+
+
+def test_merge_faces_keeps_legacy_faces_only_where_yunet_found_nothing():
+    yunet = [_face((0.1, 0.1, 0.3, 0.3))]
+    same_face = _face((0.11, 0.1, 0.31, 0.32), source=scoring.FACE_SOURCE_LANDMARKER, confidence=None)
+    other_face = _face((0.6, 0.6, 0.8, 0.8), source=scoring.FACE_SOURCE_LANDMARKER, confidence=None)
+
+    merged = scoring._merge_faces(yunet, [same_face, other_face])
+
+    assert merged == [yunet[0], other_face]
+
+
+def test_merge_faces_keeps_most_confident_of_overlapping_detections():
+    weak = _face((0.1, 0.1, 0.3, 0.3), confidence=0.7)
+    strong = _face((0.12, 0.1, 0.32, 0.3), confidence=0.95)
+
+    assert scoring._merge_faces([weak, strong], []) == [strong]
+
+
+class _FakeYuNet:
+    """긴 변 640으로 줄였을 때만 얼굴 하나를 돌려주는 가짜 검출기."""
+
+    def __init__(self):
+        self.size = None
+
+    def setInputSize(self, size):
+        self.size = size
+
+    def detect(self, img):
+        assert img.shape[1::-1] == self.size
+        if self.size != (640, 320):
+            return 1, None
+        # x, y, w, h, 랜드마크 10개, 신뢰도
+        return 1, np.array([[64, 32, 128, 64, *([0] * 10), 0.88]], dtype=np.float32)
+
+
+def test_yunet_boxes_returns_normalised_boxes_from_each_detection_size(monkeypatch):
+    monkeypatch.setattr(scoring, "_get_yunet", lambda: _FakeYuNet())
+    rgb = np.zeros((2000, 4000, 3), dtype="uint8")
+
+    boxes = scoring._yunet_boxes(rgb)
+
+    assert len(boxes) == 1
+    bbox, confidence = boxes[0]
+    assert bbox == pytest.approx((0.1, 0.1, 0.3, 0.3))
+    assert confidence == pytest.approx(0.88)
+
+
+def test_detect_faces_judges_eyes_per_yunet_face_and_adds_missed_legacy_faces(monkeypatch):
+    rgb = np.zeros((100, 100, 3), dtype="uint8")
+    frontal, profile = (0.0, 0.0, 0.3, 0.3), (0.6, 0.0, 0.9, 0.3)
+    legacy_only = _face((0.0, 0.6, 0.3, 0.9), eyes_open=0.2, source=scoring.FACE_SOURCE_LANDMARKER)
+    monkeypatch.setattr(scoring, "_yunet_boxes", lambda rgb: [(frontal, 0.9), (profile, 0.8)])
+    monkeypatch.setattr(
+        scoring, "_eyes_open_in_crop", lambda rgb, bbox: 0.9 if bbox == frontal else None
+    )
+    monkeypatch.setattr(scoring, "_detect_faces_whole_image", lambda rgb: [legacy_only])
+
+    faces = scoring._detect_faces(rgb)
+
+    assert [(f.bbox, f.eyes_open, f.source) for f in faces] == [
+        (frontal, 0.9, scoring.FACE_SOURCE_YUNET),
+        (profile, None, scoring.FACE_SOURCE_YUNET),
+        (legacy_only.bbox, 0.2, scoring.FACE_SOURCE_LANDMARKER),
+    ]
+    assert scoring._eyes_open_of(faces) == pytest.approx(0.55)
+
+
+def test_score_photo_uses_profile_face_for_sharpness_but_not_eyes(tmp_path, monkeypatch):
+    path = _save_gray(tmp_path / "profile.png", _texture(200, 200))
+    monkeypatch.setattr(scoring, "_detect_faces", lambda rgb: [_face((0.0, 0.0, 0.5, 0.5), eyes_open=None)])
+
+    result = score_photo(PhotoMetadata(path=path, datetime_original=None, exif_source="exif"))
+
+    assert result.sharpness_region == scoring.SHARPNESS_REGION_FACE
+    assert result.face is None
+
+
+def test_download_rejects_file_with_wrong_checksum(tmp_path):
+    source = tmp_path / "model.onnx"
+    source.write_bytes(b"not the model")
+    target = tmp_path / "models" / "model.onnx"
+
+    with pytest.raises(RuntimeError):
+        scoring._download(source.as_uri(), target, sha256="0" * 64)
+
+    assert not target.exists()
+    assert list(target.parent.iterdir()) == []
+
+
+def test_download_keeps_file_with_matching_checksum(tmp_path):
+    import hashlib
+
+    source = tmp_path / "model.onnx"
+    source.write_bytes(b"model bytes")
+    target = tmp_path / "models" / "model.onnx"
+
+    scoring._download(source.as_uri(), target, sha256=hashlib.sha256(b"model bytes").hexdigest())
+
+    assert target.read_bytes() == b"model bytes"
+
+
+def test_detect_faces_drops_background_faces_much_smaller_than_the_largest(monkeypatch):
+    rgb = np.zeros((1000, 1000, 3), dtype="uint8")
+    subject = _face((0.1, 0.1, 0.4, 0.4), eyes_open=1.0)  # 300px
+    companion = _face((0.5, 0.1, 0.66, 0.4), eyes_open=0.9)  # 긴 변 300px
+    passer_by = _face((0.8, 0.8, 0.9, 0.9), eyes_open=0.0)  # 100px, 가장 큰 얼굴의 1/3
+    monkeypatch.setattr(scoring, "_detect_all_faces", lambda rgb: [subject, companion, passer_by])
+
+    faces = scoring._detect_faces(rgb)
+
+    assert faces == [subject, companion]
+    assert scoring._eyes_open_of(faces) == pytest.approx(0.95)
+
+
+def test_is_main_face_keeps_faces_at_the_ratio_boundary():
+    big = _face((0.0, 0.0, 0.5, 0.5))
+    half = _face((0.5, 0.5, 0.75, 0.75))
+
+    assert scoring._is_main_face(half, [big, half], 1000, 1000)
