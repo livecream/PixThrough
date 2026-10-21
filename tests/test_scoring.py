@@ -224,7 +224,7 @@ def test_downscale_shrinks_long_side_and_never_upscales():
 def test_focus_sharpness_is_not_penalised_by_blurred_background(tmp_path, monkeypatch):
     """아웃포커싱 사진(피사체만 또렷, 배경은 크게 흐림)도 피사체가 또렷하면 전부
     또렷한 사진과 비슷하게 선명해야 한다. 예전 방식(사진 전체)은 크게 깎았다."""
-    monkeypatch.setattr(scoring, "_get_landmarker", _no_face_landmarker)
+    monkeypatch.setattr(scoring, "_locate_faces", lambda rgb: [])
     base = _texture(400, 400)
     bokeh = _blur(base, 8)
     bokeh[100:300, 100:300] = base[100:300, 100:300]
@@ -306,15 +306,109 @@ def test_score_photo_keeps_eyes_open_average_and_global_sharpness(tmp_path, monk
     assert result.total == result.sharpness
 
 
-class _NoFaceResult:
-    face_blendshapes: list = []
-    face_landmarks: list = []
+# --- 얼굴 검출(YuNet 위치 + 잘라서 눈 분석) -----------------------------------
 
 
-class _NoFaceDetector:
+class _Landmark:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+class _Category:
+    def __init__(self, name, score):
+        self.category_name, self.score = name, score
+
+
+class _FakeLandmarkerResult:
+    def __init__(self, faces):
+        # faces: [(중심 x, 중심 y, eyeBlink 점수)]
+        self.face_landmarks = [[_Landmark(x, y)] for x, y, _ in faces]
+        self.face_blendshapes = [
+            [_Category("eyeBlinkLeft", blink), _Category("eyeBlinkRight", blink)]
+            for _, _, blink in faces
+        ]
+
+
+class _FakeLandmarker:
+    def __init__(self, faces):
+        self._faces = faces
+
     def detect(self, image):
-        return _NoFaceResult()
+        return _FakeLandmarkerResult(self._faces)
 
 
-def _no_face_landmarker():
-    return _NoFaceDetector()
+def test_square_crop_is_square_and_pads_outside_the_photo():
+    rgb = np.full((100, 200, 3), 255, dtype="uint8")
+
+    # 왼쪽 위 모서리에 걸친 얼굴: 잘라낸 영역의 왼쪽·위쪽 일부는 사진 밖이다
+    crop = scoring._square_crop(rgb, (0.0, 0.0, 0.1, 0.2))
+
+    assert crop.shape == (scoring.FACE_CROP_SIZE, scoring.FACE_CROP_SIZE, 3)
+    assert crop[0, 0].tolist() == [0, 0, 0]  # 사진 밖 → 검정으로 채움
+    center = scoring.FACE_CROP_SIZE // 2
+    assert crop[center, center].tolist() == [255, 255, 255]  # 얼굴 중심은 원본 그대로
+
+
+def test_eyes_open_in_crop_uses_face_closest_to_center(monkeypatch):
+    # 가운데 얼굴은 눈을 뜸(blink 0.1), 가장자리에 걸친 옆 사람은 감음(blink 0.9)
+    monkeypatch.setattr(
+        scoring, "_get_landmarker", lambda: _FakeLandmarker([(0.95, 0.5, 0.9), (0.5, 0.5, 0.1)])
+    )
+
+    eyes = scoring._eyes_open_in_crop(np.zeros((256, 256, 3), dtype="uint8"))
+
+    assert eyes == pytest.approx(0.9)
+
+
+def test_eyes_open_in_crop_is_none_when_landmarks_fail(monkeypatch):
+    monkeypatch.setattr(scoring, "_get_landmarker", lambda: _FakeLandmarker([]))
+
+    assert scoring._eyes_open_in_crop(np.zeros((256, 256, 3), dtype="uint8")) is None
+
+
+def test_detect_faces_keeps_faces_without_eye_analysis(monkeypatch):
+    boxes = [(0.1, 0.1, 0.3, 0.3), (0.6, 0.6, 0.9, 0.9)]
+    eye_results = iter([0.8, None])  # 두 번째 얼굴은 옆모습이라 눈 분석 실패
+    monkeypatch.setattr(scoring, "_locate_faces", lambda rgb: boxes)
+    monkeypatch.setattr(scoring, "_eyes_open_in_crop", lambda crop: next(eye_results))
+
+    faces = scoring._detect_faces(np.zeros((100, 100, 3), dtype="uint8"))
+
+    assert [f.bbox for f in faces] == boxes
+    assert [f.eyes_open for f in faces] == [0.8, None]
+
+
+def test_eyes_open_of_averages_only_analysed_faces():
+    faces = [
+        scoring._DetectedFace(eyes_open=0.8, bbox=(0, 0, 1, 1)),
+        scoring._DetectedFace(eyes_open=None, bbox=(0, 0, 1, 1)),
+        scoring._DetectedFace(eyes_open=0.4, bbox=(0, 0, 1, 1)),
+    ]
+
+    assert scoring._eyes_open_of(faces) == pytest.approx(0.6)
+
+
+def test_eyes_open_of_is_none_when_no_face_was_analysed():
+    faces = [scoring._DetectedFace(eyes_open=None, bbox=(0, 0, 1, 1))]
+
+    assert scoring._eyes_open_of(faces) is None
+    assert scoring._eyes_open_of([]) is None
+
+
+def test_profile_face_still_drives_face_region_sharpness(tmp_path, monkeypatch):
+    """옆모습(눈 분석 실패) 얼굴도 선명도는 얼굴 영역에서 재고, 눈뜸은 '해당 없음'."""
+    path = _save_gray(tmp_path / "profile.png", _texture(200, 200))
+    profile = scoring._DetectedFace(eyes_open=None, bbox=(0.0, 0.0, 0.5, 0.5))
+    monkeypatch.setattr(scoring, "_detect_faces", lambda rgb: [profile])
+
+    result = score_photo(PhotoMetadata(path=path, datetime_original=None, exif_source="exif"))
+
+    assert result.sharpness_region == scoring.SHARPNESS_REGION_FACE
+    assert result.face is None
+
+
+def test_locate_faces_finds_no_face_in_texture():
+    """실제 YuNet 모델: 얼굴 없는 사진에서 얼굴을 찾지 않아야 한다."""
+    rgb = np.stack([_texture(400, 600)] * 3, axis=-1)
+
+    assert scoring._locate_faces(rgb) == []

@@ -122,7 +122,7 @@ class PhotoViewerDialog(QDialog):
         row = self._rows[self._index]
         unscored = row.reason.startswith("판정 불가")
         verdict = "C컷" if row.selected else ("판정 불가" if unscored else "정상")
-        eyes = "얼굴 없음" if row.face is None else f"{row.face:.2f}"
+        eyes = "해당 없음" if row.face is None else f"{row.face:.2f}"
         region = format_sharpness_region(row.sharpness_region)
         sharpness = f"{row.sharpness:.1f}" + (f" ({region})" if region else "")
         self._info_label.setText(
