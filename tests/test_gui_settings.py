@@ -1,6 +1,13 @@
 from PySide6.QtCore import QSettings
 
-from gui_settings import load_folder, load_folder_list, save_folder, save_folder_list
+from gui_settings import (
+    load_float,
+    load_folder,
+    load_folder_list,
+    save_float,
+    save_folder,
+    save_folder_list,
+)
 
 
 def _settings(tmp_path) -> QSettings:
@@ -88,3 +95,24 @@ def test_load_folder_returns_none_when_unset(tmp_path):
     settings = _settings(tmp_path)
 
     assert load_folder(settings, "test/unset") is None
+
+
+def test_save_and_load_float_round_trip_through_ini_file(tmp_path):
+    save_float(_settings(tmp_path), "test/gap", 4.5)
+
+    # 새로 연 QSettings(ini)는 값을 문자열로 돌려준다 — 숫자로 바꿔 읽어야 한다
+    assert load_float(_settings(tmp_path), "test/gap", 3.0, 0.5, 60.0) == 4.5
+
+
+def test_load_float_uses_default_when_unset(tmp_path):
+    assert load_float(_settings(tmp_path), "test/gap", 3.0, 0.5, 60.0) == 3.0
+
+
+def test_load_float_uses_default_for_broken_or_out_of_range_value(tmp_path):
+    settings = _settings(tmp_path)
+
+    settings.setValue("test/gap", "abc")
+    assert load_float(settings, "test/gap", 3.0, 0.5, 60.0) == 3.0
+
+    settings.setValue("test/gap", 999)
+    assert load_float(settings, "test/gap", 3.0, 0.5, 60.0) == 3.0
