@@ -160,6 +160,7 @@ def apply_selection(
                             "destination": str(dest),
                             "raw_source": str(raw_source) if raw_source else None,
                             "raw_destination": str(raw_dest) if raw_dest else None,
+                            "reason": row.reason,
                         },
                         ensure_ascii=False,
                     )

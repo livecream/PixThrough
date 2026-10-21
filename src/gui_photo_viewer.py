@@ -1,15 +1,18 @@
-"""C컷 미리보기에서 사진을 크게 보는 창.
+"""미리보기 표의 사진을 크게 보는 창 (C컷 정리·베스트컷 선별 탭 공용).
 
-흔들림은 64px 썸네일로는 거의 구분되지 않아, 기준 사진을 고르기 전에 원본을
-크게(필요하면 100% 크기로) 확인할 수 있게 한다. ←/→로 표의 현재 정렬 순서대로
-넘겨볼 수 있어, 선명도순으로 정렬해두고 넘기다가 "이 정도까지는 괜찮다" 싶은
-사진에서 바로 기준을 지정할 수 있다.
+흔들림은 64px 썸네일로는 거의 구분되지 않아, 판단하기 전에 원본을 크게(필요하면
+100% 크기로) 확인할 수 있게 한다. ←/→로 넘겨볼 사진 목록과 아래쪽 버튼(무엇을 할지)은
+여는 탭이 정한다 — C컷 탭은 "이 사진을 기준으로", 베스트컷 탭은 같은 장면 컷끼리
+넘기며 "이 컷 선택/빼기"를 넘긴다.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Callable
+
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,14 +29,30 @@ from report import ReportRow
 from thumbnails import load_preview_image
 
 
-class PhotoViewerDialog(QDialog):
-    sharpness_reference_chosen = Signal(object)  # ReportRow
-    eyes_reference_chosen = Signal(object)  # ReportRow
+@dataclass(frozen=True)
+class ViewerAction:
+    """크게 보기 창 아래쪽 버튼 하나. 글자·활성 여부는 지금 보는 사진에 따라 바뀔 수 있다."""
 
-    def __init__(self, rows: list[ReportRow], index: int, parent=None) -> None:
+    label: Callable[[ReportRow], str]
+    tooltip: str
+    enabled: Callable[[ReportRow], bool]
+    triggered: Callable[[ReportRow], None]
+
+
+class PhotoViewerDialog(QDialog):
+    def __init__(
+        self,
+        rows: list[ReportRow],
+        index: int,
+        actions: list[ViewerAction],
+        verdict: Callable[[ReportRow], str],
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._rows = rows
         self._index = index
+        self._actions = actions
+        self._verdict = verdict
         self._pixmap: QPixmap | None = None
         self.resize(1100, 800)
 
@@ -59,22 +78,14 @@ class PhotoViewerDialog(QDialog):
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=lambda: self._step(-1))
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=lambda: self._step(1))
 
-        self._sharpness_ref_button = QPushButton("이 사진을 선명도 기준으로")
-        self._sharpness_ref_button.setToolTip(
-            "<p>이 사진의 선명도까지는 정상으로 보고, 이보다 선명도가 낮은 사진을 "
-            "C컷(블러)으로 판정합니다.</p>"
-        )
-        self._sharpness_ref_button.clicked.connect(
-            lambda: self.sharpness_reference_chosen.emit(self._rows[self._index])
-        )
-        self._eyes_ref_button = QPushButton("이 사진을 눈뜸 기준으로")
-        self._eyes_ref_button.setToolTip(
-            "<p>이 사진의 눈 뜬 정도까지는 정상으로 보고, 이보다 눈이 더 감긴 사진을 "
-            "C컷(눈감음)으로 판정합니다. 얼굴이 검출된 사진에서만 쓸 수 있습니다.</p>"
-        )
-        self._eyes_ref_button.clicked.connect(
-            lambda: self.eyes_reference_chosen.emit(self._rows[self._index])
-        )
+        self._action_buttons: list[QPushButton] = []
+        for action in actions:
+            button = QPushButton()
+            button.setToolTip(action.tooltip)
+            button.clicked.connect(
+                lambda _checked=False, action=action: action.triggered(self._rows[self._index])
+            )
+            self._action_buttons.append(button)
         close_button = QPushButton("닫기")
         close_button.clicked.connect(self.accept)
 
@@ -85,8 +96,8 @@ class PhotoViewerDialog(QDialog):
         nav_row.addStretch()
 
         action_row = QHBoxLayout()
-        action_row.addWidget(self._sharpness_ref_button)
-        action_row.addWidget(self._eyes_ref_button)
+        for button in self._action_buttons:
+            action_row.addWidget(button)
         action_row.addStretch()
         action_row.addWidget(close_button)
 
@@ -100,7 +111,7 @@ class PhotoViewerDialog(QDialog):
         self._load_current()
 
     def update_rows(self, rows: list[ReportRow]) -> None:
-        """기준을 바꿔 재판정된 결과(판정/사유)를 창에 다시 반영한다. 순서는 같다."""
+        """다시 판정/선택된 결과(판정·사유)를 창에 다시 반영한다. 순서는 같다."""
         self._rows = rows
         self._update_info()
 
@@ -120,17 +131,16 @@ class PhotoViewerDialog(QDialog):
 
     def _update_info(self) -> None:
         row = self._rows[self._index]
-        unscored = row.reason.startswith("판정 불가")
-        verdict = "C컷" if row.selected else ("판정 불가" if unscored else "정상")
         eyes = "얼굴 없음" if row.face is None else f"{row.face:.2f}"
         region = format_sharpness_region(row.sharpness_region)
         sharpness = f"{row.sharpness:.1f}" + (f" ({region})" if region else "")
         self._info_label.setText(
-            f"{row.path.name}  |  판정: {verdict}  |  선명도 {sharpness}  |  "
+            f"{row.path.name}  |  {self._verdict(row)}  |  선명도 {sharpness}  |  "
             f"눈뜸 {eyes}  |  {row.reason}"
         )
-        self._sharpness_ref_button.setEnabled(not unscored)
-        self._eyes_ref_button.setEnabled(not unscored and row.face is not None)
+        for action, button in zip(self._actions, self._action_buttons):
+            button.setText(action.label(row))
+            button.setEnabled(action.enabled(row))
 
     def _render(self) -> None:
         if self._pixmap is None:
