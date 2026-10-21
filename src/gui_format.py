@@ -47,12 +47,16 @@ def format_preview_summary(rows: list[ReportRow]) -> str:
     return "\n".join(lines)
 
 
-def format_preview_header(rows: list[ReportRow]) -> str:
-    """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다."""
+def format_preview_header(rows: list[ReportRow], gap_seconds: float | None = None) -> str:
+    """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다.
+    gap_seconds를 주면 어떤 간격으로 묶은 결과인지 함께 적는다."""
     scene_ids = {row.scene_id for row in rows}
     total = len(rows)
     selected = sum(1 for r in rows if r.selected)
-    return f"{len(scene_ids)}개 장면, {total}장 중 {selected}장 선택"
+    scenes = f"{len(scene_ids)}개 장면"
+    if gap_seconds is not None:
+        scenes += f"(간격 {gap_seconds:g}초)"
+    return f"{scenes}, {total}장 중 {selected}장 선택"
 
 
 def sharpness_measure_help() -> str:

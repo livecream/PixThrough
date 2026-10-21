@@ -239,3 +239,10 @@ def test_bestcut_scoring_help_shows_weights_as_percent():
     assert "선명도 50%" in text
     assert "노출 30%" in text
     assert "눈뜸 20%" in text
+
+
+def test_format_preview_header_mentions_scene_gap_when_given():
+    rows = [_row("a.jpg", 1, True, "선택됨"), _row("b.jpg", 2, True, "선택됨")]
+
+    assert format_preview_header(rows, 4.5) == "2개 장면(간격 4.5초), 2장 중 2장 선택"
+    assert format_preview_header(rows) == "2개 장면, 2장 중 2장 선택"
