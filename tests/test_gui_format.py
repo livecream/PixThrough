@@ -10,6 +10,7 @@ from gui_format import (
     format_badcut_preview,
     format_duplicate_report,
     format_folder_summary,
+    format_manual_choice_summary,
     format_preview_header,
     format_preview_summary,
     format_rename_apply_summary,
@@ -246,3 +247,17 @@ def test_format_preview_header_mentions_scene_gap_when_given():
 
     assert format_preview_header(rows, 4.5) == "2개 장면(간격 4.5초), 2장 중 2장 선택"
     assert format_preview_header(rows) == "2개 장면, 2장 중 2장 선택"
+
+
+def test_format_manual_choice_summary_counts_added_and_removed():
+    from dataclasses import replace
+
+    rows = [
+        replace(_row("a.jpg", 1, True, "선택됨: 직접 추가"), manual_choice="added"),
+        replace(_row("b.jpg", 1, False, "제외: 직접 뺌"), manual_choice="removed"),
+        replace(_row("c.jpg", 2, True, "선택됨: 직접 추가"), manual_choice="added"),
+        _row("d.jpg", 2, False, "제외: 종합 점수가 더 낮음"),
+    ]
+
+    assert format_manual_choice_summary(rows) == "직접 추가 2장 · 직접 뺌 1장"
+    assert format_manual_choice_summary(rows[3:]) == ""

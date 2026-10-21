@@ -6,6 +6,10 @@
 
 장면을 어떻게 묶고 어떤 점수로 고르는지가 화면에 드러나지 않으면 결과를 믿고
 쓰기 어려워, 설명 툴팁(ⓘ)과 사진별 점수 칸을 함께 보여준다.
+
+자동 선정(장면당 1장)이 마음에 들지 않으면 사용자가 컷을 직접 더 넣거나 뺄 수 있다.
+직접 고른 것은 경로별로 따로 들고 있다가 자동 결과에 덮어쓰므로(report.
+apply_manual_choices), 장면 간격을 바꿔 다시 묶어도 유지된다.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
@@ -39,6 +44,7 @@ from gui_format import (
     bestcut_grouping_help,
     bestcut_scoring_help,
     format_apply_summary,
+    format_manual_choice_summary,
     format_preview_header,
     format_sharpness_region,
     sharpness_measure_help,
@@ -52,7 +58,8 @@ from gui_settings import (
     save_folder,
     save_folder_list,
 )
-from report import ReportRow, build_report
+from gui_photo_viewer import PhotoViewerDialog, ViewerAction
+from report import ReportRow, apply_manual_choices, build_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail
 
@@ -82,6 +89,14 @@ SCENE_GAP_SETTINGS_KEY = "bestcut/scene_gap_seconds"
 # 스핀박스 화살표를 누르고 있으면 값이 연달아 바뀌므로, 마지막 변경 후 이만큼 조용하면
 # 그때 한 번만 다시 묶는다.
 REGROUP_DELAY_MS = 300
+
+
+def _describe_choice(row: ReportRow) -> str:
+    """크게 보기 창 위쪽에 보여줄 이 컷의 상태."""
+    state = "선택" if row.selected else "제외"
+    if row.manual_choice is not None:
+        state += "(직접)"
+    return f"장면 {row.scene_id} · {state} · 종합점수 {row.total:.2f}"
 
 
 def _percent(done: int, total: int) -> int:
@@ -181,6 +196,12 @@ class BestCutTab(QWidget):
         self._input_dirs: list[Path] = []
         self._output_dir: Path | None = None
         self._rows: list[ReportRow] | None = None
+        # 자동 선정 결과(직접 고른 것 반영 전)와, 사용자가 직접 고른 것(경로 → 선택 여부).
+        # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
+        self._auto_rows: list[ReportRow] | None = None
+        self._choices: dict[Path, bool] = {}
+        self._viewer: PhotoViewerDialog | None = None
+        self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
         self._rows_gap_seconds: float | None = None
@@ -278,6 +299,31 @@ class BestCutTab(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setIconSize(QSize(64, 64))
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.itemSelectionChanged.connect(self._update_choice_buttons)
+        self._table.cellDoubleClicked.connect(self._open_viewer)
+
+        self._view_button = QPushButton("크게 보기")
+        self._view_button.setToolTip(
+            "<p>선택한 사진을 크게 엽니다. 같은 장면의 컷끼리 ←/→로 넘겨보며 고를 수 "
+            "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
+        )
+        self._view_button.clicked.connect(self._open_viewer_for_selected)
+        self._toggle_button = QPushButton("선택에 넣기")
+        self._toggle_button.setToolTip(
+            "<p>표에서 고른 사진을 선택에 넣거나 뺍니다. 장면마다 자동으로 1장을 고르지만, "
+            "원하는 컷을 더 넣거나 자동으로 고른 컷을 뺄 수 있습니다.</p>"
+        )
+        self._toggle_button.clicked.connect(self._toggle_selected_row)
+        self._reset_choices_button = QPushButton("자동 선택으로 되돌리기")
+        self._reset_choices_button.setToolTip("<p>직접 넣거나 뺀 것을 모두 취소합니다.</p>")
+        self._reset_choices_button.clicked.connect(self._reset_choices)
+        choice_button_row = QHBoxLayout()
+        choice_button_row.addWidget(self._view_button)
+        choice_button_row.addWidget(self._toggle_button)
+        choice_button_row.addWidget(self._reset_choices_button)
+        choice_button_row.addStretch()
 
         radio_row = QHBoxLayout()
         radio_row.addWidget(self._copy_radio)
@@ -304,6 +350,10 @@ class BestCutTab(QWidget):
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._status_label)
         layout.addWidget(self._summary_text)
+        layout.addWidget(
+            QLabel("사진을 더블클릭하면 크게 볼 수 있고, 같은 장면 컷끼리 비교하며 고를 수 있습니다.")
+        )
+        layout.addLayout(choice_button_row)
         layout.addWidget(self._table)
 
         for folder in load_folder_list(self._settings, "bestcut/input_dirs"):
@@ -315,6 +365,7 @@ class BestCutTab(QWidget):
             self._output_label.setText(f"출력 폴더: {restored_output}")
 
         self._update_grouping_help()
+        self._update_choice_buttons()
         self.setLayout(layout)
 
     @property
@@ -369,10 +420,13 @@ class BestCutTab(QWidget):
 
     def _invalidate_preview(self) -> None:
         self._rows = None
+        self._auto_rows = None
         self._photos = None
+        self._close_viewer()
         self._apply_button.setEnabled(False)
         self._open_output_button.setEnabled(False)
         self._table.setRowCount(0)
+        self._update_choice_buttons()
 
     def _run_preview(self) -> None:
         if self._busy:
@@ -417,11 +471,107 @@ class BestCutTab(QWidget):
             self._regroup_timer.start()
 
     def _show_rows(self, rows: list[ReportRow], gap_seconds: float) -> None:
-        self._rows = rows
+        """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
+        self._auto_rows = rows
         self._rows_gap_seconds = gap_seconds
-        self._apply_button.setEnabled(bool(rows) and self._output_dir is not None)
-        self._summary_text.setPlainText(format_preview_header(rows, gap_seconds))
+        # 장면 번호가 바뀌었을 수 있어, 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
+        self._close_viewer()
+        self._refresh_selection()
+
+    def _refresh_selection(self) -> None:
+        """자동 결과에 직접 고른 것을 덮어써 화면·적용 대상을 갱신한다."""
+        selected_row = self._selected_table_row()
+        rows = apply_manual_choices(self._auto_rows or [], self._choices)
+        self._rows = rows
+        self._apply_button.setEnabled(any(r.selected for r in rows) and self._output_dir is not None)
+        summary = format_preview_header(rows, self._rows_gap_seconds)
+        manual = format_manual_choice_summary(rows)
+        self._summary_text.setPlainText(summary + (f"\n{manual}" if manual else ""))
         self._populate_table(rows)
+        if selected_row is not None and selected_row < len(rows):
+            self._table.selectRow(selected_row)
+        self._update_choice_buttons()
+        if self._viewer is not None:
+            self._viewer.update_rows(self._rows_for_paths(self._viewer_paths))
+
+    def _selected_table_row(self) -> int | None:
+        selected = self._table.selectionModel().selectedRows()
+        return selected[0].row() if selected else None
+
+    def _update_choice_buttons(self) -> None:
+        index = self._selected_table_row()
+        row = self._rows[index] if self._rows and index is not None else None
+        self._view_button.setEnabled(row is not None)
+        self._toggle_button.setEnabled(row is not None)
+        self._toggle_button.setText("선택에서 빼기" if row is not None and row.selected else "선택에 넣기")
+        self._reset_choices_button.setEnabled(
+            any(r.manual_choice is not None for r in self._rows or [])
+        )
+
+    def _toggle(self, row: ReportRow) -> None:
+        """이 컷의 선택 여부를 뒤집는다. 뒤집은 결과가 자동 선정과 같으면 직접 고른
+        기록을 지워(자동 그대로), 다시 묶을 때 쓸데없는 기록이 남지 않게 한다."""
+        auto_selected = next(r.selected for r in self._auto_rows if r.path == row.path)
+        wanted = not row.selected
+        if wanted == auto_selected:
+            self._choices.pop(row.path, None)
+        else:
+            self._choices[row.path] = wanted
+        self._refresh_selection()
+
+    def _toggle_selected_row(self) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._toggle(self._rows[index])
+
+    def _reset_choices(self) -> None:
+        self._choices.clear()
+        self._refresh_selection()
+
+    def _rows_for_paths(self, paths: list[Path]) -> list[ReportRow]:
+        by_path = {r.path: r for r in self._rows or []}
+        return [by_path[p] for p in paths if p in by_path]
+
+    def _open_viewer_for_selected(self) -> None:
+        index = self._selected_table_row()
+        if index is not None:
+            self._open_viewer(index)
+
+    def _open_viewer(self, table_row: int, _column: int = 0) -> None:
+        """클릭한 사진이 속한 장면의 컷만 모아 크게 보기 창을 연다(←/→로 장면 안에서 비교)."""
+        if not self._rows:
+            return
+        clicked = self._rows[table_row]
+        scene_rows = [r for r in self._rows if r.scene_id == clicked.scene_id]
+        self._viewer_paths = [r.path for r in scene_rows]
+        self._close_viewer()
+        self._viewer = PhotoViewerDialog(
+            scene_rows,
+            scene_rows.index(clicked),
+            actions=[
+                ViewerAction(
+                    label=lambda row: "이 컷 선택에서 빼기" if row.selected else "이 컷 선택에 넣기",
+                    tooltip=(
+                        "<p>이 컷을 선택에 넣거나 뺍니다. 한 장면에서 여러 컷을 넣어도 되고, "
+                        "자동으로 고른 컷을 빼도 됩니다.</p>"
+                    ),
+                    enabled=lambda row: True,
+                    triggered=self._toggle,
+                )
+            ],
+            verdict=_describe_choice,
+            parent=self,
+        )
+        self._viewer.finished.connect(self._on_viewer_closed)
+        self._viewer.show()
+
+    def _close_viewer(self) -> None:
+        if self._viewer is not None:
+            self._viewer.close()
+            self._viewer = None
+
+    def _on_viewer_closed(self) -> None:
+        self._viewer = None
 
     def _on_gap_changed(self, value: float) -> None:
         save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
@@ -474,7 +624,10 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 0, thumb_item)
             self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
             self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
-            self._table.setItem(i, 3, QTableWidgetItem("선택" if row.selected else "제외"))
+            choice = "선택" if row.selected else "제외"
+            if row.manual_choice is not None:
+                choice += " (직접)"
+            self._table.setItem(i, 3, QTableWidgetItem(choice))
             self._table.setItem(i, 4, QTableWidgetItem(f"{row.total:.2f}"))
             sharpness_item = QTableWidgetItem(f"{row.sharpness:.1f}")
             sharpness_item.setToolTip(format_sharpness_region(row.sharpness_region))
@@ -508,10 +661,13 @@ class BestCutTab(QWidget):
 
         move = self._move_radio.isChecked()
         verb = "이동" if move else "복사"
+        selected_count = sum(1 for r in self._rows if r.selected)
+        manual = format_manual_choice_summary(self._rows)
         confirm = QMessageBox.question(
             self,
             "적용 확인",
-            f"선택된 사진을 {self._output_dir}(으)로 {verb}하시겠습니까?",
+            f"선택된 사진 {selected_count}장" + (f"({manual})" if manual else "")
+            + f"을 {self._output_dir}(으)로 {verb}하시겠습니까?",
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return

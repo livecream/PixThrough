@@ -4,7 +4,16 @@ import json
 
 from PIL import Image
 
-from report import build_report, write_report
+from pathlib import Path
+
+from report import (
+    MANUAL_ADDED,
+    MANUAL_REMOVED,
+    ReportRow,
+    apply_manual_choices,
+    build_report,
+    write_report,
+)
 from scanner import PhotoMetadata
 
 
@@ -117,3 +126,49 @@ def test_build_report_reports_progress_across_all_scenes(tmp_path):
     build_report(groups, on_progress=lambda done, total: calls.append((done, total)))
 
     assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def _report_row(name, selected, reason="선택됨: 장면 내 최고 종합점수"):
+    return ReportRow(
+        path=Path(name), scene_id=1, sharpness=1.0, exposure=1.0, face=None,
+        total=1.0, selected=selected, reason=reason if selected else "제외: 종합 점수가 더 낮음",
+    )
+
+
+def test_apply_manual_choices_adds_extra_cut_and_removes_auto_cut():
+    rows = [_report_row("a.jpg", True), _report_row("b.jpg", False), _report_row("c.jpg", False)]
+
+    result = apply_manual_choices(rows, {Path("a.jpg"): False, Path("b.jpg"): True})
+
+    assert [r.selected for r in result] == [False, True, False]
+    assert result[0].manual_choice == MANUAL_REMOVED
+    assert result[0].reason.startswith("제외: 직접")
+    assert result[1].manual_choice == MANUAL_ADDED
+    assert result[1].reason.startswith("선택됨: 직접 추가")
+    assert result[2] == rows[2]
+
+
+def test_apply_manual_choices_ignores_choices_matching_auto_result():
+    """장면 간격을 바꿔 직접 추가한 컷이 자동으로도 뽑히면, 그냥 자동 선택으로 남는다."""
+    rows = [_report_row("a.jpg", True), _report_row("b.jpg", False)]
+
+    result = apply_manual_choices(rows, {Path("a.jpg"): True, Path("b.jpg"): False})
+
+    assert result == rows
+
+
+def test_apply_manual_choices_ignores_paths_not_in_rows():
+    rows = [_report_row("a.jpg", True)]
+
+    assert apply_manual_choices(rows, {Path("gone.jpg"): True}) == rows
+
+
+def test_write_report_includes_manual_choice_column(tmp_path):
+    rows = apply_manual_choices([_report_row("a.jpg", False)], {Path("a.jpg"): True})
+    out = tmp_path / "report.csv"
+
+    write_report(rows, out)
+
+    with open(out, encoding="utf-8") as f:
+        record = next(csv.DictReader(f))
+    assert record["manual_choice"] == MANUAL_ADDED
