@@ -201,3 +201,18 @@ def test_build_report_selects_nothing_in_scene_of_broken_photos(tmp_path):
 
     assert rows[0].selected is False
     assert rows[0].reason.startswith("제외: 점수 계산 실패")
+
+
+def test_write_apply_report_saves_every_row_with_reasons(tmp_path):
+    from report import write_apply_report
+
+    rows = build_report(_two_photo_scene(tmp_path))
+    out = tmp_path / "out"
+
+    path = write_apply_report(rows, out, "bestcut")
+
+    assert path.parent == out and path.name.startswith("bestcut_report_") and path.suffix == ".csv"
+    with open(path, encoding="utf-8") as f:
+        records = list(csv.DictReader(f))
+    assert len(records) == 2  # 선택된 사진만이 아니라 제외된 사진도
+    assert {r["reason"].split(":")[0] for r in records} == {"선택됨", "제외"}
