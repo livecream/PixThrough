@@ -23,6 +23,13 @@ from scoring import score_photos
 from selector import select_best
 
 
+def _percent_arg(value: str) -> int:
+    percent = int(value)
+    if not 0 <= percent <= 100:
+        raise argparse.ArgumentTypeError("0~100 사이의 정수여야 합니다")
+    return percent
+
+
 def cmd_scan(args: argparse.Namespace) -> None:
     results = scan_and_extract(Path(args.input), recursive=args.recursive)
     print(f"총 {len(results)}개 파일 발견 (입력: {args.input}, 하위폴더 포함: {args.recursive})\n")
@@ -76,9 +83,10 @@ def cmd_select(args: argparse.Namespace) -> None:
     )
     print(f"총 {len(groups)}개 장면 그룹에서 베스트 컷 선정\n")
     for i, group in enumerate(groups, start=1):
-        selection = select_best(group)
-        others = ", ".join(m.path.name for m in group if m.path != selection.best.path)
-        print(f"[장면 {i}] 선택: {selection.best.path.name}" + (f"  (제외: {others})" if others else ""))
+        selection = select_best(group, keep_percent=args.keep_percent)
+        kept = [group[k].path.name for k in selection.kept_indices]
+        others = ", ".join(m.path.name for k, m in enumerate(group) if k not in selection.kept_indices)
+        print(f"[장면 {i}] 선택: {', '.join(kept)}" + (f"  (제외: {others})" if others else ""))
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -88,7 +96,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         gap_seconds=args.scene_gap_seconds,
         max_hash_distance=args.split_hash_distance,
     )
-    rows = build_report(groups)
+    rows = build_report(groups, keep_percent=args.keep_percent)
     write_report(rows, Path(args.output))
     selected = sum(1 for r in rows if r.selected)
     print(
@@ -104,7 +112,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         gap_seconds=args.scene_gap_seconds,
         max_hash_distance=args.split_hash_distance,
     )
-    rows = build_report(groups)
+    rows = build_report(groups, keep_percent=args.keep_percent)
     write_report(rows, Path(args.report))
 
     if not args.apply:
@@ -215,6 +223,14 @@ def main() -> None:
         help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
         "나눔. 생략하면 시간 간격으로만 묶음",
     )
+    p_select.add_argument(
+        "--keep-percent",
+        type=_percent_arg,
+        default=0,
+        dest="keep_percent",
+        help="장면마다 남길 비율(0~100%%). 장면 사진 수 × 비율을 올림, 최소 1장. "
+        "기본 0 = 장면마다 1장",
+    )
     p_select.set_defaults(func=cmd_select)
 
     p_report = sub.add_parser("report", help="선택/제외 사유가 담긴 dry-run 리포트 생성 (M5)")
@@ -233,6 +249,14 @@ def main() -> None:
         dest="split_hash_distance",
         help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
         "나눔. 생략하면 시간 간격으로만 묶음",
+    )
+    p_report.add_argument(
+        "--keep-percent",
+        type=_percent_arg,
+        default=0,
+        dest="keep_percent",
+        help="장면마다 남길 비율(0~100%%). 장면 사진 수 × 비율을 올림, 최소 1장. "
+        "기본 0 = 장면마다 1장",
     )
     p_report.add_argument(
         "--output", required=True, help="리포트 저장 경로 (.csv 또는 .json)"
@@ -257,6 +281,14 @@ def main() -> None:
         dest="split_hash_distance",
         help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
         "나눔. 생략하면 시간 간격으로만 묶음",
+    )
+    p_apply.add_argument(
+        "--keep-percent",
+        type=_percent_arg,
+        default=0,
+        dest="keep_percent",
+        help="장면마다 남길 비율(0~100%%). 장면 사진 수 × 비율을 올림, 최소 1장. "
+        "기본 0 = 장면마다 1장",
     )
     p_apply.add_argument("--output", required=True, help="베스트 컷을 저장할 폴더")
     p_apply.add_argument(

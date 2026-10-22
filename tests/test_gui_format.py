@@ -274,3 +274,16 @@ def test_bestcut_grouping_help_describes_split_setting():
 
     assert "꺼져 있습니다" in bestcut_grouping_help(3)
     assert "<b>20</b>를 넘으면" in bestcut_grouping_help(3, 20)
+
+
+def test_format_preview_header_mentions_keep_percent():
+    rows = [_row("a.jpg", 1, True, "선택됨"), _row("b.jpg", 1, True, "선택됨")]
+
+    assert format_preview_header(rows, 3, None, 20) == (
+        "1개 장면(간격 3초), 2장 중 2장 선택 (장면마다 20% 올림, 최소 1장)"
+    )
+
+
+def test_bestcut_scoring_help_describes_keep_percent():
+    assert "가장 높은 1장" in bestcut_scoring_help()
+    assert "<b>20%</b>(올림, 최소 1장)" in bestcut_scoring_help(keep_percent=20)
