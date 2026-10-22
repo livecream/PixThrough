@@ -14,6 +14,10 @@ Python max()가 동점 시 먼저 나온 항목을 유지하는 성질을 그대
 장면당 몇 장을 남길지(PROJECT_SPEC.md 4.4절 "상위 N장 옵션", 사용자와 결정): 장면 사진
 수에 비례해 keep_percent%를 올림한 수만큼, 최소 1장, 최대 장면 전체. 기본 0%는 장면마다
 1장(예전 동작 그대로)이다.
+
+점수를 계산하지 못한 사진(손상 파일 등)은 고를 근거가 없으므로 순위에도, 선명도 정규화
+에도 넣지 않는다. 장면 사진이 전부 그렇다면 그 장면에서는 아무것도 고르지 않는다
+(사용자가 필요하면 미리보기에서 직접 넣을 수 있다).
 """
 
 from __future__ import annotations
@@ -32,8 +36,9 @@ class SceneSelection:
     scene: list[PhotoMetadata]
     scores: list[PhotoScore]
     combined_scores: list[float]
-    best: PhotoMetadata
-    best_index: int
+    # 점수를 낸 사진이 하나도 없는 장면이면 None
+    best: PhotoMetadata | None
+    best_index: int | None
     # 남길 컷의 장면 내 위치, 종합점수 높은 순(동점이면 먼저 찍은 순). [0]은 best_index.
     kept_indices: list[int]
 
@@ -73,21 +78,23 @@ def select_best(
         raise ValueError("빈 장면 그룹은 베스트 컷을 선정할 수 없습니다.")
 
     scores = score_photos(scene, on_progress=on_progress, cache=cache)
-    norm_sharpness = _normalize([s.sharpness for s in scores])
-    combined_scores = [
-        _combined_score(ns, s.exposure, s.face)
-        for ns, s in zip(norm_sharpness, scores)
-    ]
+    valid = [i for i, s in enumerate(scores) if s.error is None]
+    combined_scores = [0.0] * len(scene)
+    if valid:
+        norm_sharpness = _normalize([scores[i].sharpness for i in valid])
+        for i, ns in zip(valid, norm_sharpness):
+            combined_scores[i] = _combined_score(ns, scores[i].exposure, scores[i].face)
 
     # sorted는 안정 정렬이라 동점이면 원래 순서(촬영 시각순)가 유지된다.
-    ranked = sorted(range(len(combined_scores)), key=lambda i: -combined_scores[i])
-    kept_indices = ranked[: keep_count(len(scene), keep_percent)]
-    best_index = kept_indices[0]
+    ranked = sorted(valid, key=lambda i: -combined_scores[i])
+    # 남길 수는 장면 전체 크기 기준이지만, 점수를 낸 사진 수보다 많을 수는 없다.
+    kept_indices = ranked[: keep_count(len(scene), keep_percent)] if ranked else []
+    best_index = kept_indices[0] if kept_indices else None
     return SceneSelection(
         scene=scene,
         scores=scores,
         combined_scores=combined_scores,
-        best=scene[best_index],
+        best=scene[best_index] if best_index is not None else None,
         best_index=best_index,
         kept_indices=kept_indices,
     )
