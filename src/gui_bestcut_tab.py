@@ -76,7 +76,7 @@ from gui_settings import (
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
 import score_store
 from image_hash import HASH_BITS, hashes_for
-from report import ReportRow, apply_manual_choices, build_report
+from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail
 
@@ -239,7 +239,7 @@ class PreviewWorker(QThread):
 
 class ApplyWorker(QThread):
     progress = Signal(int, int)
-    finished_ok = Signal(list)  # list[FileOpResult]
+    finished_ok = Signal(list, object)  # list[FileOpResult], 판정 리포트 경로
     failed = Signal(str)
 
     def __init__(self, rows: list[ReportRow], output_dir: Path, move: bool) -> None:
@@ -256,7 +256,10 @@ class ApplyWorker(QThread):
                 move=self._move,
                 on_progress=self.progress.emit,
             )
-            self.finished_ok.emit(results)
+            # 파일 작업이 끝난 뒤에 쓴다 — 출력 폴더가 원본 폴더와 겹쳐 apply_selection이
+            # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.
+            report_path = write_apply_report(self._rows, self._output_dir, "bestcut")
+            self.finished_ok.emit(results, report_path)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -862,7 +865,7 @@ class BestCutTab(QWidget):
         self._apply_worker.failed.connect(self._on_error)
         self._apply_worker.start()
 
-    def _on_apply_done(self, results: list[FileOpResult]) -> None:
+    def _on_apply_done(self, results: list[FileOpResult], report_path: Path) -> None:
         self._busy = False
         if self._move_radio.isChecked():
             # 옮긴 파일은 더 이상 입력 폴더에 없어, 간격을 바꿔 다시 묶을 수 없다.
@@ -873,7 +876,7 @@ class BestCutTab(QWidget):
         self._apply_button.setEnabled(True)
         self._open_output_button.setEnabled(True)
         self._summary_text.setPlainText(
-            format_apply_summary(results, self._output_dir)
+            format_apply_summary(results, self._output_dir, report_path)
         )
 
     def _open_output_folder(self) -> None:

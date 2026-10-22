@@ -8,6 +8,7 @@ CSV 또는 JSON으로 먼저 보여준다. 이 모듈은 리포트 생성까지�
 from __future__ import annotations
 
 import csv
+import datetime
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -150,7 +151,9 @@ def write_report(rows: list[ReportRow], output_path: Path) -> None:
     suffix = output_path.suffix.lower()
 
     if suffix == ".csv":
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
+        # utf-8-sig(파일 앞에 BOM): Excel은 BOM이 없으면 UTF-8 CSV를 시스템 인코딩으로 읽어
+        # 한글 사유·파일명이 깨진다. Numbers·Google 시트·Python csv(utf-8-sig)도 그대로 읽는다.
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
             fieldnames = list(_row_to_dict(rows[0]).keys()) if rows else []
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -161,3 +164,15 @@ def write_report(rows: list[ReportRow], output_path: Path) -> None:
             json.dump([_row_to_dict(r) for r in rows], f, ensure_ascii=False, indent=2)
     else:
         raise ValueError(f"지원하지 않는 리포트 형식입니다: {suffix} (.csv 또는 .json만 지원)")
+
+
+def write_apply_report(rows: list[ReportRow], output_dir: Path, kind: str) -> Path:
+    """GUI에서 적용(복사/이동)한 뒤, 그때 화면에 있던 판정 전체(선택·제외된 사진 모두의
+    장면·점수·사유)를 출력 폴더에 CSV로 남긴다. CLI의 report와 같은 형식이라, 적용 로그
+    (apply_log_*.jsonl, 옮긴 파일만 기록)와 함께 보면 왜 이 사진들이 골라졌는지 나중에도
+    확인할 수 있다. kind는 파일 이름 앞부분("bestcut"/"badcut")."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{kind}_report_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
+    write_report(rows, path)
+    return path
