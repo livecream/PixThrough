@@ -12,14 +12,15 @@ THUMBNAIL_SIZE = (64, 64)
 
 
 def make_thumbnail(path: Path, size: tuple[int, int] = THUMBNAIL_SIZE) -> Image.Image | None:
-    """path의 이미지를 size 안에 들어가도록 비율 유지한 채 축소한다.
-    파일을 열 수 없으면(손상 등) None을 반환한다."""
+    """path의 이미지를 size 안에 들어가도록 비율 유지한 채 축소한다. 세로로 찍은
+    사진이 표에서 옆으로 눕지 않도록 크게 보기 창(load_preview_image)과 똑같이 EXIF
+    회전을 반영한다. 파일을 열 수 없으면(손상 등) None을 반환한다."""
     try:
         img = Image.open(path)
         img.load()
     except Exception:
         return None
-    img = img.convert("RGB")
+    img = ImageOps.exif_transpose(img).convert("RGB")
     img.thumbnail(size)
     return img
 
