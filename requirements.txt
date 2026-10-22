@@ -6,6 +6,9 @@ pytest
 opencv-python-headless
 numpy
 # mediapipe>=1.0 crashes on macOS (GPU service init bug in FaceLandmarker); pinned to last known-good.
-mediapipe==0.10.21
+# 0.10.21 has no wheels for Python 3.13+, so newer Pythons get the closest 0.10.x that does
+# (0.10.30 passes the test suite on Linux; not yet checked on macOS). Release builds use 3.12.
+mediapipe==0.10.21; python_version < "3.13"
+mediapipe>=0.10.30,<1.0; python_version >= "3.13"
 PySide6
 pyinstaller

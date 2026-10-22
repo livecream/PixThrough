@@ -86,7 +86,8 @@ def cmd_select(args: argparse.Namespace) -> None:
         selection = select_best(group, keep_percent=args.keep_percent)
         kept = [group[k].path.name for k in selection.kept_indices]
         others = ", ".join(m.path.name for k, m in enumerate(group) if k not in selection.kept_indices)
-        print(f"[장면 {i}] 선택: {', '.join(kept)}" + (f"  (제외: {others})" if others else ""))
+        chosen = ", ".join(kept) if kept else "없음 (점수를 계산한 사진이 없음)"
+        print(f"[장면 {i}] 선택: {chosen}" + (f"  (제외: {others})" if others else ""))
 
 
 def cmd_report(args: argparse.Namespace) -> None:

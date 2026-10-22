@@ -20,6 +20,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 HASH_BITS = 64
+# 지문 만드는 방식을 바꾸면 올린다 — 저장해 둔 예전 지문(score_store)을 버리게 한다.
+HASH_VERSION = 1
 _HASH_SIZE = 8  # 8×8 = 64비트
 _DCT_SIZE = 32
 # JPEG는 이 크기 근처까지 디코더가 바로 줄여서 읽게 한다(원본 전체 디코딩보다 훨씬 빠름).
