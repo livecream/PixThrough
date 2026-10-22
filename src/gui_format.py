@@ -47,15 +47,20 @@ def format_preview_summary(rows: list[ReportRow]) -> str:
     return "\n".join(lines)
 
 
-def format_preview_header(rows: list[ReportRow], gap_seconds: float | None = None) -> str:
+def format_preview_header(
+    rows: list[ReportRow],
+    gap_seconds: float | None = None,
+    split_distance: int | None = None,
+) -> str:
     """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다.
-    gap_seconds를 주면 어떤 간격으로 묶은 결과인지 함께 적는다."""
+    gap_seconds/split_distance를 주면 어떤 기준으로 묶은 결과인지 함께 적는다."""
     scene_ids = {row.scene_id for row in rows}
     total = len(rows)
     selected = sum(1 for r in rows if r.selected)
     scenes = f"{len(scene_ids)}개 장면"
     if gap_seconds is not None:
-        scenes += f"(간격 {gap_seconds:g}초)"
+        split = f", 차이 {split_distance} 넘으면 나눔" if split_distance is not None else ""
+        scenes += f"(간격 {gap_seconds:g}초{split})"
     return f"{scenes}, {total}장 중 {selected}장 선택"
 
 
@@ -82,9 +87,22 @@ def format_sharpness_region(region: str | None) -> str:
     return ""
 
 
-def bestcut_grouping_help(gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS) -> str:
-    """베스트컷 탭 "장면은 어떻게 묶나요?" 툴팁. 실제 그룹핑 간격 상수에서 숫자를
-    가져와, 코드 값이 바뀌어도 설명이 어긋나지 않게 한다."""
+def bestcut_grouping_help(
+    gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS, split_distance: int | None = None
+) -> str:
+    """베스트컷 탭 "장면은 어떻게 묶나요?" 툴팁. 지금 쓰는 간격·나누기 기준을 그대로
+    보여줘, 설정이 바뀌어도 설명이 어긋나지 않게 한다."""
+    if split_distance is None:
+        split = (
+            "<p>비슷하지 않은 사진 나누기는 꺼져 있습니다 — 시간 간격으로만 묶습니다.</p>"
+        )
+    else:
+        split = (
+            "<p><b>비슷하지 않은 사진 나누기</b>: 시간상 같은 장면이어도 바로 앞 사진과의 "
+            f"차이가 <b>{split_distance}</b>를 넘으면(카메라를 다른 피사체로 돌린 경우 등) "
+            "그 자리에서 새 장면으로 나눕니다. 비슷한 사진이라도 시간이 떨어져 있으면 합치지는 "
+            "않습니다.</p>"
+        )
     return (
         "<p><b>장면 묶기</b>: 사진을 촬영 시각(EXIF, 없으면 파일 수정 시각) 순으로 "
         "늘어놓고, 바로 앞 사진과 "
@@ -94,7 +112,7 @@ def bestcut_grouping_help(gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS) -> str
         "구도가 바뀌어도 간격이 짧으면 같은 장면이 되고, 같은 구도라도 잠깐 쉬었다 "
         "찍으면 다른 장면이 됩니다.</p>"
         "<p>여러 입력 폴더(바디)를 넣으면 촬영 시각으로 합쳐서 묶으므로, 카메라 "
-        "시계가 서로 맞아 있어야 정확합니다.</p>"
+        "시계가 서로 맞아 있어야 정확합니다.</p>" + split
     )
 
 

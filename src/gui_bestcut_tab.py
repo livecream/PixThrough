@@ -4,6 +4,11 @@
 "N은 설정 가능한 값"). 미리보기로 한 번 스캔·스코어링해두면, 간격을 바꿀 때마다
 사진을 다시 읽지 않고 캐시된 점수로 즉시 다시 묶는다.
 
+"비슷하지 않은 사진 나누기"(기본 꺼짐)를 켜면, 시간상 같은 장면이어도 바로 앞 사진과
+이미지 지문(pHash) 차이가 사용자가 정한 값을 넘는 곳에서 장면을 나눈다. 지문은 미리보기
+때 항상 계산해두므로, 켜고 끄거나 기준을 바꿔도 즉시 다시 묶인다. 기준을 고르는 데
+참고하도록 표에 "앞 사진과 차이" 칸을 보여준다.
+
 장면을 어떻게 묶고 어떤 점수로 고르는지가 화면에 드러나지 않으면 결과를 믿고
 쓰기 어려워, 설명 툴팁(ⓘ)과 사진별 점수 칸을 함께 보여준다.
 
@@ -21,6 +26,7 @@ from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
@@ -31,6 +37,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,7 +45,12 @@ from PySide6.QtWidgets import (
 )
 
 from file_ops import FileOpResult, apply_selection
-from grouping import DEFAULT_SCENE_GAP_SECONDS, group_by_time_gap
+from grouping import (
+    DEFAULT_SCENE_GAP_SECONDS,
+    distances_to_previous,
+    group_by_time_gap,
+    split_dissimilar,
+)
 from gui_dnd import extract_dropped_folders
 from gui_format import (
     bestcut_grouping_help,
@@ -50,15 +62,18 @@ from gui_format import (
     sharpness_measure_help,
 )
 from gui_settings import (
+    load_bool,
     load_float,
     load_folder,
     load_folder_list,
     make_settings,
+    save_bool,
     save_float,
     save_folder,
     save_folder_list,
 )
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
+from image_hash import HASH_BITS, hashes_for
 from report import ReportRow, apply_manual_choices, build_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail
@@ -86,6 +101,13 @@ _EYES_TOOLTIP = (
 SCENE_GAP_MIN_SECONDS = 0.5
 SCENE_GAP_MAX_SECONDS = 60.0
 SCENE_GAP_SETTINGS_KEY = "bestcut/scene_gap_seconds"
+SPLIT_ENABLED_SETTINGS_KEY = "bestcut/split_dissimilar"
+SPLIT_DISTANCE_SETTINGS_KEY = "bestcut/split_hash_distance"
+# 나누기 기준 입력칸을 처음 켤 때의 시작값. 기능 자체는 기본으로 꺼져 있어 이 값이
+# 몰래 적용되지는 않는다. 공개 샘플 측정(같은 사진 변형 0~12, 다른 사진 28~36)의 중간.
+SPLIT_DISTANCE_START = 20
+SPLIT_DISTANCE_MIN = 1
+SPLIT_DISTANCE_MAX = HASH_BITS - 1
 # 스핀박스 화살표를 누르고 있으면 값이 연달아 바뀌므로, 마지막 변경 후 이만큼 조용하면
 # 그때 한 번만 다시 묶는다.
 REGROUP_DELAY_MS = 300
@@ -99,6 +121,28 @@ def _describe_choice(row: ReportRow) -> str:
     return f"장면 {row.scene_id} · {state} · 종합점수 {row.total:.2f}"
 
 
+_DIFF_TOOLTIP = (
+    "<p><b>앞 사진과 차이(0~64)</b>: 촬영 시각순으로 바로 앞 사진과 얼마나 다르게 "
+    "생겼는지입니다. 사진을 아주 작게 줄여 만든 지문(pHash)을 비교한 값이라 색·밝기·"
+    "약간의 흔들림에는 둔하고, 구도·피사체가 바뀌면 커집니다.</p>"
+    "<p>공개 샘플로 재 보면 같은 사진을 조금 옮기거나 밝게 한 것은 0~12, 서로 다른 "
+    "사진은 28~36 정도였습니다. ✂ 표시는 나누기를 켰을 때 이 값이 기준을 넘어 장면이 "
+    "나뉘는 자리입니다.</p>"
+)
+
+
+def _make_groups(
+    photos: list[PhotoMetadata],
+    hashes: dict[Path, int | None],
+    gap_seconds: float,
+    split_distance: int | None,
+) -> list[list[PhotoMetadata]]:
+    groups = group_by_time_gap(photos, gap_seconds=gap_seconds)
+    if split_distance is None:
+        return groups
+    return split_dissimilar(groups, hashes, split_distance)
+
+
 def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
@@ -106,21 +150,26 @@ def _percent(done: int, total: int) -> int:
 class PreviewWorker(QThread):
     progress = Signal(int, int)
     status = Signal(str)
-    finished_ok = Signal(list, list, float)  # list[PhotoMetadata], list[ReportRow], 간격(초)
+    # list[PhotoMetadata], list[ReportRow], (간격 초, 나누기 기준 또는 None), {경로: 지문}
+    finished_ok = Signal(list, list, object, object)
     failed = Signal(str)
 
     def __init__(
         self,
         input_dirs: list[Path],
         gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS,
+        split_distance: int | None = None,
         recursive: bool = True,
         scan_cache: dict | None = None,
         score_cache: dict | None = None,
         thumbnail_cache: dict | None = None,
+        hash_cache: dict | None = None,
     ) -> None:
         super().__init__()
         self._input_dirs = input_dirs
         self._gap_seconds = gap_seconds
+        self._split_distance = split_distance
+        self._hash_cache = hash_cache
         self._recursive = recursive
         self._scan_cache = scan_cache
         self._score_cache = score_cache
@@ -138,7 +187,15 @@ class PreviewWorker(QThread):
                 on_progress=on_scan_progress,
                 cache=self._scan_cache,
             )
-            groups = group_by_time_gap(photos, gap_seconds=self._gap_seconds)
+            def on_hash_progress(done: int, total: int) -> None:
+                self.progress.emit(done, total)
+                self.status.emit(f"사진 유사도 계산 중... ({done}/{total}, {_percent(done, total)}%)")
+
+            # 나누기를 꺼둔 상태여도 계산해둔다 — 나중에 켜면 즉시 다시 묶을 수 있게.
+            hashes = hashes_for(
+                [p.path for p in photos], cache=self._hash_cache, on_progress=on_hash_progress
+            )
+            groups = _make_groups(photos, hashes, self._gap_seconds, self._split_distance)
 
             def on_group_progress(done: int, total: int) -> None:
                 self.progress.emit(done, total)
@@ -146,7 +203,7 @@ class PreviewWorker(QThread):
 
             rows = build_report(groups, on_progress=on_group_progress, cache=self._score_cache)
             self._generate_thumbnails(rows)
-            self.finished_ok.emit(photos, rows, self._gap_seconds)
+            self.finished_ok.emit(photos, rows, (self._gap_seconds, self._split_distance), hashes)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -204,7 +261,10 @@ class BestCutTab(QWidget):
         self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
-        self._rows_gap_seconds: float | None = None
+        # 지금 화면의 결과를 묶은 기준 (간격 초, 나누기 기준 또는 None)
+        self._rows_grouping: tuple[float, int | None] | None = None
+        self._hashes: dict[Path, int | None] = {}
+        self._distances: dict[Path, int | None] = {}
         self._preview_worker: PreviewWorker | None = None
         self._apply_worker: ApplyWorker | None = None
         self._busy = False
@@ -213,6 +273,7 @@ class BestCutTab(QWidget):
         self._scan_cache: dict = {}
         self._score_cache: dict = {}
         self._thumbnail_cache: dict = {}
+        self._hash_cache: dict = {}
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
@@ -259,6 +320,31 @@ class BestCutTab(QWidget):
         gap_label = QLabel("장면 간격 ⓘ:")
         self._gap_widgets = (gap_label, self._gap_spin)
 
+        self._split_checkbox = QCheckBox("비슷하지 않은 사진은 다른 장면으로 나누기")
+        self._split_checkbox.setChecked(load_bool(self._settings, SPLIT_ENABLED_SETTINGS_KEY, False))
+        self._split_spin = QSpinBox()
+        self._split_spin.setRange(SPLIT_DISTANCE_MIN, SPLIT_DISTANCE_MAX)
+        self._split_spin.setPrefix("앞 사진과 차이가 ")
+        self._split_spin.setSuffix(" 넘으면")
+        self._split_spin.setValue(
+            int(
+                load_float(
+                    self._settings,
+                    SPLIT_DISTANCE_SETTINGS_KEY,
+                    SPLIT_DISTANCE_START,
+                    SPLIT_DISTANCE_MIN,
+                    SPLIT_DISTANCE_MAX,
+                )
+            )
+        )
+        self._split_spin.setEnabled(self._split_checkbox.isChecked())
+        self._split_checkbox.toggled.connect(self._on_split_changed)
+        self._split_spin.valueChanged.connect(self._on_split_changed)
+        split_row = QHBoxLayout()
+        split_row.addWidget(self._split_checkbox)
+        split_row.addWidget(self._split_spin)
+        split_row.addStretch()
+
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
         scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
         scoring_help_label.setToolTip(bestcut_scoring_help())
@@ -283,17 +369,29 @@ class BestCutTab(QWidget):
         self._summary_text.setReadOnly(True)
         self._summary_text.setAcceptDrops(False)
 
-        self._table = QTableWidget(0, 9)
+        self._table = QTableWidget(0, 10)
         self._table.setHorizontalHeaderLabels(
-            ["썸네일", "파일명", "장면", "선택여부", "종합점수", "선명도", "노출", "눈뜸", "사유"]
+            [
+                "썸네일",
+                "파일명",
+                "장면",
+                "앞 사진과 차이",
+                "선택여부",
+                "종합점수",
+                "선명도",
+                "노출",
+                "눈뜸",
+                "사유",
+            ]
         )
         for column, tooltip in (
-            (3, bestcut_scoring_help()),
-            (4, _TOTAL_TOOLTIP),
-            (5, _SHARPNESS_TOOLTIP),
-            (6, _EXPOSURE_TOOLTIP),
-            (7, _EYES_TOOLTIP),
-            (8, bestcut_scoring_help()),
+            (3, _DIFF_TOOLTIP),
+            (4, bestcut_scoring_help()),
+            (5, _TOTAL_TOOLTIP),
+            (6, _SHARPNESS_TOOLTIP),
+            (7, _EXPOSURE_TOOLTIP),
+            (8, _EYES_TOOLTIP),
+            (9, bestcut_scoring_help()),
         ):
             self._table.horizontalHeaderItem(column).setToolTip(tooltip)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -346,6 +444,7 @@ class BestCutTab(QWidget):
         layout.addWidget(output_button)
         layout.addLayout(radio_row)
         layout.addLayout(help_row)
+        layout.addLayout(split_row)
         layout.addLayout(button_row)
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._status_label)
@@ -448,9 +547,11 @@ class BestCutTab(QWidget):
         self._preview_worker = PreviewWorker(
             list(self._input_dirs),
             gap_seconds=self._gap_spin.value(),
+            split_distance=self._current_grouping()[1],
             scan_cache=self._scan_cache,
             score_cache=self._score_cache,
             thumbnail_cache=self._thumbnail_cache,
+            hash_cache=self._hash_cache,
         )
         self._preview_worker.progress.connect(self._on_progress)
         self._preview_worker.status.connect(self._status_label.setText)
@@ -459,21 +560,31 @@ class BestCutTab(QWidget):
         self._preview_worker.start()
 
     def _on_preview_done(
-        self, photos: list[PhotoMetadata], rows: list[ReportRow], gap_seconds: float
+        self,
+        photos: list[PhotoMetadata],
+        rows: list[ReportRow],
+        grouping: tuple[float, int | None],
+        hashes: dict[Path, int | None],
     ) -> None:
         self._busy = False
         self._status_label.setText("완료")
         self._photos = photos
+        self._hashes = hashes
+        self._distances = distances_to_previous(photos, hashes)
         self._preview_button.setEnabled(True)
-        self._show_rows(rows, gap_seconds)
-        # 미리보기가 도는 사이에 간격을 바꿨으면, 끝난 뒤 새 간격으로 다시 묶는다.
-        if gap_seconds != self._gap_spin.value():
+        self._show_rows(rows, grouping)
+        # 미리보기가 도는 사이에 묶는 기준을 바꿨으면, 끝난 뒤 새 기준으로 다시 묶는다.
+        if grouping != self._current_grouping():
             self._regroup_timer.start()
 
-    def _show_rows(self, rows: list[ReportRow], gap_seconds: float) -> None:
+    def _current_grouping(self) -> tuple[float, int | None]:
+        split = self._split_spin.value() if self._split_checkbox.isChecked() else None
+        return self._gap_spin.value(), split
+
+    def _show_rows(self, rows: list[ReportRow], grouping: tuple[float, int | None]) -> None:
         """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
         self._auto_rows = rows
-        self._rows_gap_seconds = gap_seconds
+        self._rows_grouping = grouping
         # 장면 번호가 바뀌었을 수 있어, 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
         self._close_viewer()
         self._refresh_selection()
@@ -484,7 +595,8 @@ class BestCutTab(QWidget):
         rows = apply_manual_choices(self._auto_rows or [], self._choices)
         self._rows = rows
         self._apply_button.setEnabled(any(r.selected for r in rows) and self._output_dir is not None)
-        summary = format_preview_header(rows, self._rows_gap_seconds)
+        gap_seconds, split_distance = self._rows_grouping or (None, None)
+        summary = format_preview_header(rows, gap_seconds, split_distance)
         manual = format_manual_choice_summary(rows)
         self._summary_text.setPlainText(summary + (f"\n{manual}" if manual else ""))
         self._populate_table(rows)
@@ -575,8 +687,17 @@ class BestCutTab(QWidget):
 
     def _on_gap_changed(self, value: float) -> None:
         save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
+        self._on_grouping_changed()
+
+    def _on_split_changed(self) -> None:
+        save_bool(self._settings, SPLIT_ENABLED_SETTINGS_KEY, self._split_checkbox.isChecked())
+        save_float(self._settings, SPLIT_DISTANCE_SETTINGS_KEY, self._split_spin.value())
+        self._split_spin.setEnabled(self._split_checkbox.isChecked())
+        self._on_grouping_changed()
+
+    def _on_grouping_changed(self) -> None:
         self._update_grouping_help()
-        # 아직 미리보기 전이면 다음 미리보기 때 이 값으로 묶인다.
+        # 아직 미리보기 전이면 다음 미리보기 때 이 기준으로 묶인다.
         if self._photos is not None:
             self._regroup_timer.start()
 
@@ -588,11 +709,11 @@ class BestCutTab(QWidget):
             return
         if self._photos is None:
             return
-        gap_seconds = self._gap_spin.value()
-        if gap_seconds == self._rows_gap_seconds:
+        grouping = self._current_grouping()
+        if grouping == self._rows_grouping:
             return
         try:
-            groups = group_by_time_gap(self._photos, gap_seconds=gap_seconds)
+            groups = _make_groups(self._photos, self._hashes, *grouping)
             rows = build_report(groups, cache=self._score_cache)
         except OSError as e:
             # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
@@ -604,13 +725,15 @@ class BestCutTab(QWidget):
                 f"눌러주세요.\n({e})",
             )
             return
-        self._show_rows(rows, gap_seconds)
-        self._status_label.setText(f"장면 간격 {gap_seconds:g}초로 다시 묶음")
+        self._show_rows(rows, grouping)
+        gap_seconds, split_distance = grouping
+        split = f", 차이 {split_distance} 넘으면 나눔" if split_distance is not None else ""
+        self._status_label.setText(f"장면 간격 {gap_seconds:g}초{split}로 다시 묶음")
 
     def _update_grouping_help(self) -> None:
-        help_text = bestcut_grouping_help(self._gap_spin.value())
-        for widget in self._gap_widgets:
-            widget.setToolTip(help_text)
+        help_text = bestcut_grouping_help(*self._current_grouping())
+        for widget in (*self._gap_widgets, self._split_checkbox, self._split_spin):
+            widget.setToolTip(help_text + _DIFF_TOOLTIP)
         self._grouping_help_label.setToolTip(help_text)
         self._table.horizontalHeaderItem(2).setToolTip(help_text)
 
@@ -624,18 +747,29 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 0, thumb_item)
             self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
             self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
+            self._table.setItem(i, 3, QTableWidgetItem(self._difference_text(row)))
             choice = "선택" if row.selected else "제외"
             if row.manual_choice is not None:
                 choice += " (직접)"
-            self._table.setItem(i, 3, QTableWidgetItem(choice))
-            self._table.setItem(i, 4, QTableWidgetItem(f"{row.total:.2f}"))
+            self._table.setItem(i, 4, QTableWidgetItem(choice))
+            self._table.setItem(i, 5, QTableWidgetItem(f"{row.total:.2f}"))
             sharpness_item = QTableWidgetItem(f"{row.sharpness:.1f}")
             sharpness_item.setToolTip(format_sharpness_region(row.sharpness_region))
-            self._table.setItem(i, 5, sharpness_item)
-            self._table.setItem(i, 6, QTableWidgetItem(f"{row.exposure:.2f}"))
-            self._table.setItem(i, 7, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
-            self._table.setItem(i, 8, QTableWidgetItem(row.reason))
+            self._table.setItem(i, 6, sharpness_item)
+            self._table.setItem(i, 7, QTableWidgetItem(f"{row.exposure:.2f}"))
+            self._table.setItem(i, 8, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
+            self._table.setItem(i, 9, QTableWidgetItem(row.reason))
         self._table.resizeRowsToContents()
+
+    def _difference_text(self, row: ReportRow) -> str:
+        """앞 사진과 차이 칸. 나누기를 켠 상태에서 이 차이 때문에 장면이 나뉜 자리는 ✂."""
+        distance = self._distances.get(row.path)
+        if distance is None:
+            return ""
+        split_distance = (self._rows_grouping or (None, None))[1]
+        if split_distance is not None and distance > split_distance:
+            return f"{distance} ✂"
+        return str(distance)
 
     def _thumbnail_pixmap(self, path: Path) -> QPixmap | None:
         cached = self._thumbnail_cache.get(path)
@@ -687,8 +821,8 @@ class BestCutTab(QWidget):
         if self._move_radio.isChecked():
             # 옮긴 파일은 더 이상 입력 폴더에 없어, 간격을 바꿔 다시 묶을 수 없다.
             self._photos = None
-        elif self._photos is not None and self._gap_spin.value() != self._rows_gap_seconds:
-            # 적용하는 사이에 간격을 바꿨으면 이제 다시 묶는다.
+        elif self._photos is not None and self._current_grouping() != self._rows_grouping:
+            # 적용하는 사이에 묶는 기준을 바꿨으면 이제 다시 묶는다.
             self._regroup_timer.start()
         self._apply_button.setEnabled(True)
         self._open_output_button.setEnabled(True)

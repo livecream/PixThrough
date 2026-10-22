@@ -60,3 +60,17 @@ def load_float(
 
 def save_float(settings: QSettings, key: str, value: float) -> None:
     settings.setValue(key, value)
+
+
+def load_bool(settings: QSettings, key: str, default: bool) -> bool:
+    """켜기/끄기 설정을 읽는다. ini 백엔드는 "true"/"false" 문자열로 돌려준다."""
+    raw = settings.value(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    return default
+
+
+def save_bool(settings: QSettings, key: str, value: bool) -> None:
+    settings.setValue(key, value)
