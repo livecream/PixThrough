@@ -38,14 +38,20 @@ MANUAL_ADDED = "added"
 MANUAL_REMOVED = "removed"
 
 
-def _reason_for(index: int, selection: SceneSelection) -> str:
+def _reason_for(index: int, selection: SceneSelection, keep_percent: int) -> str:
     if index == selection.best_index:
         return "선택됨: 장면 내 최고 종합점수"
+    if index in selection.kept_indices:
+        rank = selection.kept_indices.index(index) + 1
+        size = len(selection.scene)
+        kept = len(selection.kept_indices)
+        return f"선택됨: 장면 내 {rank}위 (장면 {size}장의 {keep_percent}% 올림 → {kept}장 남김)"
 
     score = selection.scores[index]
     if score.error:
         return f"제외: {score.error}"
-    if selection.combined_scores[index] == selection.combined_scores[selection.best_index]:
+    lowest_kept = selection.combined_scores[selection.kept_indices[-1]]
+    if selection.combined_scores[index] == lowest_kept:
         return "제외: 동점이며 더 늦게 촬영됨"
     return "제외: 종합 점수가 더 낮음"
 
@@ -88,8 +94,10 @@ def build_report(
     groups: list[list[PhotoMetadata]],
     on_progress: Callable[[int, int], None] | None = None,
     cache: dict | None = None,
+    keep_percent: int = 0,
 ) -> list[ReportRow]:
     """장면 그룹 목록으로부터 사진별 선택/제외 리포트 행을 만든다.
+    keep_percent: 장면마다 남길 비율(%), 올림·최소 1장 (selector.keep_count).
 
     on_progress가 주어지면 전체 장면을 통틀어 사진 1장 처리할 때마다
     (누적 완료 수, 전체 수)를 알려준다 (장면마다 리셋되지 않음).
@@ -106,7 +114,9 @@ def build_report(
             def scene_progress(i: int, _n: int, base: int = base) -> None:
                 on_progress(base + i, total)
 
-        selection = select_best(group, on_progress=scene_progress, cache=cache)
+        selection = select_best(
+            group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent
+        )
         done += len(group)
 
         for i, meta in enumerate(group):
@@ -119,8 +129,8 @@ def build_report(
                     exposure=score.exposure,
                     face=score.face,
                     total=selection.combined_scores[i],
-                    selected=i == selection.best_index,
-                    reason=_reason_for(i, selection),
+                    selected=i in selection.kept_indices,
+                    reason=_reason_for(i, selection, keep_percent),
                     sharpness_region=score.sharpness_region,
                     sharpness_global=score.sharpness_global,
                 )
