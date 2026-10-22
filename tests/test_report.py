@@ -81,7 +81,7 @@ def test_write_report_csv_contains_expected_columns(tmp_path):
 
     write_report(rows, out)
 
-    with open(out, newline="", encoding="utf-8") as f:
+    with open(out, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         records = list(reader)
 
@@ -169,7 +169,7 @@ def test_write_report_includes_manual_choice_column(tmp_path):
 
     write_report(rows, out)
 
-    with open(out, encoding="utf-8") as f:
+    with open(out, encoding="utf-8-sig") as f:
         record = next(csv.DictReader(f))
     assert record["manual_choice"] == MANUAL_ADDED
 
@@ -212,7 +212,18 @@ def test_write_apply_report_saves_every_row_with_reasons(tmp_path):
     path = write_apply_report(rows, out, "bestcut")
 
     assert path.parent == out and path.name.startswith("bestcut_report_") and path.suffix == ".csv"
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         records = list(csv.DictReader(f))
     assert len(records) == 2  # 선택된 사진만이 아니라 제외된 사진도
     assert {r["reason"].split(":")[0] for r in records} == {"선택됨", "제외"}
+
+
+def test_csv_report_starts_with_bom_so_excel_reads_korean(tmp_path):
+    rows = build_report(_two_photo_scene(tmp_path))
+    out = tmp_path / "report.csv"
+
+    write_report(rows, out)
+
+    raw = out.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert "선택됨" in raw.decode("utf-8-sig")

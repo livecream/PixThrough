@@ -151,7 +151,9 @@ def write_report(rows: list[ReportRow], output_path: Path) -> None:
     suffix = output_path.suffix.lower()
 
     if suffix == ".csv":
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
+        # utf-8-sig(파일 앞에 BOM): Excel은 BOM이 없으면 UTF-8 CSV를 시스템 인코딩으로 읽어
+        # 한글 사유·파일명이 깨진다. Numbers·Google 시트·Python csv(utf-8-sig)도 그대로 읽는다.
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
             fieldnames = list(_row_to_dict(rows[0]).keys()) if rows else []
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

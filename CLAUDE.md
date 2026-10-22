@@ -37,6 +37,7 @@
 - [x] M5: dry-run 리포트 출력 (선택/제외 이유 포함)
 - [x] M6: 실제 파일 복사/이동 + 로그 기록
   - GUI에서 적용하면 출력 폴더에 그때의 판정 전체(선택·제외된 모든 사진의 장면·점수·사유·직접 고름 여부)를 `bestcut_report_<타임스탬프>.csv`/`badcut_report_<타임스탬프>.csv`로 남김(CLI report와 같은 형식, 적용 로그 `apply_log_*.jsonl`은 옮긴 파일만 기록). 파일 작업이 끝난 뒤에 써서, 출력 폴더가 원본과 겹쳐 막힌 경우 원본 폴더에 리포트가 생기지 않음 — `report.write_apply_report`
+  - CSV 리포트(CLI·GUI 공통)는 UTF-8 BOM(`utf-8-sig`)으로 저장 — Excel에서 바로 열어도 한글이 깨지지 않게. 코드에서 다시 읽을 때도 `utf-8-sig`로 읽을 것
 - [x] M7: 회귀 테스트 세트 구축 (test_photos 기준) — 실사진 22장(JPG+CR3)으로 기준선 확정. 얼굴 인식은 1/22장만 성공(측면/대화 컷이 많아 정면 검출기가 잘 못 잡음, 버그 아님 — 결과적으로 현재 세트에서는 사실상 선명도+노출 위주 선정). 로직 바꿀 때마다 `pytest`가 자동 회귀 감지
 - [x] M8: GUI 래핑 (PySide6, PixThrough.app로 패키징 완료) — 1차 범위: 폴더 선택/미리보기/적용/진행률
   - 그룹핑/스코어링 설명: "ⓘ 장면은 어떻게 묶나요?"/"ⓘ 베스트컷은 어떻게 고르나요?" 툴팁과 표 머리글 툴팁, 사진별 종합점수·선명도·노출·눈뜸 칸 추가. 설명 속 숫자(간격·가중치)는 `DEFAULT_SCENE_GAP_SECONDS`/`DEFAULT_WEIGHTS`에서 읽어와 코드와 어긋나지 않음 — `gui_format.bestcut_grouping_help`/`bestcut_scoring_help`
