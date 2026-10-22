@@ -50,6 +50,10 @@ _MODEL_URL = (
     "face_landmarker/float16/1/face_landmarker.task"
 )
 
+# 점수 계산 방식(선명도·노출·눈뜸을 재는 방법)을 바꾸면 올린다. 앱 데이터 폴더에 저장해 둔
+# 예전 방식의 점수(score_store)를 버리고 다시 계산하게 하기 위함이다.
+SCORING_VERSION = 1
+
 _landmarker: mp_vision.FaceLandmarker | None = None
 
 FOCUS_LONG_SIDE = 2000

@@ -74,6 +74,7 @@ from gui_settings import (
     save_folder_list,
 )
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
+import score_store
 from image_hash import HASH_BITS, hashes_for
 from report import ReportRow, apply_manual_choices, build_report
 from scanner import PhotoMetadata, scan_and_extract_many
@@ -285,9 +286,10 @@ class BestCutTab(QWidget):
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
         self._scan_cache: dict = {}
-        self._score_cache: dict = {}
+        # 점수·지문은 앱을 꺼도 남는 공용 저장소를 쓴다(C컷 탭과 공유, score_store).
+        self._score_cache: dict = score_store.score_cache()
         self._thumbnail_cache: dict = {}
-        self._hash_cache: dict = {}
+        self._hash_cache: dict = score_store.hash_cache()
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
@@ -593,6 +595,7 @@ class BestCutTab(QWidget):
     ) -> None:
         self._busy = False
         self._status_label.setText("완료")
+        score_store.save()
         self._photos = photos
         self._hashes = hashes
         self._distances = distances_to_previous(photos, hashes)
