@@ -71,3 +71,22 @@ def test_make_thumbnail_applies_exif_rotation(tmp_path):
     thumb = make_thumbnail(path, size=(64, 64))
 
     assert thumb.size == (32, 64)
+
+
+def test_make_thumbnail_reads_large_jpeg_at_reduced_size(tmp_path, monkeypatch):
+    """큰 JPEG는 원본 전체가 아니라 축소 디코딩(draft)으로 읽는다."""
+    path = _make_jpeg(tmp_path / "big.jpg", size=(4000, 3000))
+    decoded_sizes = []
+    original_load = Image.ImageFile.ImageFile.load
+
+    def spy_load(self):
+        result = original_load(self)
+        decoded_sizes.append(self.size)
+        return result
+
+    monkeypatch.setattr(Image.ImageFile.ImageFile, "load", spy_load)
+
+    thumb = make_thumbnail(path, size=(64, 64))
+
+    assert thumb.size == (64, 48)
+    assert max(decoded_sizes[0]) <= 500  # 4000px 전체가 아니라 1/8 근처로 풀었음
