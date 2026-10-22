@@ -47,6 +47,7 @@ from gui_format import (
     sharpness_measure_help,
 )
 import score_store
+from gui_worker import CancellableWorker, PreviewCancelled
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow, write_apply_report
@@ -91,7 +92,7 @@ def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
 
-class ScoreWorker(QThread):
+class ScoreWorker(CancellableWorker):
     progress = Signal(int, int)
     status = Signal(str)
     finished_ok = Signal(list, list)  # list[PhotoMetadata], list[PhotoScore]
@@ -115,6 +116,7 @@ class ScoreWorker(QThread):
     def run(self) -> None:
         try:
             def on_scan_progress(done: int, total: int, path: Path) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스캔 중: {path.name} ({done}/{total}, {_percent(done, total)}%)")
 
@@ -126,12 +128,15 @@ class ScoreWorker(QThread):
             )
 
             def on_score_progress(done: int, total: int) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스코어링 중... ({done}/{total}, {_percent(done, total)}%)")
 
             scores = score_for_badcut(photos, on_progress=on_score_progress, cache=self._score_cache)
             self._generate_thumbnails(photos)
             self.finished_ok.emit(photos, scores)
+        except PreviewCancelled:
+            self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -139,6 +144,7 @@ class ScoreWorker(QThread):
         if self._thumbnail_cache is None:
             return
         for meta in photos:
+            self.check_cancel()
             try:
                 stat = meta.path.stat()
             except OSError:
@@ -274,6 +280,13 @@ class BadCutTab(QWidget):
         reference_button_row.addWidget(self._sharpness_ref_button)
         reference_button_row.addWidget(self._eyes_ref_button)
 
+        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button.setEnabled(False)
+        self._cancel_preview_button.setToolTip(
+            "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
+            "다시 미리보기하면 이어서 계산합니다.</p>"
+        )
+        self._cancel_preview_button.clicked.connect(self._cancel_preview)
         self._preview_button = QPushButton("미리보기")
         self._preview_button.clicked.connect(self._run_preview)
 
@@ -308,6 +321,7 @@ class BadCutTab(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
+        button_row.addWidget(self._cancel_preview_button)
         button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
@@ -424,10 +438,13 @@ class BadCutTab(QWidget):
         self._score_worker.status.connect(self._status_label.setText)
         self._score_worker.finished_ok.connect(self._on_scored)
         self._score_worker.failed.connect(self._on_error)
+        self._score_worker.cancelled.connect(self._on_preview_cancelled)
+        self._cancel_preview_button.setEnabled(True)
         self._score_worker.start()
 
     def _on_scored(self, photos: list[PhotoMetadata], scores: list[PhotoScore]) -> None:
         self._busy = False
+        self._cancel_preview_button.setEnabled(False)
         self._status_label.setText("완료")
         score_store.save()
         self._photos = photos
@@ -662,7 +679,27 @@ class BadCutTab(QWidget):
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(done)
 
+    def _cancel_preview(self) -> None:
+        if self._score_worker is not None and self._score_worker.isRunning():
+            self._score_worker.request_cancel()
+            self._cancel_preview_button.setEnabled(False)
+            self._status_label.setText("취소하는 중...")
+
+    def _on_preview_cancelled(self) -> None:
+        self._busy = False
+        self._cancel_preview_button.setEnabled(False)
+        self._preview_button.setEnabled(True)
+        self._progress_bar.setValue(0)
+        # 그때까지 계산한 점수는 캐시에 이미 들어가 있다 — 저장해 두면 다음에 이어서 계산된다.
+        score_store.save()
+        self._status_label.setText("미리보기를 취소했습니다 (그때까지 계산한 점수는 저장됨)")
+        self._summary_text.setPlainText(
+            "미리보기를 취소했습니다. 다시 미리보기를 누르면 이미 계산한 사진은 건너뛰고 이어서 "
+            "계산합니다."
+        )
+
     def _on_error(self, message: str) -> None:
+        self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
         bad_count = sum(1 for r in (self._rows or []) if r.selected)

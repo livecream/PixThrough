@@ -37,6 +37,17 @@ class ViewerAction:
     tooltip: str
     enabled: Callable[[ReportRow], bool]
     triggered: Callable[[ReportRow], None]
+    shortcut: str | None = None  # 예: "Space". 버튼 글자 옆에 함께 보여준다.
+    shortcut_help: str = ""  # 아래 안내 줄에 쓸 짧은 설명 (예: "넣기/빼기")
+
+
+@dataclass(frozen=True)
+class ViewerShortcut:
+    """버튼 없이 키로만 하는 동작 (예: P = 넣기, X = 빼기). 창 아래 안내 줄에 보여준다."""
+
+    key: str
+    description: str
+    triggered: Callable[[ReportRow], None]
 
 
 class PhotoViewerDialog(QDialog):
@@ -47,6 +58,7 @@ class PhotoViewerDialog(QDialog):
         actions: list[ViewerAction],
         verdict: Callable[[ReportRow], str],
         parent=None,
+        shortcuts: list[ViewerShortcut] | None = None,
     ) -> None:
         super().__init__(parent)
         self._rows = rows
@@ -86,8 +98,34 @@ class PhotoViewerDialog(QDialog):
                 lambda _checked=False, action=action: action.triggered(self._rows[self._index])
             )
             self._action_buttons.append(button)
+            if action.shortcut:
+                QShortcut(
+                    QKeySequence(action.shortcut),
+                    self,
+                    activated=lambda action=action: self._trigger_if_enabled(action),
+                )
+        shortcut_help = ["←/→ 넘기기"]
+        shortcut_help += [f"{a.shortcut} {a.shortcut_help}" for a in actions if a.shortcut]
+        for extra in shortcuts or []:
+            QShortcut(
+                QKeySequence(extra.key),
+                self,
+                activated=lambda extra=extra: extra.triggered(self._rows[self._index]),
+            )
+            shortcut_help.append(f"{extra.key} {extra.description}")
+        self._shortcut_label = QLabel("단축키: " + " · ".join(shortcut_help))
         close_button = QPushButton("닫기")
         close_button.clicked.connect(self.accept)
+        # 버튼이 키보드 포커스를 가지면 스페이스를 그 버튼이 먼저 가져가(누름 처리) 단축키가
+        # 엉뚱하게 동작하므로, 이 창의 버튼·체크박스는 포커스를 받지 않게 한다.
+        for widget in (
+            prev_button,
+            next_button,
+            self._actual_size_checkbox,
+            close_button,
+            *self._action_buttons,
+        ):
+            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         nav_row = QHBoxLayout()
         nav_row.addWidget(prev_button)
@@ -106,6 +144,7 @@ class PhotoViewerDialog(QDialog):
         layout.addWidget(self._scroll, stretch=1)
         layout.addLayout(nav_row)
         layout.addLayout(action_row)
+        layout.addWidget(self._shortcut_label)
         self.setLayout(layout)
 
         self._load_current()
@@ -114,6 +153,11 @@ class PhotoViewerDialog(QDialog):
         """다시 판정/선택된 결과(판정·사유)를 창에 다시 반영한다. 순서는 같다."""
         self._rows = rows
         self._update_info()
+
+    def _trigger_if_enabled(self, action: ViewerAction) -> None:
+        row = self._rows[self._index]
+        if action.enabled(row):
+            action.triggered(row)
 
     def _step(self, delta: int) -> None:
         new_index = self._index + delta
@@ -139,7 +183,8 @@ class PhotoViewerDialog(QDialog):
             f"눈뜸 {eyes}  |  {row.reason}"
         )
         for action, button in zip(self._actions, self._action_buttons):
-            button.setText(action.label(row))
+            label = action.label(row)
+            button.setText(f"{label} ({action.shortcut})" if action.shortcut else label)
             button.setEnabled(action.enabled(row))
 
     def _render(self) -> None:
