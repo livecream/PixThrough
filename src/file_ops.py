@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from raw_preview import is_raw
 from report import ReportRow
 from scanner import RAW_EXTENSIONS
 
@@ -109,7 +110,8 @@ def apply_selection(
 ) -> list[FileOpResult]:
     """선택된(selected=True) 사진을 output_dir로 복사(기본) 또는 이동한다.
 
-    같은 베이스 파일명의 RAW가 있으면 output_dir/RAW/에도 함께 옮긴다. 처리 내역은
+    같은 베이스 파일명의 RAW가 있으면 output_dir/RAW/에도 함께 옮긴다. 짝 JPG 없이 RAW
+    자체가 선택된 경우(RAW만 찍은 폴더)는 그 RAW를 output_dir/RAW/로 옮긴다. 처리 내역은
     output_dir/apply_log_<타임스탬프>.jsonl에 한 줄씩 기록한다. 실패가 하나라도 있으면
     (복사 누락 감지) 예외를 던져 사용자가 알 수 있게 한다. on_progress가 주어지면
     선택된 사진을 하나 처리할 때마다(성공/실패 무관) (완료한 수, 전체 수)를 알려준다.
@@ -132,8 +134,14 @@ def apply_selection(
         for index, row in enumerate(selected_rows, start=1):
             source = Path(row.path)
             try:
-                raw_source = find_matching_raw(source)
-                dest = unique_destination(output_dir, source.name)
+                if is_raw(source):
+                    # RAW만 있는 사진: 짝이 따로 없고, 결과 폴더 레이아웃은 JPG+RAW와 같게
+                    raw_source = None
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    dest = unique_destination(raw_dir, source.name)
+                else:
+                    raw_source = find_matching_raw(source)
+                    dest = unique_destination(output_dir, source.name)
                 transfer(str(source), str(dest))
 
                 raw_dest = None

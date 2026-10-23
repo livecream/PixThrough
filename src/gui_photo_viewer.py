@@ -189,7 +189,7 @@ class PhotoViewerDialog(QDialog):
 
     def _render(self) -> None:
         if self._pixmap is None:
-            self._image_label.setText("이미지를 열 수 없습니다 (RAW 또는 손상된 파일).")
+            self._image_label.setText("이미지를 열 수 없습니다 (미리보기가 없는 RAW 또는 손상된 파일).")
             self._image_label.adjustSize()
             return
         if self._actual_size_checkbox.isChecked():

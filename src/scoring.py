@@ -28,8 +28,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision as mp_vision
-from PIL import Image
 
+from raw_preview import open_image
 from scanner import PhotoMetadata
 
 # 얼굴 랜드마크 모델 (눈감음 판단용 블렌드셰이프 포함). 저장소에는 커밋하지 않고
@@ -93,7 +93,7 @@ def _decode(path: Path) -> tuple[np.ndarray, np.ndarray]:
     사진당 처리 시간이 3배로 늘어나는 게 실측으로 확인돼(장당 ~0.33s), score_photo가
     이 함수로 한 번만 디코딩해 공유한다.
     """
-    with Image.open(path) as img:
+    with open_image(path) as img:  # RAW만 있으면 안에 든 미리보기 JPEG
         rgb_img = img.convert("RGB")
         gray = np.array(rgb_img.convert("L"))
         rgb = np.array(rgb_img)
