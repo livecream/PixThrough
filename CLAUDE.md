@@ -27,6 +27,7 @@
 ## 작업 순서 (마일스톤)
 
 - [x] M1: 폴더 스캔 + EXIF 메타데이터 추출 (지원 확장자, 하위 폴더 옵션 포함)
+  - RAW만 찍은 폴더 지원(사용자 결정, PROJECT_SPEC 8절): 같은 이름의 JPG 등이 없는 RAW만 베스트컷·C컷 스캔에 포함(`scan_folder(include_unpaired_raw=True)`, RAW/ 하위 폴더의 RAW는 위 폴더 JPG와 짝으로 봄). RAW 안의 미리보기 JPEG를 rawpy로 꺼내 LibRaw 방향값으로 세워 점수·썸네일·크게 보기·지문 계산(`raw_preview.open_image` — 사진을 여는 곳은 이걸 거칠 것). 촬영 시각은 EXIF → LibRaw 시각(CR3는 exifread 미지원) → mtime. 선택된 RAW는 출력 `RAW/`로(`file_ops.apply_selection`). 폴더 정리·시간순 정렬은 그대로. 실제 CR3 파일로는 아직 확인 못 함(CR2/NEF 샘플로 확인)
 - [x] M2: 장면 그룹핑 (촬영 시각 간격 기준 1차 구현 → 필요 시 이미지 유사도 보강)
   - 2차 보강(이미지 유사도로 나누기만, 합치기는 안 함): 시간상 같은 장면이어도 바로 앞 사진과 pHash 차이(0~64비트)가 사용자가 정한 값을 넘으면 새 장면으로 나눔. 기본은 꺼짐이고 기준값도 코드에 확정하지 않음 — 베스트컷 탭 체크박스+입력칸(시작값 20, QSettings 기억), CLI `--split-hash-distance N`. pHash는 OpenCV로 직접 구현(`src/image_hash.py`, imagehash 라이브러리와 지문 일치 확인, JPEG는 축소 디코딩으로 빠르게), 지문은 미리보기 때 항상 계산·캐시해 켜고 끄거나 기준을 바꾸면 즉시 다시 묶음. 표에 "앞 사진과 차이" 칸(나뉘는 자리는 ✂). 공개 샘플 측정: 같은 사진 변형 0~12, 다른 사진 28~36. 기준값 고르기는 `python tests/compare_scene_split.py`로 test_photos 비교 — `grouping.split_dissimilar`/`group_scenes`
 - [x] M3: 품질 스코어링 (선명도 → 노출 → 얼굴/눈감음 순으로 단계적 추가) — 3개 지표 구현 완료

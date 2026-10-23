@@ -31,7 +31,7 @@ def _percent_arg(value: str) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     print(f"총 {len(results)}개 파일 발견 (입력: {args.input}, 하위폴더 포함: {args.recursive})\n")
     for m in results:
         marker = "  [EXIF 없음, mtime 사용]" if m.exif_source == "mtime" else ""
@@ -40,7 +40,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
 
 def cmd_group(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     groups = group_scenes(
         results,
         gap_seconds=args.scene_gap_seconds,
@@ -62,7 +62,7 @@ def cmd_group(args: argparse.Namespace) -> None:
 
 
 def cmd_score(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     scores = score_photos(results)
     print(f"총 {len(scores)}개 파일 스코어링 (입력: {args.input})\n")
     for s in scores:
@@ -75,7 +75,7 @@ def cmd_score(args: argparse.Namespace) -> None:
 
 
 def cmd_select(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     groups = group_scenes(
         results,
         gap_seconds=args.scene_gap_seconds,
@@ -91,7 +91,7 @@ def cmd_select(args: argparse.Namespace) -> None:
 
 
 def cmd_report(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     groups = group_scenes(
         results,
         gap_seconds=args.scene_gap_seconds,
@@ -107,7 +107,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 
 def cmd_apply(args: argparse.Namespace) -> None:
-    results = scan_and_extract(Path(args.input), recursive=args.recursive)
+    results = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     groups = group_scenes(
         results,
         gap_seconds=args.scene_gap_seconds,
@@ -157,7 +157,7 @@ def cmd_rename(args: argparse.Namespace) -> None:
 
 
 def cmd_badcut(args: argparse.Namespace) -> None:
-    photos = scan_and_extract(Path(args.input), recursive=args.recursive)
+    photos = scan_and_extract(Path(args.input), recursive=args.recursive, include_unpaired_raw=True)
     thresholds = BadCutThresholds(min_sharpness=args.min_sharpness, min_eyes_open=args.min_eyes_open)
     rows = build_badcut_rows(photos, thresholds)
     write_report(rows, Path(args.report))

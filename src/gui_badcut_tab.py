@@ -125,6 +125,7 @@ class ScoreWorker(CancellableWorker):
                 recursive=self._recursive,
                 on_progress=on_scan_progress,
                 cache=self._scan_cache,
+                include_unpaired_raw=True,  # RAW만 찍은 폴더도 (미리보기 JPEG로)
             )
 
             def on_score_progress(done: int, total: int) -> None:
