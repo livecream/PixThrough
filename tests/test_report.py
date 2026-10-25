@@ -172,3 +172,22 @@ def test_write_report_includes_manual_choice_column(tmp_path):
     with open(out, encoding="utf-8") as f:
         record = next(csv.DictReader(f))
     assert record["manual_choice"] == MANUAL_ADDED
+
+
+def test_build_report_keeps_proportional_cuts_with_reasons(tmp_path):
+    paths = [_make_flat(tmp_path / f"{n}.png", color=100 + i) for i, n in enumerate("abcdef")]
+    groups = [[_meta(p, i) for i, p in enumerate(paths)]]
+
+    rows = build_report(groups, keep_percent=20)  # 6장 × 20% = 1.2 → 올림 2장
+
+    selected = [r for r in rows if r.selected]
+    assert len(selected) == 2
+    reasons = sorted(r.reason for r in selected)
+    assert reasons[0].startswith("선택됨: 장면 내 2위 (장면 6장의 20% 올림 → 2장 남김)")
+    assert reasons[1] == "선택됨: 장면 내 최고 종합점수"
+
+
+def test_build_report_default_keeps_one_per_scene(tmp_path):
+    rows = build_report(_two_photo_scene(tmp_path))
+
+    assert sum(r.selected for r in rows) == 1

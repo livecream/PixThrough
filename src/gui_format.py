@@ -51,9 +51,10 @@ def format_preview_header(
     rows: list[ReportRow],
     gap_seconds: float | None = None,
     split_distance: int | None = None,
+    keep_percent: int = 0,
 ) -> str:
     """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다.
-    gap_seconds/split_distance를 주면 어떤 기준으로 묶은 결과인지 함께 적는다."""
+    gap_seconds/split_distance/keep_percent를 주면 어떤 기준으로 고른 결과인지 함께 적는다."""
     scene_ids = {row.scene_id for row in rows}
     total = len(rows)
     selected = sum(1 for r in rows if r.selected)
@@ -61,7 +62,8 @@ def format_preview_header(
     if gap_seconds is not None:
         split = f", 차이 {split_distance} 넘으면 나눔" if split_distance is not None else ""
         scenes += f"(간격 {gap_seconds:g}초{split})"
-    return f"{scenes}, {total}장 중 {selected}장 선택"
+    keep = f" (장면마다 {keep_percent}% 올림, 최소 1장)" if keep_percent else ""
+    return f"{scenes}, {total}장 중 {selected}장 선택{keep}"
 
 
 def sharpness_measure_help() -> str:
@@ -116,14 +118,20 @@ def bestcut_grouping_help(
     )
 
 
-def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS) -> str:
-    """베스트컷 탭 "베스트컷은 어떻게 고르나요?" 툴팁. 실제 가중치 상수에서 비율을
-    가져온다."""
+def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS, keep_percent: int = 0) -> str:
+    """베스트컷 탭 "베스트컷은 어떻게 고르나요?" 툴팁. 실제 가중치 상수와 지금 쓰는
+    남길 비율을 그대로 보여준다."""
     sharpness = round(weights["sharpness"] * 100)
     exposure = round(weights["exposure"] * 100)
     face = round(weights["face"] * 100)
-    return (
-        "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
+    if keep_percent:
+        selection = (
+            f"<p><b>베스트컷 선정</b>: 장면마다 사진 수의 <b>{keep_percent}%</b>(올림, 최소 "
+            "1장)만큼 종합점수가 높은 순으로 남깁니다. 예: 장면이 6장이고 20%면 1.2 → 2장.</p>"
+        )
+    else:
+        selection = "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
+    return selection + (
         f"<p><b>종합점수(0~1)</b> = 선명도 {sharpness}% + 노출 {exposure}% + 눈뜸 {face}%</p>"
         "<ul>"
         "<li><b>선명도</b>: 초점이 맞은 부분(얼굴, 없으면 가장 선명한 부분)이 얼마나 "
