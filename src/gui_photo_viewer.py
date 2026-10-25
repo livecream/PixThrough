@@ -175,7 +175,7 @@ class PhotoViewerDialog(QDialog):
 
     def _update_info(self) -> None:
         row = self._rows[self._index]
-        eyes = "얼굴 없음" if row.face is None else f"{row.face:.2f}"
+        eyes = "해당 없음" if row.face is None else f"{row.face:.2f}"
         region = format_sharpness_region(row.sharpness_region)
         sharpness = f"{row.sharpness:.1f}" + (f" ({region})" if region else "")
         self._info_label.setText(

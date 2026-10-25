@@ -10,6 +10,11 @@
 세 숫자는 사용자와 정한 초기값이며 test_photos 결과로 조정할 수 있다. 예전 방식
 (원본 해상도·사진 전체) 값은 비교용으로 sharpness_global에 함께 남긴다.
 
+얼굴은 두 단계로 찾는다. mediapipe FaceLandmarker 혼자서는 얼굴이 화면에서 큰
+셀카·증명사진형만 잘 잡아(test_photos 22장 중 1장), 위치는 작은 얼굴·여러 명에 강한
+OpenCV YuNet으로 찾고, 찾은 얼굴마다 잘라서 FaceLandmarker로 눈 뜬 정도를 잰다.
+옆모습처럼 눈 분석이 안 되는 얼굴은 선명도 측정(얼굴 영역)에만 쓰고 눈뜸에서는 뺀다.
+
 PROJECT_SPEC.md 4.3절: 선명도 → 노출 → 얼굴/눈감음 순으로 단계적으로 점수를 추가한다.
 total을 여러 지표의 가중합으로 확정하는 것은 CLAUDE.md가 금지하는 "임의의 점수
 가중치 확정"에 해당하므로, 사용자와 가중치를 정하기 전까지는 total = sharpness로
@@ -58,9 +63,27 @@ _MODEL_URL = (
 
 # 점수 계산 방식(선명도·노출·눈뜸을 재는 방법)을 바꾸면 올린다. 앱 데이터 폴더에 저장해 둔
 # 예전 방식의 점수(score_store)를 버리고 다시 계산하게 하기 위함이다.
-SCORING_VERSION = 1
+# 2: 얼굴 검출을 YuNet + 얼굴별 눈 분석으로 바꿈(눈뜸·얼굴 영역 선명도가 달라짐)
+SCORING_VERSION = 2
+
+# 얼굴 위치 검출 모델 (OpenCV Zoo YuNet). 랜드마크 모델과 마찬가지로 최초 사용 시
+# 다운로드한다.
+_YUNET_PATH = _MODEL_DIR / "face_detection_yunet_2023mar.onnx"
+_YUNET_URL = (
+    "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
+    "face_detection_yunet/face_detection_yunet_2023mar.onnx"
+)
 
 _landmarker: mp_vision.FaceLandmarker | None = None
+_face_detector: cv2.FaceDetectorYN | None = None
+
+# YuNet이 얼굴로 인정하는 최소 확신도. 사용자와 정한 초기값(0.9: 얼굴 없는 사진에서
+# 오검출이 거의 없는 쪽)이며 test_photos 결과로 조정할 수 있다.
+FACE_DETECTION_MIN_SCORE = 0.9
+# 눈 분석용으로 얼굴을 잘라낼 때 YuNet 상자보다 넓게 자르는 배율과, 랜드마크 모델에
+# 넣는 크기. 랜드마크 모델은 얼굴 주변이 조금 보여야 잘 동작한다.
+FACE_CROP_SCALE = 1.6
+FACE_CROP_SIZE = 256
 
 FOCUS_LONG_SIDE = 2000
 FOCUS_GRID = 8
@@ -87,7 +110,7 @@ class PhotoScore:
 
 @dataclass(frozen=True)
 class _DetectedFace:
-    eyes_open: float
+    eyes_open: float | None  # 눈 분석에 실패한 얼굴(옆모습 등)은 None
     # 정규화 좌표(0~1) 경계 상자: (x0, y0, x1, y1)
     bbox: tuple[float, float, float, float]
 
@@ -111,8 +134,9 @@ def _sharpness_from_gray(gray: np.ndarray) -> float:
 
 
 def _downscale(gray: np.ndarray, long_side: int = FOCUS_LONG_SIDE) -> np.ndarray:
-    """긴 변이 long_side보다 크면 비율 유지한 채 줄인다(작으면 그대로, 키우지 않음)."""
-    h, w = gray.shape
+    """긴 변이 long_side보다 크면 비율 유지한 채 줄인다(작으면 그대로, 키우지 않음).
+    흑백(선명도용)과 컬러(얼굴 검출용) 배열 모두 받는다."""
+    h, w = gray.shape[:2]
     if max(h, w) <= long_side:
         return gray
     scale = long_side / max(h, w)
@@ -185,11 +209,24 @@ def exposure_score(path: Path) -> float:
     return _exposure_from_gray(gray)
 
 
-def _ensure_model() -> Path:
-    if not _MODEL_PATH.exists():
-        _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
-    return _MODEL_PATH
+def _ensure_model(path: Path = _MODEL_PATH, url: str = _MODEL_URL) -> Path:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(url, path)
+    return path
+
+
+def _get_face_detector(width: int, height: int) -> cv2.FaceDetectorYN:
+    global _face_detector
+    if _face_detector is None:
+        _face_detector = cv2.FaceDetectorYN.create(
+            str(_ensure_model(_YUNET_PATH, _YUNET_URL)),
+            "",
+            (width, height),
+            FACE_DETECTION_MIN_SCORE,
+        )
+    _face_detector.setInputSize((width, height))
+    return _face_detector
 
 
 def _get_landmarker() -> mp_vision.FaceLandmarker:
@@ -211,31 +248,81 @@ def _eyes_open_from_scores(blink_left: float, blink_right: float) -> float:
     return 1.0 - max(blink_left, blink_right)
 
 
-def _detect_faces(rgb: np.ndarray) -> list[_DetectedFace]:
-    """얼굴마다 눈 뜬 정도와 경계 상자를 구한다. 경계 상자는 선명도를 얼굴
-    영역에서 재는 데 쓴다."""
-    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    result = _get_landmarker().detect(image)
-    faces = []
-    for blendshapes, landmarks in zip(result.face_blendshapes, result.face_landmarks):
-        scores = {c.category_name: c.score for c in blendshapes}
-        xs = [lm.x for lm in landmarks]
-        ys = [lm.y for lm in landmarks]
-        faces.append(
-            _DetectedFace(
-                eyes_open=_eyes_open_from_scores(
-                    scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)
-                ),
-                bbox=(min(xs), min(ys), max(xs), max(ys)),
+def _locate_faces(rgb: np.ndarray) -> list[tuple[float, float, float, float]]:
+    """YuNet으로 얼굴 위치를 찾아 정규화 좌표(0~1) 경계 상자 목록으로 반환한다.
+    검출은 긴 변을 FOCUS_LONG_SIDE로 줄인 사본에서 한다(원본은 너무 크고 느림)."""
+    small = _downscale(rgb)
+    h, w = small.shape[:2]
+    bgr = cv2.cvtColor(small, cv2.COLOR_RGB2BGR)
+    _, found = _get_face_detector(w, h).detect(bgr)
+    if found is None:
+        return []
+    boxes = []
+    for x, y, bw, bh in found[:, :4]:
+        boxes.append(
+            (
+                max(0.0, x / w),
+                max(0.0, y / h),
+                min(1.0, (x + bw) / w),
+                min(1.0, (y + bh) / h),
             )
         )
-    return faces
+    return boxes
+
+
+def _square_crop(rgb: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
+    """경계 상자 중심으로 FACE_CROP_SCALE배 넓힌 정사각형을 원본에서 잘라
+    FACE_CROP_SIZE로 맞춘다. 사진 가장자리를 넘는 부분은 검정으로 채워, 비율이
+    찌그러지지 않게 한다(찌그러지면 눈 모양 분석이 틀어짐)."""
+    h, w = rgb.shape[:2]
+    x0, y0, x1, y1 = bbox[0] * w, bbox[1] * h, bbox[2] * w, bbox[3] * h
+    side = max(1, int(max(x1 - x0, y1 - y0) * FACE_CROP_SCALE))
+    left = int((x0 + x1) / 2 - side / 2)
+    top = int((y0 + y1) / 2 - side / 2)
+    crop = np.zeros((side, side, 3), dtype=rgb.dtype)
+    src_left, src_top = max(0, left), max(0, top)
+    src_right, src_bottom = min(w, left + side), min(h, top + side)
+    if src_right > src_left and src_bottom > src_top:
+        crop[src_top - top : src_bottom - top, src_left - left : src_right - left] = rgb[
+            src_top:src_bottom, src_left:src_right
+        ]
+    return cv2.resize(crop, (FACE_CROP_SIZE, FACE_CROP_SIZE), interpolation=cv2.INTER_AREA)
+
+
+def _eyes_open_in_crop(crop: np.ndarray) -> float | None:
+    """잘라낸 얼굴 사진에서 눈 뜬 정도를 잰다. 옆 사람 얼굴이 함께 잡히면 가운데에
+    가장 가까운 얼굴을 쓴다. 분석에 실패하면(옆모습 등) None."""
+    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop))
+    result = _get_landmarker().detect(image)
+    best: tuple[float, float] | None = None  # (중심까지 거리, 눈 뜬 정도)
+    for blendshapes, landmarks in zip(result.face_blendshapes, result.face_landmarks):
+        cx = sum(lm.x for lm in landmarks) / len(landmarks)
+        cy = sum(lm.y for lm in landmarks) / len(landmarks)
+        distance = (cx - 0.5) ** 2 + (cy - 0.5) ** 2
+        scores = {c.category_name: c.score for c in blendshapes}
+        eyes = _eyes_open_from_scores(
+            scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)
+        )
+        if best is None or distance < best[0]:
+            best = (distance, eyes)
+    return None if best is None else best[1]
+
+
+def _detect_faces(rgb: np.ndarray) -> list[_DetectedFace]:
+    """얼굴마다 경계 상자와 눈 뜬 정도를 구한다. 경계 상자는 선명도를 얼굴 영역에서
+    재는 데, 눈 뜬 정도는 눈뜸 점수에 쓴다."""
+    return [
+        _DetectedFace(eyes_open=_eyes_open_in_crop(_square_crop(rgb, bbox)), bbox=bbox)
+        for bbox in _locate_faces(rgb)
+    ]
 
 
 def _eyes_open_of(faces: list[_DetectedFace]) -> float | None:
-    if not faces:
+    """눈 분석에 성공한 얼굴들의 평균. 하나도 없으면 None(눈뜸 판정 대상 아님)."""
+    values = [f.eyes_open for f in faces if f.eyes_open is not None]
+    if not values:
         return None
-    return sum(f.eyes_open for f in faces) / len(faces)
+    return sum(values) / len(values)
 
 
 def face_score(path: Path) -> float | None:
