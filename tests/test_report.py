@@ -191,3 +191,13 @@ def test_build_report_default_keeps_one_per_scene(tmp_path):
     rows = build_report(_two_photo_scene(tmp_path))
 
     assert sum(r.selected for r in rows) == 1
+
+
+def test_build_report_selects_nothing_in_scene_of_broken_photos(tmp_path):
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"not an image")
+
+    rows = build_report([[_meta(broken, 0)]])
+
+    assert rows[0].selected is False
+    assert rows[0].reason.startswith("제외: 점수 계산 실패")

@@ -126,3 +126,35 @@ def test_select_best_ties_keep_earlier_photos_first(tmp_path):
     selection = select_best(scene, keep_percent=50)
 
     assert selection.kept_indices == [0, 1]
+
+
+# --- 점수를 계산하지 못한 사진 ------------------------------------------------
+
+
+def _broken(path):
+    path.write_bytes(b"not an image")
+    return path
+
+
+def test_scene_of_only_broken_photos_selects_nothing(tmp_path):
+    scene = [_meta(_broken(tmp_path / f"{n}.jpg"), i) for i, n in enumerate("ab")]
+
+    selection = select_best(scene, keep_percent=100)
+
+    assert selection.kept_indices == []
+    assert selection.best is None and selection.best_index is None
+
+
+def test_broken_photo_is_never_kept_and_does_not_skew_normalisation(tmp_path):
+    sharp = _make_checkerboard(tmp_path / "sharp.png")
+    blurred = _make_blurred_checkerboard(tmp_path / "blurred.png")
+    broken = _broken(tmp_path / "broken.jpg")
+    scene = [_meta(broken, 0), _meta(blurred, 1), _meta(sharp, 2)]
+
+    selection = select_best(scene, keep_percent=100)
+
+    assert selection.kept_indices == [2, 1]  # 손상 파일은 100%여도 남기지 않음
+    # 흐린 사진이 정상 사진 중 가장 흐리므로 선명도 0으로 정규화된다(손상 파일의 0에 끌려가지 않음)
+    with_broken = selection.combined_scores[1]
+    without_broken = select_best([scene[1], scene[2]]).combined_scores[0]
+    assert with_broken == pytest.approx(without_broken)

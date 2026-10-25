@@ -5,6 +5,8 @@ venv/
 
 # mediapipe face landmarker model (auto-downloaded on first use, see scoring.py)
 models/
+# 앱을 꺼도 남기는 점수·유사도 지문 저장소 (score_store.py)
+cache/
 output/*
 !output/.gitkeep
 test_photos/*

@@ -49,7 +49,7 @@ def _reason_for(index: int, selection: SceneSelection, keep_percent: int) -> str
 
     score = selection.scores[index]
     if score.error:
-        return f"제외: {score.error}"
+        return f"제외: 점수 계산 실패 ({score.error})"
     lowest_kept = selection.combined_scores[selection.kept_indices[-1]]
     if selection.combined_scores[index] == lowest_kept:
         return "제외: 동점이며 더 늦게 촬영됨"
