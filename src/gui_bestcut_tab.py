@@ -1,5 +1,9 @@
 """M8: 베스트컷(A컷) 선별 탭. gui.py에서 분리해 QTabWidget의 탭 하나로 얹는다.
 
+장면 간격(몇 초 이내면 같은 장면인지)은 화면에서 조절한다(PROJECT_SPEC.md 4.2절
+"N은 설정 가능한 값"). 미리보기로 한 번 스캔·스코어링해두면, 간격을 바꿀 때마다
+사진을 다시 읽지 않고 캐시된 점수로 즉시 다시 묶는다.
+
 장면을 어떻게 묶고 어떤 점수로 고르는지가 화면에 드러나지 않으면 결과를 믿고
 쓰기 어려워, 설명 툴팁(ⓘ)과 사진별 점수 칸을 함께 보여준다.
 """
@@ -9,9 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -28,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from file_ops import FileOpResult, apply_selection
-from grouping import group_by_time_gap
+from grouping import DEFAULT_SCENE_GAP_SECONDS, group_by_time_gap
 from gui_dnd import extract_dropped_folders
 from gui_format import (
     bestcut_grouping_help,
@@ -38,9 +43,17 @@ from gui_format import (
     format_sharpness_region,
     sharpness_measure_help,
 )
-from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
+from gui_settings import (
+    load_float,
+    load_folder,
+    load_folder_list,
+    make_settings,
+    save_float,
+    save_folder,
+    save_folder_list,
+)
 from report import ReportRow, build_report
-from scanner import scan_and_extract_many
+from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail
 
 
@@ -63,6 +76,14 @@ _EYES_TOOLTIP = (
 )
 
 
+SCENE_GAP_MIN_SECONDS = 0.5
+SCENE_GAP_MAX_SECONDS = 60.0
+SCENE_GAP_SETTINGS_KEY = "bestcut/scene_gap_seconds"
+# 스핀박스 화살표를 누르고 있으면 값이 연달아 바뀌므로, 마지막 변경 후 이만큼 조용하면
+# 그때 한 번만 다시 묶는다.
+REGROUP_DELAY_MS = 300
+
+
 def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
@@ -70,12 +91,13 @@ def _percent(done: int, total: int) -> int:
 class PreviewWorker(QThread):
     progress = Signal(int, int)
     status = Signal(str)
-    finished_ok = Signal(list)  # list[ReportRow]
+    finished_ok = Signal(list, list, float)  # list[PhotoMetadata], list[ReportRow], 간격(초)
     failed = Signal(str)
 
     def __init__(
         self,
         input_dirs: list[Path],
+        gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS,
         recursive: bool = True,
         scan_cache: dict | None = None,
         score_cache: dict | None = None,
@@ -83,6 +105,7 @@ class PreviewWorker(QThread):
     ) -> None:
         super().__init__()
         self._input_dirs = input_dirs
+        self._gap_seconds = gap_seconds
         self._recursive = recursive
         self._scan_cache = scan_cache
         self._score_cache = score_cache
@@ -100,7 +123,7 @@ class PreviewWorker(QThread):
                 on_progress=on_scan_progress,
                 cache=self._scan_cache,
             )
-            groups = group_by_time_gap(photos)
+            groups = group_by_time_gap(photos, gap_seconds=self._gap_seconds)
 
             def on_group_progress(done: int, total: int) -> None:
                 self.progress.emit(done, total)
@@ -108,7 +131,7 @@ class PreviewWorker(QThread):
 
             rows = build_report(groups, on_progress=on_group_progress, cache=self._score_cache)
             self._generate_thumbnails(rows)
-            self.finished_ok.emit(rows)
+            self.finished_ok.emit(photos, rows, self._gap_seconds)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -158,6 +181,9 @@ class BestCutTab(QWidget):
         self._input_dirs: list[Path] = []
         self._output_dir: Path | None = None
         self._rows: list[ReportRow] | None = None
+        # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
+        self._photos: list[PhotoMetadata] | None = None
+        self._rows_gap_seconds: float | None = None
         self._preview_worker: PreviewWorker | None = None
         self._apply_worker: ApplyWorker | None = None
         self._busy = False
@@ -190,12 +216,35 @@ class BestCutTab(QWidget):
         )
         self._preview_button.clicked.connect(self._run_preview)
 
-        grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
-        grouping_help_label.setToolTip(bestcut_grouping_help())
+        self._gap_spin = QDoubleSpinBox()
+        self._gap_spin.setRange(SCENE_GAP_MIN_SECONDS, SCENE_GAP_MAX_SECONDS)
+        self._gap_spin.setDecimals(1)
+        self._gap_spin.setSingleStep(0.5)
+        self._gap_spin.setSuffix(" 초")
+        self._gap_spin.setValue(
+            load_float(
+                self._settings,
+                SCENE_GAP_SETTINGS_KEY,
+                DEFAULT_SCENE_GAP_SECONDS,
+                SCENE_GAP_MIN_SECONDS,
+                SCENE_GAP_MAX_SECONDS,
+            )
+        )
+        self._regroup_timer = QTimer(self)
+        self._regroup_timer.setSingleShot(True)
+        self._regroup_timer.setInterval(REGROUP_DELAY_MS)
+        self._regroup_timer.timeout.connect(self._regroup)
+        self._gap_spin.valueChanged.connect(self._on_gap_changed)
+        gap_label = QLabel("장면 간격 ⓘ:")
+        self._gap_widgets = (gap_label, self._gap_spin)
+
+        self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
         scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
         scoring_help_label.setToolTip(bestcut_scoring_help())
         help_row = QHBoxLayout()
-        help_row.addWidget(grouping_help_label)
+        help_row.addWidget(gap_label)
+        help_row.addWidget(self._gap_spin)
+        help_row.addWidget(self._grouping_help_label)
         help_row.addWidget(scoring_help_label)
         help_row.addStretch()
 
@@ -218,7 +267,6 @@ class BestCutTab(QWidget):
             ["썸네일", "파일명", "장면", "선택여부", "종합점수", "선명도", "노출", "눈뜸", "사유"]
         )
         for column, tooltip in (
-            (2, bestcut_grouping_help()),
             (3, bestcut_scoring_help()),
             (4, _TOTAL_TOOLTIP),
             (5, _SHARPNESS_TOOLTIP),
@@ -266,6 +314,7 @@ class BestCutTab(QWidget):
             self._output_dir = restored_output
             self._output_label.setText(f"출력 폴더: {restored_output}")
 
+        self._update_grouping_help()
         self.setLayout(layout)
 
     @property
@@ -320,6 +369,7 @@ class BestCutTab(QWidget):
 
     def _invalidate_preview(self) -> None:
         self._rows = None
+        self._photos = None
         self._apply_button.setEnabled(False)
         self._open_output_button.setEnabled(False)
         self._table.setRowCount(0)
@@ -343,6 +393,7 @@ class BestCutTab(QWidget):
 
         self._preview_worker = PreviewWorker(
             list(self._input_dirs),
+            gap_seconds=self._gap_spin.value(),
             scan_cache=self._scan_cache,
             score_cache=self._score_cache,
             thumbnail_cache=self._thumbnail_cache,
@@ -353,14 +404,65 @@ class BestCutTab(QWidget):
         self._preview_worker.failed.connect(self._on_error)
         self._preview_worker.start()
 
-    def _on_preview_done(self, rows: list[ReportRow]) -> None:
+    def _on_preview_done(
+        self, photos: list[PhotoMetadata], rows: list[ReportRow], gap_seconds: float
+    ) -> None:
         self._busy = False
         self._status_label.setText("완료")
-        self._rows = rows
+        self._photos = photos
         self._preview_button.setEnabled(True)
+        self._show_rows(rows, gap_seconds)
+        # 미리보기가 도는 사이에 간격을 바꿨으면, 끝난 뒤 새 간격으로 다시 묶는다.
+        if gap_seconds != self._gap_spin.value():
+            self._regroup_timer.start()
+
+    def _show_rows(self, rows: list[ReportRow], gap_seconds: float) -> None:
+        self._rows = rows
+        self._rows_gap_seconds = gap_seconds
         self._apply_button.setEnabled(bool(rows) and self._output_dir is not None)
-        self._summary_text.setPlainText(format_preview_header(rows))
+        self._summary_text.setPlainText(format_preview_header(rows, gap_seconds))
         self._populate_table(rows)
+
+    def _on_gap_changed(self, value: float) -> None:
+        save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
+        self._update_grouping_help()
+        # 아직 미리보기 전이면 다음 미리보기 때 이 값으로 묶인다.
+        if self._photos is not None:
+            self._regroup_timer.start()
+
+    def _regroup(self) -> None:
+        """캐시된 점수로 새 간격에 맞춰 장면을 다시 묶고 베스트컷을 다시 고른다.
+        스캔·스코어링을 다시 하지 않아 즉시 끝난다."""
+        if self._busy:
+            # 미리보기/적용이 끝나면 _on_preview_done이 간격 차이를 보고 다시 부른다.
+            return
+        if self._photos is None:
+            return
+        gap_seconds = self._gap_spin.value()
+        if gap_seconds == self._rows_gap_seconds:
+            return
+        try:
+            groups = group_by_time_gap(self._photos, gap_seconds=gap_seconds)
+            rows = build_report(groups, cache=self._score_cache)
+        except OSError as e:
+            # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
+            self._invalidate_preview()
+            QMessageBox.warning(
+                self,
+                "다시 미리보기 필요",
+                f"미리보기 뒤에 사진 파일이 바뀌어 다시 묶을 수 없습니다. 미리보기를 다시 "
+                f"눌러주세요.\n({e})",
+            )
+            return
+        self._show_rows(rows, gap_seconds)
+        self._status_label.setText(f"장면 간격 {gap_seconds:g}초로 다시 묶음")
+
+    def _update_grouping_help(self) -> None:
+        help_text = bestcut_grouping_help(self._gap_spin.value())
+        for widget in self._gap_widgets:
+            widget.setToolTip(help_text)
+        self._grouping_help_label.setToolTip(help_text)
+        self._table.horizontalHeaderItem(2).setToolTip(help_text)
 
     def _populate_table(self, rows: list[ReportRow]) -> None:
         self._table.setRowCount(len(rows))
@@ -426,6 +528,12 @@ class BestCutTab(QWidget):
 
     def _on_apply_done(self, results: list[FileOpResult]) -> None:
         self._busy = False
+        if self._move_radio.isChecked():
+            # 옮긴 파일은 더 이상 입력 폴더에 없어, 간격을 바꿔 다시 묶을 수 없다.
+            self._photos = None
+        elif self._photos is not None and self._gap_spin.value() != self._rows_gap_seconds:
+            # 적용하는 사이에 간격을 바꿨으면 이제 다시 묶는다.
+            self._regroup_timer.start()
         self._apply_button.setEnabled(True)
         self._open_output_button.setEnabled(True)
         self._summary_text.setPlainText(
