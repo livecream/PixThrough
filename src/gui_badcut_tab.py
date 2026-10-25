@@ -49,7 +49,7 @@ from gui_format import (
 import score_store
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
-from report import ReportRow
+from report import ReportRow, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from scoring import PhotoScore
 from thumbnails import make_thumbnail
@@ -152,7 +152,7 @@ class ScoreWorker(QThread):
 
 class ApplyWorker(QThread):
     progress = Signal(int, int)
-    finished_ok = Signal(list)  # list[FileOpResult]
+    finished_ok = Signal(list, object)  # list[FileOpResult], 판정 리포트 경로
     failed = Signal(str)
 
     def __init__(self, rows: list[ReportRow], output_dir: Path) -> None:
@@ -165,7 +165,10 @@ class ApplyWorker(QThread):
             results = apply_selection(
                 self._rows, self._output_dir, move=True, on_progress=self.progress.emit
             )
-            self.finished_ok.emit(results)
+            # 파일 작업이 끝난 뒤에 쓴다 — 출력 폴더가 원본 폴더와 겹쳐 apply_selection이
+            # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.
+            report_path = write_apply_report(self._rows, self._output_dir, "badcut")
+            self.finished_ok.emit(results, report_path)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -647,13 +650,13 @@ class BadCutTab(QWidget):
         self._apply_worker.failed.connect(self._on_error)
         self._apply_worker.start()
 
-    def _on_apply_done(self, results: list[FileOpResult]) -> None:
+    def _on_apply_done(self, results: list[FileOpResult], report_path: Path) -> None:
         self._busy = False
         self._apply_button.setEnabled(False)
         # 이동된 파일은 더 이상 입력 폴더에 없으므로 캐시된 점수가 낡았다 —
         # 다시 정리하려면 미리보기를 새로 눌러야 한다.
         self._invalidate_preview()
-        self._summary_text.setPlainText(format_apply_summary(results, self._output_dir))
+        self._summary_text.setPlainText(format_apply_summary(results, self._output_dir, report_path))
 
     def _on_progress(self, done: int, total: int) -> None:
         self._progress_bar.setMaximum(total)

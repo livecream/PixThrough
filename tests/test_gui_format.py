@@ -287,3 +287,11 @@ def test_format_preview_header_mentions_keep_percent():
 def test_bestcut_scoring_help_describes_keep_percent():
     assert "가장 높은 1장" in bestcut_scoring_help()
     assert "<b>20%</b>(올림, 최소 1장)" in bestcut_scoring_help(keep_percent=20)
+
+
+def test_format_apply_summary_mentions_report_path():
+    results = [FileOpResult(source=Path("a.jpg"), destination=Path("/out/a.jpg"), raw_source=None, raw_destination=None, action="copy")]
+
+    summary = format_apply_summary(results, Path("/out"), Path("/out/bestcut_report_1.csv"))
+
+    assert "판정 리포트" in summary and "bestcut_report_1.csv" in summary

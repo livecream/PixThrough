@@ -156,11 +156,16 @@ def format_manual_choice_summary(rows: list[ReportRow]) -> str:
     return f"직접 추가 {added}장 · 직접 뺌 {removed}장"
 
 
-def format_apply_summary(results: list[FileOpResult], output_dir: Path) -> str:
+def format_apply_summary(
+    results: list[FileOpResult], output_dir: Path, report_path: Path | None = None
+) -> str:
     """apply_selection 결과를 사람이 읽을 요약 텍스트로 만든다."""
     action = results[0].action if results else "copy"
     verb = "이동" if action == "move" else "복사"
-    return f"{verb} 완료: {len(results)}장 → {output_dir}"
+    summary = f"{verb} 완료: {len(results)}장 → {output_dir}"
+    if report_path is not None:
+        summary += f"\n판정 리포트(선택·제외 사유 전체): {report_path}"
+    return summary
 
 
 def format_rename_preview(rows: list[RenamePlanRow]) -> str:
