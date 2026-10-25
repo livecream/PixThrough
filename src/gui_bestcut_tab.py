@@ -73,8 +73,9 @@ from gui_settings import (
     save_folder,
     save_folder_list,
 )
-from gui_photo_viewer import PhotoViewerDialog, ViewerAction
+from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import score_store
+from gui_worker import CancellableWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
@@ -158,7 +159,7 @@ def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
 
-class PreviewWorker(QThread):
+class PreviewWorker(CancellableWorker):
     progress = Signal(int, int)
     status = Signal(str)
     # list[PhotoMetadata], list[ReportRow], _SelectionSettings, {경로: 지문}
@@ -187,6 +188,7 @@ class PreviewWorker(QThread):
     def run(self) -> None:
         try:
             def on_scan_progress(done: int, total: int, path: Path) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스캔 중: {path.name} ({done}/{total}, {_percent(done, total)}%)")
 
@@ -196,7 +198,9 @@ class PreviewWorker(QThread):
                 on_progress=on_scan_progress,
                 cache=self._scan_cache,
             )
+
             def on_hash_progress(done: int, total: int) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"사진 유사도 계산 중... ({done}/{total}, {_percent(done, total)}%)")
 
@@ -208,6 +212,7 @@ class PreviewWorker(QThread):
             groups = _make_groups(photos, hashes, settings.gap_seconds, settings.split_distance)
 
             def on_group_progress(done: int, total: int) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"장면 그룹핑/스코어링 중... ({done}/{total}, {_percent(done, total)}%)")
 
@@ -219,6 +224,8 @@ class PreviewWorker(QThread):
             )
             self._generate_thumbnails(rows)
             self.finished_ok.emit(photos, rows, settings, hashes)
+        except PreviewCancelled:
+            self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -226,6 +233,7 @@ class PreviewWorker(QThread):
         if self._thumbnail_cache is None:
             return
         for row in rows:
+            self.check_cancel()
             try:
                 stat = row.path.stat()
             except OSError:
@@ -310,6 +318,13 @@ class BestCutTab(QWidget):
         self._copy_radio.setChecked(True)
         self._move_radio = QRadioButton("이동")
 
+        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button.setEnabled(False)
+        self._cancel_preview_button.setToolTip(
+            "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
+            "다시 미리보기하면 이어서 계산합니다.</p>"
+        )
+        self._cancel_preview_button.clicked.connect(self._cancel_preview)
         self._preview_button = QPushButton("미리보기")
         self._preview_button.setToolTip(
             "<p>사진을 장면별로 묶고 장면마다 베스트컷 1장을 고른 결과를 보여줍니다. "
@@ -464,6 +479,7 @@ class BestCutTab(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
+        button_row.addWidget(self._cancel_preview_button)
         button_row.addWidget(self._apply_button)
         button_row.addWidget(self._open_output_button)
 
@@ -587,6 +603,8 @@ class BestCutTab(QWidget):
         self._preview_worker.status.connect(self._status_label.setText)
         self._preview_worker.finished_ok.connect(self._on_preview_done)
         self._preview_worker.failed.connect(self._on_error)
+        self._preview_worker.cancelled.connect(self._on_preview_cancelled)
+        self._cancel_preview_button.setEnabled(True)
         self._preview_worker.start()
 
     def _on_preview_done(
@@ -597,6 +615,7 @@ class BestCutTab(QWidget):
         hashes: dict[Path, int | None],
     ) -> None:
         self._busy = False
+        self._cancel_preview_button.setEnabled(False)
         self._status_label.setText("완료")
         score_store.save()
         self._photos = photos
@@ -664,6 +683,11 @@ class BestCutTab(QWidget):
             self._choices[row.path] = wanted
         self._refresh_selection()
 
+    def _set_selected(self, row: ReportRow, wanted: bool) -> None:
+        """이미 원하는 상태면 그대로 둔다(P를 두 번 눌러도 빠지지 않게)."""
+        if row.selected != wanted:
+            self._toggle(row)
+
     def _toggle_selected_row(self) -> None:
         index = self._selected_table_row()
         if self._rows and index is not None:
@@ -702,10 +726,17 @@ class BestCutTab(QWidget):
                     ),
                     enabled=lambda row: True,
                     triggered=self._toggle,
+                    shortcut="Space",
+                    shortcut_help="넣기/빼기",
                 )
             ],
             verdict=_describe_choice,
             parent=self,
+            # Lightroom 등 사진 선별 도구에 익숙한 키: P(pick) 넣기, X(reject) 빼기
+            shortcuts=[
+                ViewerShortcut("P", "넣기", lambda row: self._set_selected(row, True)),
+                ViewerShortcut("X", "빼기", lambda row: self._set_selected(row, False)),
+            ],
         )
         self._viewer.finished.connect(self._on_viewer_closed)
         self._viewer.show()
@@ -896,7 +927,27 @@ class BestCutTab(QWidget):
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(done)
 
+    def _cancel_preview(self) -> None:
+        if self._preview_worker is not None and self._preview_worker.isRunning():
+            self._preview_worker.request_cancel()
+            self._cancel_preview_button.setEnabled(False)
+            self._status_label.setText("취소하는 중...")
+
+    def _on_preview_cancelled(self) -> None:
+        self._busy = False
+        self._cancel_preview_button.setEnabled(False)
+        self._preview_button.setEnabled(True)
+        self._progress_bar.setValue(0)
+        # 그때까지 계산한 점수는 캐시에 이미 들어가 있다 — 저장해 두면 다음에 이어서 계산된다.
+        score_store.save()
+        self._status_label.setText("미리보기를 취소했습니다 (그때까지 계산한 점수는 저장됨)")
+        self._summary_text.setPlainText(
+            "미리보기를 취소했습니다. 다시 미리보기를 누르면 이미 계산한 사진은 건너뛰고 이어서 "
+            "계산합니다."
+        )
+
     def _on_error(self, message: str) -> None:
+        self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
         self._apply_button.setEnabled(bool(self._rows) and self._output_dir is not None)
