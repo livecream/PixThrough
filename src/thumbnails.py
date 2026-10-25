@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from raw_preview import open_image
+
 THUMBNAIL_SIZE = (64, 64)
 
 
@@ -20,8 +22,7 @@ def make_thumbnail(path: Path, size: tuple[int, int] = THUMBNAIL_SIZE) -> Image.
     전체를 풀지 않는다 — 2400만 화소 사진 기준 장당 ~530ms → ~70ms. 다른 형식은 draft가
     아무 일도 하지 않아 예전과 같다."""
     try:
-        img = Image.open(path)
-        img.draft("RGB", (size[0] * 2, size[1] * 2))
+        img = open_image(path, draft=("RGB", (size[0] * 2, size[1] * 2)))
         img.load()
     except Exception:
         return None
@@ -33,9 +34,9 @@ def make_thumbnail(path: Path, size: tuple[int, int] = THUMBNAIL_SIZE) -> Image.
 def load_preview_image(path: Path) -> Image.Image | None:
     """크게 보기 창에 띄울 원본 크기 이미지를 연다. 블러 여부는 축소하면 가려지므로
     크기는 줄이지 않고(창에서 맞춤/100% 전환), 세로 사진이 눕지 않도록 EXIF 회전만
-    반영한다. 파일을 열 수 없으면(손상 등) None을 반환한다."""
+    반영한다(RAW는 안에 든 미리보기). 파일을 열 수 없으면(손상 등) None을 반환한다."""
     try:
-        img = Image.open(path)
+        img = open_image(path)
         img.load()
     except Exception:
         return None

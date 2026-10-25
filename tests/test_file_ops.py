@@ -180,6 +180,8 @@ def test_apply_selection_writes_timestamped_log(tmp_path):
     assert len(entries) == 1
     assert "timestamp" in entries[0]
     assert entries[0]["action"] == "copy"
+    # 왜 이 사진을 옮겼는지(선택 사유)도 로그에 남는다
+    assert entries[0]["reason"] == rows[0].reason
 
 
 def test_apply_selection_reports_progress_per_file(tmp_path):

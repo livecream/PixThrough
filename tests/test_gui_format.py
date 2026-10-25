@@ -10,6 +10,7 @@ from gui_format import (
     format_badcut_preview,
     format_duplicate_report,
     format_folder_summary,
+    format_manual_choice_summary,
     format_preview_header,
     format_preview_summary,
     format_rename_apply_summary,
@@ -239,3 +240,58 @@ def test_bestcut_scoring_help_shows_weights_as_percent():
     assert "선명도 50%" in text
     assert "노출 30%" in text
     assert "눈뜸 20%" in text
+
+
+def test_format_preview_header_mentions_scene_gap_when_given():
+    rows = [_row("a.jpg", 1, True, "선택됨"), _row("b.jpg", 2, True, "선택됨")]
+
+    assert format_preview_header(rows, 4.5) == "2개 장면(간격 4.5초), 2장 중 2장 선택"
+    assert format_preview_header(rows) == "2개 장면, 2장 중 2장 선택"
+
+
+def test_format_manual_choice_summary_counts_added_and_removed():
+    from dataclasses import replace
+
+    rows = [
+        replace(_row("a.jpg", 1, True, "선택됨: 직접 추가"), manual_choice="added"),
+        replace(_row("b.jpg", 1, False, "제외: 직접 뺌"), manual_choice="removed"),
+        replace(_row("c.jpg", 2, True, "선택됨: 직접 추가"), manual_choice="added"),
+        _row("d.jpg", 2, False, "제외: 종합 점수가 더 낮음"),
+    ]
+
+    assert format_manual_choice_summary(rows) == "직접 추가 2장 · 직접 뺌 1장"
+    assert format_manual_choice_summary(rows[3:]) == ""
+
+
+def test_format_preview_header_mentions_similarity_split_when_on():
+    rows = [_row("a.jpg", 1, True, "선택됨")]
+
+    assert format_preview_header(rows, 3, 20) == "1개 장면(간격 3초, 차이 20 넘으면 나눔), 1장 중 1장 선택"
+
+
+def test_bestcut_grouping_help_describes_split_setting():
+    from gui_format import bestcut_grouping_help
+
+    assert "꺼져 있습니다" in bestcut_grouping_help(3)
+    assert "<b>20</b>를 넘으면" in bestcut_grouping_help(3, 20)
+
+
+def test_format_preview_header_mentions_keep_percent():
+    rows = [_row("a.jpg", 1, True, "선택됨"), _row("b.jpg", 1, True, "선택됨")]
+
+    assert format_preview_header(rows, 3, None, 20) == (
+        "1개 장면(간격 3초), 2장 중 2장 선택 (장면마다 20% 올림, 최소 1장)"
+    )
+
+
+def test_bestcut_scoring_help_describes_keep_percent():
+    assert "가장 높은 1장" in bestcut_scoring_help()
+    assert "<b>20%</b>(올림, 최소 1장)" in bestcut_scoring_help(keep_percent=20)
+
+
+def test_format_apply_summary_mentions_report_path():
+    results = [FileOpResult(source=Path("a.jpg"), destination=Path("/out/a.jpg"), raw_source=None, raw_destination=None, action="copy")]
+
+    summary = format_apply_summary(results, Path("/out"), Path("/out/bestcut_report_1.csv"))
+
+    assert "판정 리포트" in summary and "bestcut_report_1.csv" in summary

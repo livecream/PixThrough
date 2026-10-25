@@ -64,3 +64,50 @@ def test_default_gap_is_three_seconds():
     groups = group_by_time_gap(photos)
 
     assert groups == [[photos[0], photos[1]], [photos[2]]]
+
+
+# --- 비슷하지 않은 사진에서 장면 나누기 ---------------------------------------
+
+from grouping import distances_to_previous, split_dissimilar  # noqa: E402
+
+
+def test_split_dissimilar_cuts_scene_where_photo_changes_a_lot():
+    photos = [_meta(0), _meta(1), _meta(2), _meta(3)]
+    # 세 번째 사진에서 피사체가 바뀜(앞 사진과 64비트 중 40비트 차이)
+    hashes = {photos[0].path: 0, photos[1].path: 0b11, photos[2].path: (1 << 40) - 1, photos[3].path: (1 << 40) - 1}
+
+    groups = split_dissimilar([photos], hashes, max_distance=20)
+
+    assert groups == [[photos[0], photos[1]], [photos[2], photos[3]]]
+
+
+def test_split_dissimilar_keeps_scene_when_difference_is_at_threshold():
+    photos = [_meta(0), _meta(1)]
+    hashes = {photos[0].path: 0, photos[1].path: (1 << 20) - 1}  # 정확히 20비트 차이
+
+    assert split_dissimilar([photos], hashes, max_distance=20) == [photos]
+
+
+def test_split_dissimilar_never_merges_separate_time_scenes():
+    first, second = [_meta(0)], [_meta(100)]
+    hashes = {first[0].path: 0, second[0].path: 0}  # 똑같은 사진이어도
+
+    assert split_dissimilar([first, second], hashes, max_distance=20) == [first, second]
+
+
+def test_split_dissimilar_does_not_cut_around_unreadable_photo():
+    photos = [_meta(0), _meta(1), _meta(2)]
+    hashes = {photos[0].path: 0, photos[1].path: None, photos[2].path: (1 << 40) - 1}
+
+    assert split_dissimilar([photos], hashes, max_distance=20) == [photos]
+
+
+def test_distances_to_previous_in_time_order():
+    photos = [_meta(0), _meta(1), _meta(2)]
+    hashes = {photos[0].path: 0, photos[1].path: 0b111, photos[2].path: None}
+
+    assert distances_to_previous(photos, hashes) == {
+        photos[0].path: None,
+        photos[1].path: 3,
+        photos[2].path: None,
+    }
