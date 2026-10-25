@@ -176,7 +176,7 @@ def test_apply_selection_writes_timestamped_log(tmp_path):
 
     log_files = list(out_dir.glob("apply_log_*.jsonl"))
     assert len(log_files) == 1
-    entries = [json.loads(line) for line in log_files[0].read_text().splitlines()]
+    entries = [json.loads(line) for line in log_files[0].read_text(encoding="utf-8").splitlines()]
     assert len(entries) == 1
     assert "timestamp" in entries[0]
     assert entries[0]["action"] == "copy"
