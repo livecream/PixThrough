@@ -261,3 +261,16 @@ def test_format_manual_choice_summary_counts_added_and_removed():
 
     assert format_manual_choice_summary(rows) == "직접 추가 2장 · 직접 뺌 1장"
     assert format_manual_choice_summary(rows[3:]) == ""
+
+
+def test_format_preview_header_mentions_similarity_split_when_on():
+    rows = [_row("a.jpg", 1, True, "선택됨")]
+
+    assert format_preview_header(rows, 3, 20) == "1개 장면(간격 3초, 차이 20 넘으면 나눔), 1장 중 1장 선택"
+
+
+def test_bestcut_grouping_help_describes_split_setting():
+    from gui_format import bestcut_grouping_help
+
+    assert "꺼져 있습니다" in bestcut_grouping_help(3)
+    assert "<b>20</b>를 넘으면" in bestcut_grouping_help(3, 20)

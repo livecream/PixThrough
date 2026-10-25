@@ -8,7 +8,7 @@ from pathlib import Path
 
 from badcut import BadCutThresholds, build_badcut_rows
 from file_ops import apply_selection
-from grouping import DEFAULT_SCENE_GAP_SECONDS, group_by_time_gap
+from grouping import DEFAULT_SCENE_GAP_SECONDS, group_scenes
 from rename_by_time import (
     DEFAULT_DIGITS,
     apply_merge_plan,
@@ -34,10 +34,20 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
 def cmd_group(args: argparse.Namespace) -> None:
     results = scan_and_extract(Path(args.input), recursive=args.recursive)
-    groups = group_by_time_gap(results, gap_seconds=args.scene_gap_seconds)
+    groups = group_scenes(
+        results,
+        gap_seconds=args.scene_gap_seconds,
+        max_hash_distance=args.split_hash_distance,
+    )
     print(
         f"총 {len(results)}개 파일 → {len(groups)}개 장면 그룹 "
-        f"(간격: {args.scene_gap_seconds}초)\n"
+        f"(간격: {args.scene_gap_seconds}초"
+        + (
+            f", 앞 사진과 차이 {args.split_hash_distance} 초과 시 나눔"
+            if args.split_hash_distance is not None
+            else ""
+        )
+        + ")\n"
     )
     for i, group in enumerate(groups, start=1):
         names = ", ".join(m.path.name for m in group)
@@ -59,7 +69,11 @@ def cmd_score(args: argparse.Namespace) -> None:
 
 def cmd_select(args: argparse.Namespace) -> None:
     results = scan_and_extract(Path(args.input), recursive=args.recursive)
-    groups = group_by_time_gap(results, gap_seconds=args.scene_gap_seconds)
+    groups = group_scenes(
+        results,
+        gap_seconds=args.scene_gap_seconds,
+        max_hash_distance=args.split_hash_distance,
+    )
     print(f"총 {len(groups)}개 장면 그룹에서 베스트 컷 선정\n")
     for i, group in enumerate(groups, start=1):
         selection = select_best(group)
@@ -69,7 +83,11 @@ def cmd_select(args: argparse.Namespace) -> None:
 
 def cmd_report(args: argparse.Namespace) -> None:
     results = scan_and_extract(Path(args.input), recursive=args.recursive)
-    groups = group_by_time_gap(results, gap_seconds=args.scene_gap_seconds)
+    groups = group_scenes(
+        results,
+        gap_seconds=args.scene_gap_seconds,
+        max_hash_distance=args.split_hash_distance,
+    )
     rows = build_report(groups)
     write_report(rows, Path(args.output))
     selected = sum(1 for r in rows if r.selected)
@@ -81,7 +99,11 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 def cmd_apply(args: argparse.Namespace) -> None:
     results = scan_and_extract(Path(args.input), recursive=args.recursive)
-    groups = group_by_time_gap(results, gap_seconds=args.scene_gap_seconds)
+    groups = group_scenes(
+        results,
+        gap_seconds=args.scene_gap_seconds,
+        max_hash_distance=args.split_hash_distance,
+    )
     rows = build_report(groups)
     write_report(rows, Path(args.report))
 
@@ -161,6 +183,14 @@ def main() -> None:
         default=DEFAULT_SCENE_GAP_SECONDS,
         help=f"같은 장면으로 묶을 최대 시간 간격(초), 기본값 {DEFAULT_SCENE_GAP_SECONDS}",
     )
+    p_group.add_argument(
+        "--split-hash-distance",
+        type=int,
+        default=None,
+        dest="split_hash_distance",
+        help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
+        "나눔. 생략하면 시간 간격으로만 묶음",
+    )
     p_group.set_defaults(func=cmd_group)
 
     p_score = sub.add_parser("score", help="선명도 기준 품질 스코어링 (M3)")
@@ -177,6 +207,14 @@ def main() -> None:
         default=DEFAULT_SCENE_GAP_SECONDS,
         help=f"같은 장면으로 묶을 최대 시간 간격(초), 기본값 {DEFAULT_SCENE_GAP_SECONDS}",
     )
+    p_select.add_argument(
+        "--split-hash-distance",
+        type=int,
+        default=None,
+        dest="split_hash_distance",
+        help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
+        "나눔. 생략하면 시간 간격으로만 묶음",
+    )
     p_select.set_defaults(func=cmd_select)
 
     p_report = sub.add_parser("report", help="선택/제외 사유가 담긴 dry-run 리포트 생성 (M5)")
@@ -187,6 +225,14 @@ def main() -> None:
         type=float,
         default=DEFAULT_SCENE_GAP_SECONDS,
         help=f"같은 장면으로 묶을 최대 시간 간격(초), 기본값 {DEFAULT_SCENE_GAP_SECONDS}",
+    )
+    p_report.add_argument(
+        "--split-hash-distance",
+        type=int,
+        default=None,
+        dest="split_hash_distance",
+        help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
+        "나눔. 생략하면 시간 간격으로만 묶음",
     )
     p_report.add_argument(
         "--output", required=True, help="리포트 저장 경로 (.csv 또는 .json)"
@@ -203,6 +249,14 @@ def main() -> None:
         type=float,
         default=DEFAULT_SCENE_GAP_SECONDS,
         help=f"같은 장면으로 묶을 최대 시간 간격(초), 기본값 {DEFAULT_SCENE_GAP_SECONDS}",
+    )
+    p_apply.add_argument(
+        "--split-hash-distance",
+        type=int,
+        default=None,
+        dest="split_hash_distance",
+        help="같은 장면 안에서 바로 앞 사진과 이미지 지문 차이(0~64)가 이 값을 넘으면 새 장면으로 "
+        "나눔. 생략하면 시간 간격으로만 묶음",
     )
     p_apply.add_argument("--output", required=True, help="베스트 컷을 저장할 폴더")
     p_apply.add_argument(

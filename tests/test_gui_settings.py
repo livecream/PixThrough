@@ -116,3 +116,12 @@ def test_load_float_uses_default_for_broken_or_out_of_range_value(tmp_path):
 
     settings.setValue("test/gap", 999)
     assert load_float(settings, "test/gap", 3.0, 0.5, 60.0) == 3.0
+
+
+def test_save_and_load_bool_round_trip_through_ini_file(tmp_path):
+    from gui_settings import load_bool, save_bool
+
+    save_bool(_settings(tmp_path), "test/flag", True)
+
+    assert load_bool(_settings(tmp_path), "test/flag", False) is True
+    assert load_bool(_settings(tmp_path), "test/unset", False) is False
