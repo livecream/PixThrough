@@ -82,7 +82,7 @@ def test_write_rename_report_writes_json(tmp_path):
 
     write_rename_report(rows, report_path)
 
-    data = json.loads(report_path.read_text())
+    data = json.loads(report_path.read_text(encoding="utf-8"))
     assert data[0]["old_path"] == str(rows[0].old_path)
     assert data[0]["new_path"] == str(rows[0].new_path)
 
@@ -159,7 +159,7 @@ def test_apply_rename_plan_writes_log(tmp_path):
 
     log_files = list(tmp_path.glob("rename_log_*.jsonl"))
     assert len(log_files) == 1
-    entries = [json.loads(line) for line in log_files[0].read_text().splitlines()]
+    entries = [json.loads(line) for line in log_files[0].read_text(encoding="utf-8").splitlines()]
     assert len(entries) == 1
     assert entries[0]["new_path"] == str(tmp_path / "00001.jpg")
 

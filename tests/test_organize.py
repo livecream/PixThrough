@@ -164,7 +164,7 @@ def test_write_operation_log_records_move_rows(tmp_path):
 
     log_path = write_operation_log(rows, tmp_path, "move_raw")
 
-    lines = [json.loads(line) for line in log_path.read_text().splitlines()]
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 1
     assert lines[0]["action"] == "move_raw"
     assert lines[0]["old_path"] == str(raw)
@@ -178,7 +178,7 @@ def test_write_operation_log_records_removed_folders(tmp_path):
 
     log_path = write_operation_log([folder], tmp_path, "remove_empty_folders")
 
-    lines = [json.loads(line) for line in log_path.read_text().splitlines()]
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert lines[0]["action"] == "remove_empty_folders"
     assert lines[0]["path"] == str(folder)
 
@@ -313,7 +313,7 @@ def test_delete_duplicate_files_writes_log_when_log_folder_given(tmp_path):
 
     logs = list(tmp_path.glob("organize_log_*.jsonl"))
     assert len(logs) == 1
-    lines = [json.loads(line) for line in logs[0].read_text().splitlines()]
+    lines = [json.loads(line) for line in logs[0].read_text(encoding="utf-8").splitlines()]
     assert lines[0]["action"] == "delete_duplicate"
     assert lines[0]["path"] == str(tmp_path / "b.jpg")
 
