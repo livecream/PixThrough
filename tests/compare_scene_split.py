@@ -44,7 +44,7 @@ def main() -> None:
     args = parser.parse_args()
     folder = Path(args.folder)
 
-    photos = scan_and_extract(folder, recursive=True)
+    photos = scan_and_extract(folder, recursive=True, include_unpaired_raw=True)
     if not photos:
         print(f"사진이 없습니다: {folder}")
         return

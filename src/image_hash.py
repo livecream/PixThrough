@@ -19,6 +19,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from raw_preview import open_image
+
 HASH_BITS = 64
 # 지문 만드는 방식을 바꾸면 올린다 — 저장해 둔 예전 지문(score_store)을 버리게 한다.
 HASH_VERSION = 1
@@ -31,8 +33,7 @@ _DRAFT_SIZE = (128, 128)
 def perceptual_hash(path: Path) -> int | None:
     """사진의 64비트 pHash. 파일을 열 수 없으면 None(비교 대상에서 빠짐)."""
     try:
-        with Image.open(path) as img:
-            img.draft("L", _DRAFT_SIZE)
+        with open_image(path, draft=("L", _DRAFT_SIZE)) as img:
             gray = ImageOps.exif_transpose(img).convert("L")
             small = gray.resize((_DCT_SIZE, _DCT_SIZE), Image.Resampling.LANCZOS)
     except Exception:

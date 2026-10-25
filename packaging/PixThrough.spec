@@ -11,18 +11,18 @@ if _src_dir not in _sys.path:
 
 from version import __version__
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 datas = collect_data_files("mediapipe") + collect_data_files("cv2")
 hiddenimports = (
     collect_submodules("mediapipe")
     + collect_submodules("cv2")
-    + ["PIL._tkinter_finder"]
+    + ["PIL._tkinter_finder", "rawpy"]
 )
 
 a = Analysis(
     ["../src/gui.py"],
-    binaries=[],
+    binaries=collect_dynamic_libs("rawpy"),  # LibRaw (RAW 미리보기 추출)
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
