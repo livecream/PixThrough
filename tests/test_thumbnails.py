@@ -59,3 +59,36 @@ def test_load_preview_image_returns_none_for_corrupt_file(tmp_path):
     path.write_bytes(b"not an image")
 
     assert load_preview_image(path) is None
+
+
+def test_make_thumbnail_applies_exif_rotation(tmp_path):
+    """세로로 찍은 사진(EXIF Orientation 6)이 표 썸네일에서 옆으로 눕지 않아야 한다."""
+    path = tmp_path / "portrait.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    Image.new("RGB", (200, 100), (10, 20, 30)).save(path, "jpeg", exif=exif)
+
+    thumb = make_thumbnail(path, size=(64, 64))
+
+    assert thumb.size == (32, 64)
+
+
+def test_make_thumbnail_reads_large_jpeg_at_reduced_size(tmp_path, monkeypatch):
+    """큰 JPEG는 원본 전체가 아니라 축소 디코딩(draft)으로 읽는다."""
+    path = _make_jpeg(tmp_path / "big.jpg", size=(4000, 3000))
+    from PIL import ImageFile
+
+    decoded_sizes = []
+    original_load = ImageFile.ImageFile.load
+
+    def spy_load(self):
+        result = original_load(self)
+        decoded_sizes.append(self.size)
+        return result
+
+    monkeypatch.setattr(ImageFile.ImageFile, "load", spy_load)
+
+    thumb = make_thumbnail(path, size=(64, 64))
+
+    assert thumb.size == (64, 48)
+    assert max(decoded_sizes[0]) <= 500  # 4000px 전체가 아니라 1/8 근처로 풀었음

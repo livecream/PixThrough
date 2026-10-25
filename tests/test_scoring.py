@@ -173,12 +173,29 @@ def test_score_photos_works_without_progress_callback(tmp_path):
     assert len(results) == 1
 
 
-def test_default_model_dir_uses_app_support_when_frozen(monkeypatch):
+def test_default_model_dir_uses_app_support_when_frozen_on_macos(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
 
     result = _default_model_dir()
 
     assert result == Path.home() / "Library" / "Application Support" / "PixThrough" / "models"
+
+
+def test_default_model_dir_uses_local_app_data_when_frozen_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert _default_model_dir() == tmp_path / "PixThrough" / "models"
+
+
+def test_default_model_dir_falls_back_without_local_app_data_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    assert _default_model_dir() == Path.home() / "AppData" / "Local" / "PixThrough" / "models"
 
 
 def test_default_model_dir_uses_repo_relative_path_when_not_frozen(monkeypatch):

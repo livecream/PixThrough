@@ -9,7 +9,7 @@ from file_ops import FileOpResult
 from grouping import DEFAULT_SCENE_GAP_SECONDS
 from organize import DuplicateGroup, FolderSummary
 from rename_by_time import RenamePlanRow, RenameResult
-from report import ReportRow
+from report import MANUAL_ADDED, MANUAL_REMOVED, ReportRow
 from scoring import (
     FOCUS_GRID,
     FOCUS_LONG_SIDE,
@@ -47,12 +47,23 @@ def format_preview_summary(rows: list[ReportRow]) -> str:
     return "\n".join(lines)
 
 
-def format_preview_header(rows: list[ReportRow]) -> str:
-    """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다."""
+def format_preview_header(
+    rows: list[ReportRow],
+    gap_seconds: float | None = None,
+    split_distance: int | None = None,
+    keep_percent: int = 0,
+) -> str:
+    """장면 수/선택 수 집계 한 줄. 개별 파일 나열은 GUI가 테이블로 그린다.
+    gap_seconds/split_distance/keep_percent를 주면 어떤 기준으로 고른 결과인지 함께 적는다."""
     scene_ids = {row.scene_id for row in rows}
     total = len(rows)
     selected = sum(1 for r in rows if r.selected)
-    return f"{len(scene_ids)}개 장면, {total}장 중 {selected}장 선택"
+    scenes = f"{len(scene_ids)}개 장면"
+    if gap_seconds is not None:
+        split = f", 차이 {split_distance} 넘으면 나눔" if split_distance is not None else ""
+        scenes += f"(간격 {gap_seconds:g}초{split})"
+    keep = f" (장면마다 {keep_percent}% 올림, 최소 1장)" if keep_percent else ""
+    return f"{scenes}, {total}장 중 {selected}장 선택{keep}"
 
 
 def sharpness_measure_help() -> str:
@@ -78,9 +89,22 @@ def format_sharpness_region(region: str | None) -> str:
     return ""
 
 
-def bestcut_grouping_help(gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS) -> str:
-    """베스트컷 탭 "장면은 어떻게 묶나요?" 툴팁. 실제 그룹핑 간격 상수에서 숫자를
-    가져와, 코드 값이 바뀌어도 설명이 어긋나지 않게 한다."""
+def bestcut_grouping_help(
+    gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS, split_distance: int | None = None
+) -> str:
+    """베스트컷 탭 "장면은 어떻게 묶나요?" 툴팁. 지금 쓰는 간격·나누기 기준을 그대로
+    보여줘, 설정이 바뀌어도 설명이 어긋나지 않게 한다."""
+    if split_distance is None:
+        split = (
+            "<p>비슷하지 않은 사진 나누기는 꺼져 있습니다 — 시간 간격으로만 묶습니다.</p>"
+        )
+    else:
+        split = (
+            "<p><b>비슷하지 않은 사진 나누기</b>: 시간상 같은 장면이어도 바로 앞 사진과의 "
+            f"차이가 <b>{split_distance}</b>를 넘으면(카메라를 다른 피사체로 돌린 경우 등) "
+            "그 자리에서 새 장면으로 나눕니다. 비슷한 사진이라도 시간이 떨어져 있으면 합치지는 "
+            "않습니다.</p>"
+        )
     return (
         "<p><b>장면 묶기</b>: 사진을 촬영 시각(EXIF, 없으면 파일 수정 시각) 순으로 "
         "늘어놓고, 바로 앞 사진과 "
@@ -90,18 +114,24 @@ def bestcut_grouping_help(gap_seconds: float = DEFAULT_SCENE_GAP_SECONDS) -> str
         "구도가 바뀌어도 간격이 짧으면 같은 장면이 되고, 같은 구도라도 잠깐 쉬었다 "
         "찍으면 다른 장면이 됩니다.</p>"
         "<p>여러 입력 폴더(바디)를 넣으면 촬영 시각으로 합쳐서 묶으므로, 카메라 "
-        "시계가 서로 맞아 있어야 정확합니다.</p>"
+        "시계가 서로 맞아 있어야 정확합니다.</p>" + split
     )
 
 
-def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS) -> str:
-    """베스트컷 탭 "베스트컷은 어떻게 고르나요?" 툴팁. 실제 가중치 상수에서 비율을
-    가져온다."""
+def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS, keep_percent: int = 0) -> str:
+    """베스트컷 탭 "베스트컷은 어떻게 고르나요?" 툴팁. 실제 가중치 상수와 지금 쓰는
+    남길 비율을 그대로 보여준다."""
     sharpness = round(weights["sharpness"] * 100)
     exposure = round(weights["exposure"] * 100)
     face = round(weights["face"] * 100)
-    return (
-        "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
+    if keep_percent:
+        selection = (
+            f"<p><b>베스트컷 선정</b>: 장면마다 사진 수의 <b>{keep_percent}%</b>(올림, 최소 "
+            "1장)만큼 종합점수가 높은 순으로 남깁니다. 예: 장면이 6장이고 20%면 1.2 → 2장.</p>"
+        )
+    else:
+        selection = "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
+    return selection + (
         f"<p><b>종합점수(0~1)</b> = 선명도 {sharpness}% + 노출 {exposure}% + 눈뜸 {face}%</p>"
         "<ul>"
         "<li><b>선명도</b>: 초점이 맞은 부분(얼굴, 없으면 가장 선명한 부분)이 얼마나 "
@@ -118,11 +148,25 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS) -> str:
     )
 
 
-def format_apply_summary(results: list[FileOpResult], output_dir: Path) -> str:
+def format_manual_choice_summary(rows: list[ReportRow]) -> str:
+    """미리보기에서 직접 바꾼 컷 수. 바꾼 게 없으면 빈 문자열."""
+    added = sum(1 for r in rows if r.manual_choice == MANUAL_ADDED)
+    removed = sum(1 for r in rows if r.manual_choice == MANUAL_REMOVED)
+    if not added and not removed:
+        return ""
+    return f"직접 추가 {added}장 · 직접 뺌 {removed}장"
+
+
+def format_apply_summary(
+    results: list[FileOpResult], output_dir: Path, report_path: Path | None = None
+) -> str:
     """apply_selection 결과를 사람이 읽을 요약 텍스트로 만든다."""
     action = results[0].action if results else "copy"
     verb = "이동" if action == "move" else "복사"
-    return f"{verb} 완료: {len(results)}장 → {output_dir}"
+    summary = f"{verb} 완료: {len(results)}장 → {output_dir}"
+    if report_path is not None:
+        summary += f"\n판정 리포트(선택·제외 사유 전체): {report_path}"
+    return summary
 
 
 def format_rename_preview(rows: list[RenamePlanRow]) -> str:

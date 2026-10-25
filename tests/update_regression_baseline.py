@@ -29,7 +29,7 @@ BASELINE_PATH = TEST_PHOTOS_DIR / "baseline.json"
 
 def compute_selection(test_photos_dir: Path) -> dict[str, bool]:
     """test_photos_dir 기준 상대경로 → 선택 여부(dict)를 계산한다."""
-    results = scan_and_extract(test_photos_dir, recursive=True)
+    results = scan_and_extract(test_photos_dir, recursive=True, include_unpaired_raw=True)
     groups = group_by_time_gap(results)
     rows = build_report(groups)
     return {

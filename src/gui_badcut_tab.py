@@ -46,9 +46,11 @@ from gui_format import (
     format_threshold_reference,
     sharpness_measure_help,
 )
-from gui_photo_viewer import PhotoViewerDialog
+import score_store
+from gui_worker import CancellableWorker, PreviewCancelled
+from gui_photo_viewer import PhotoViewerDialog, ViewerAction
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
-from report import ReportRow
+from report import ReportRow, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from scoring import PhotoScore
 from thumbnails import make_thumbnail
@@ -91,7 +93,7 @@ def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
 
-class ScoreWorker(QThread):
+class ScoreWorker(CancellableWorker):
     progress = Signal(int, int)
     status = Signal(str)
     finished_ok = Signal(list, list)  # list[PhotoMetadata], list[PhotoScore]
@@ -115,6 +117,7 @@ class ScoreWorker(QThread):
     def run(self) -> None:
         try:
             def on_scan_progress(done: int, total: int, path: Path) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스캔 중: {path.name} ({done}/{total}, {_percent(done, total)}%)")
 
@@ -123,15 +126,19 @@ class ScoreWorker(QThread):
                 recursive=self._recursive,
                 on_progress=on_scan_progress,
                 cache=self._scan_cache,
+                include_unpaired_raw=True,  # RAW만 찍은 폴더도 (미리보기 JPEG로)
             )
 
             def on_score_progress(done: int, total: int) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스코어링 중... ({done}/{total}, {_percent(done, total)}%)")
 
             scores = score_for_badcut(photos, on_progress=on_score_progress, cache=self._score_cache)
             self._generate_thumbnails(photos)
             self.finished_ok.emit(photos, scores)
+        except PreviewCancelled:
+            self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -139,6 +146,7 @@ class ScoreWorker(QThread):
         if self._thumbnail_cache is None:
             return
         for meta in photos:
+            self.check_cancel()
             try:
                 stat = meta.path.stat()
             except OSError:
@@ -152,7 +160,7 @@ class ScoreWorker(QThread):
 
 class ApplyWorker(QThread):
     progress = Signal(int, int)
-    finished_ok = Signal(list)  # list[FileOpResult]
+    finished_ok = Signal(list, object)  # list[FileOpResult], 판정 리포트 경로
     failed = Signal(str)
 
     def __init__(self, rows: list[ReportRow], output_dir: Path) -> None:
@@ -165,7 +173,10 @@ class ApplyWorker(QThread):
             results = apply_selection(
                 self._rows, self._output_dir, move=True, on_progress=self.progress.emit
             )
-            self.finished_ok.emit(results)
+            # 파일 작업이 끝난 뒤에 쓴다 — 출력 폴더가 원본 폴더와 겹쳐 apply_selection이
+            # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.
+            report_path = write_apply_report(self._rows, self._output_dir, "badcut")
+            self.finished_ok.emit(results, report_path)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
@@ -194,7 +205,8 @@ class BadCutTab(QWidget):
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
         self._scan_cache: dict = {}
-        self._score_cache: dict = {}
+        # 점수는 앱을 꺼도 남는 공용 저장소를 쓴다(베스트컷 탭과 공유, score_store).
+        self._score_cache: dict = score_store.score_cache()
         self._thumbnail_cache: dict = {}
         self._pixmap_cache: dict = {}
         self.setAcceptDrops(True)
@@ -270,6 +282,13 @@ class BadCutTab(QWidget):
         reference_button_row.addWidget(self._sharpness_ref_button)
         reference_button_row.addWidget(self._eyes_ref_button)
 
+        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button.setEnabled(False)
+        self._cancel_preview_button.setToolTip(
+            "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
+            "다시 미리보기하면 이어서 계산합니다.</p>"
+        )
+        self._cancel_preview_button.clicked.connect(self._cancel_preview)
         self._preview_button = QPushButton("미리보기")
         self._preview_button.clicked.connect(self._run_preview)
 
@@ -304,6 +323,7 @@ class BadCutTab(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
+        button_row.addWidget(self._cancel_preview_button)
         button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
@@ -420,11 +440,15 @@ class BadCutTab(QWidget):
         self._score_worker.status.connect(self._status_label.setText)
         self._score_worker.finished_ok.connect(self._on_scored)
         self._score_worker.failed.connect(self._on_error)
+        self._score_worker.cancelled.connect(self._on_preview_cancelled)
+        self._cancel_preview_button.setEnabled(True)
         self._score_worker.start()
 
     def _on_scored(self, photos: list[PhotoMetadata], scores: list[PhotoScore]) -> None:
         self._busy = False
+        self._cancel_preview_button.setEnabled(False)
         self._status_label.setText("완료")
+        score_store.save()
         self._photos = photos
         self._scores = scores
         self._preview_button.setEnabled(True)
@@ -513,9 +537,34 @@ class BadCutTab(QWidget):
         ]
         if self._viewer is not None:
             self._viewer.close()
-        self._viewer = PhotoViewerDialog(self._rows_in_viewer_order(), table_row, self)
-        self._viewer.sharpness_reference_chosen.connect(self._set_sharpness_reference)
-        self._viewer.eyes_reference_chosen.connect(self._set_eyes_reference)
+        self._viewer = PhotoViewerDialog(
+            self._rows_in_viewer_order(),
+            table_row,
+            actions=[
+                ViewerAction(
+                    label=lambda row: "이 사진을 선명도 기준으로",
+                    tooltip=(
+                        "<p>이 사진의 선명도까지는 정상으로 보고, 이보다 선명도가 낮은 "
+                        "사진을 C컷(블러)으로 판정합니다.</p>"
+                    ),
+                    enabled=lambda row: not _unscored(row),
+                    triggered=self._set_sharpness_reference,
+                ),
+                ViewerAction(
+                    label=lambda row: "이 사진을 눈뜸 기준으로",
+                    tooltip=(
+                        "<p>이 사진의 눈 뜬 정도까지는 정상으로 보고, 이보다 눈이 더 감긴 "
+                        "사진을 C컷(눈감음)으로 판정합니다. 얼굴이 검출된 사진에서만 쓸 수 "
+                        "있습니다.</p>"
+                    ),
+                    enabled=lambda row: not _unscored(row) and row.face is not None,
+                    triggered=self._set_eyes_reference,
+                ),
+            ],
+            verdict=lambda row: "판정: "
+            + ("C컷" if row.selected else ("판정 불가" if _unscored(row) else "정상")),
+            parent=self,
+        )
         self._viewer.finished.connect(self._on_viewer_closed)
         self._viewer.show()
 
@@ -620,24 +669,48 @@ class BadCutTab(QWidget):
         self._apply_worker.failed.connect(self._on_error)
         self._apply_worker.start()
 
-    def _on_apply_done(self, results: list[FileOpResult]) -> None:
+    def _on_apply_done(self, results: list[FileOpResult], report_path: Path) -> None:
         self._busy = False
         self._apply_button.setEnabled(False)
         # 이동된 파일은 더 이상 입력 폴더에 없으므로 캐시된 점수가 낡았다 —
         # 다시 정리하려면 미리보기를 새로 눌러야 한다.
         self._invalidate_preview()
-        self._summary_text.setPlainText(format_apply_summary(results, self._output_dir))
+        self._summary_text.setPlainText(format_apply_summary(results, self._output_dir, report_path))
 
     def _on_progress(self, done: int, total: int) -> None:
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(done)
 
+    def _cancel_preview(self) -> None:
+        if self._score_worker is not None and self._score_worker.isRunning():
+            self._score_worker.request_cancel()
+            self._cancel_preview_button.setEnabled(False)
+            self._status_label.setText("취소하는 중...")
+
+    def _on_preview_cancelled(self) -> None:
+        self._busy = False
+        self._cancel_preview_button.setEnabled(False)
+        self._preview_button.setEnabled(True)
+        self._progress_bar.setValue(0)
+        # 그때까지 계산한 점수는 캐시에 이미 들어가 있다 — 저장해 두면 다음에 이어서 계산된다.
+        score_store.save()
+        self._status_label.setText("미리보기를 취소했습니다 (그때까지 계산한 점수는 저장됨)")
+        self._summary_text.setPlainText(
+            "미리보기를 취소했습니다. 다시 미리보기를 누르면 이미 계산한 사진은 건너뛰고 이어서 "
+            "계산합니다."
+        )
+
     def _on_error(self, message: str) -> None:
+        self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
         bad_count = sum(1 for r in (self._rows or []) if r.selected)
         self._apply_button.setEnabled(bad_count > 0 and self._output_dir is not None)
         QMessageBox.critical(self, "오류", message)
+
+
+def _unscored(row: ReportRow) -> bool:
+    return row.reason.startswith("판정 불가")
 
 
 class _NumberItem(QTableWidgetItem):

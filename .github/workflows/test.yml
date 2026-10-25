@@ -1,0 +1,42 @@
+# PR을 올리거나 main에 push할 때마다 macOS·Windows·Linux에서 pytest를 돌린다.
+# 앱은 macOS/Windows용으로 배포되는데 개발·검증은 다른 환경에서 하는 경우가 많아,
+# OS별 차이(경로, Qt, mediapipe 등)를 머지 전에 잡기 위함이다.
+# test_photos/는 gitignore라 러너에 실사진이 없음 → 회귀 테스트는 자동 스킵되고 나머지만 실행.
+
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      # 릴리스 빌드(release.yml)와 같은 Python 버전
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
