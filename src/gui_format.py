@@ -9,7 +9,7 @@ from file_ops import FileOpResult
 from grouping import DEFAULT_SCENE_GAP_SECONDS
 from organize import DuplicateGroup, FolderSummary
 from rename_by_time import RenamePlanRow, RenameResult
-from report import ReportRow
+from report import MANUAL_ADDED, MANUAL_REMOVED, ReportRow
 from scoring import (
     FOCUS_GRID,
     FOCUS_LONG_SIDE,
@@ -119,6 +119,15 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS) -> str:
         "<p>종합점수가 같으면 먼저 찍은 컷을 고릅니다. 점수를 계산하지 못한 파일"
         "(손상 등)은 모든 점수가 0으로 처리돼 정상 사진에 밀립니다.</p>"
     )
+
+
+def format_manual_choice_summary(rows: list[ReportRow]) -> str:
+    """미리보기에서 직접 바꾼 컷 수. 바꾼 게 없으면 빈 문자열."""
+    added = sum(1 for r in rows if r.manual_choice == MANUAL_ADDED)
+    removed = sum(1 for r in rows if r.manual_choice == MANUAL_REMOVED)
+    if not added and not removed:
+        return ""
+    return f"직접 추가 {added}장 · 직접 뺌 {removed}장"
 
 
 def format_apply_summary(results: list[FileOpResult], output_dir: Path) -> str:

@@ -46,7 +46,7 @@ from gui_format import (
     format_threshold_reference,
     sharpness_measure_help,
 )
-from gui_photo_viewer import PhotoViewerDialog
+from gui_photo_viewer import PhotoViewerDialog, ViewerAction
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from report import ReportRow
 from scanner import PhotoMetadata, scan_and_extract_many
@@ -512,9 +512,34 @@ class BadCutTab(QWidget):
         ]
         if self._viewer is not None:
             self._viewer.close()
-        self._viewer = PhotoViewerDialog(self._rows_in_viewer_order(), table_row, self)
-        self._viewer.sharpness_reference_chosen.connect(self._set_sharpness_reference)
-        self._viewer.eyes_reference_chosen.connect(self._set_eyes_reference)
+        self._viewer = PhotoViewerDialog(
+            self._rows_in_viewer_order(),
+            table_row,
+            actions=[
+                ViewerAction(
+                    label=lambda row: "이 사진을 선명도 기준으로",
+                    tooltip=(
+                        "<p>이 사진의 선명도까지는 정상으로 보고, 이보다 선명도가 낮은 "
+                        "사진을 C컷(블러)으로 판정합니다.</p>"
+                    ),
+                    enabled=lambda row: not _unscored(row),
+                    triggered=self._set_sharpness_reference,
+                ),
+                ViewerAction(
+                    label=lambda row: "이 사진을 눈뜸 기준으로",
+                    tooltip=(
+                        "<p>이 사진의 눈 뜬 정도까지는 정상으로 보고, 이보다 눈이 더 감긴 "
+                        "사진을 C컷(눈감음)으로 판정합니다. 얼굴이 검출된 사진에서만 쓸 수 "
+                        "있습니다.</p>"
+                    ),
+                    enabled=lambda row: not _unscored(row) and row.face is not None,
+                    triggered=self._set_eyes_reference,
+                ),
+            ],
+            verdict=lambda row: "판정: "
+            + ("C컷" if row.selected else ("판정 불가" if _unscored(row) else "정상")),
+            parent=self,
+        )
         self._viewer.finished.connect(self._on_viewer_closed)
         self._viewer.show()
 
@@ -637,6 +662,10 @@ class BadCutTab(QWidget):
         bad_count = sum(1 for r in (self._rows or []) if r.selected)
         self._apply_button.setEnabled(bad_count > 0 and self._output_dir is not None)
         QMessageBox.critical(self, "오류", message)
+
+
+def _unscored(row: ReportRow) -> bool:
+    return row.reason.startswith("판정 불가")
 
 
 class _NumberItem(QTableWidgetItem):

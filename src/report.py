@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +30,12 @@ class ReportRow:
     # 선명도를 어디서 쟀는지(얼굴/칸)와 예전 방식(사진 전체) 값 — 리포트 비교용
     sharpness_region: str | None = None
     sharpness_global: float | None = None
+    # 사용자가 미리보기에서 직접 바꾼 경우(MANUAL_ADDED/MANUAL_REMOVED), 자동 그대로면 None
+    manual_choice: str | None = None
+
+
+MANUAL_ADDED = "added"
+MANUAL_REMOVED = "removed"
 
 
 def _reason_for(index: int, selection: SceneSelection) -> str:
@@ -42,6 +48,40 @@ def _reason_for(index: int, selection: SceneSelection) -> str:
     if selection.combined_scores[index] == selection.combined_scores[selection.best_index]:
         return "제외: 동점이며 더 늦게 촬영됨"
     return "제외: 종합 점수가 더 낮음"
+
+
+def apply_manual_choices(rows: list[ReportRow], choices: dict[Path, bool]) -> list[ReportRow]:
+    """자동 선정 결과(rows)에 사용자가 직접 고른 것(choices: 경로 → 선택 여부)을 덮어쓴다.
+
+    자동 선정은 장면당 1장이지만, 사용자는 장면마다 원하는 컷을 더 넣거나 자동으로
+    고른 컷을 뺄 수 있다. 자동 결과와 같은 선택(이미 자동으로 고른 컷을 "선택")은 바뀌는
+    게 없으므로 그대로 둔다 — 그래서 장면 간격을 바꿔 자동 결과가 달라져도 경로 기준으로
+    직접 고른 것이 유지된다. 왜 선택/제외됐는지 리포트·로그에 남도록 사유도 바꾼다.
+    """
+    result = []
+    for row in rows:
+        wanted = choices.get(row.path)
+        if wanted is None or wanted == row.selected:
+            result.append(row)
+        elif wanted:
+            result.append(
+                replace(
+                    row,
+                    selected=True,
+                    manual_choice=MANUAL_ADDED,
+                    reason="선택됨: 직접 추가 (자동 선택: " + row.reason + ")",
+                )
+            )
+        else:
+            result.append(
+                replace(
+                    row,
+                    selected=False,
+                    manual_choice=MANUAL_REMOVED,
+                    reason="제외: 직접 뺌 (자동으로는 선택됐던 컷)",
+                )
+            )
+    return result
 
 
 def build_report(
