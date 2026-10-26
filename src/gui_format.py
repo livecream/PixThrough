@@ -216,8 +216,22 @@ def format_threshold_reference(file_name: str | None, value: float, decimals: in
     기준 사진을 골랐으면 그 사진 이름과 점수를, 스핀박스에 직접 숫자를 넣었으면
     직접 입력값임을 알린다."""
     if file_name is None:
-        return f"기준: 직접 입력값 {value:.{decimals}f}"
-    return f"기준 사진: {file_name} ({value:.{decimals}f}) — 이보다 낮으면 C컷"
+        if value == 0:
+            return "꺼짐"
+        return f"직접 입력 {value:.{decimals}f}"
+    return f"기준 사진 {file_name} ({value:.{decimals}f})"
+
+
+def format_badcut_summary(rows: list[ReportRow], thresholds) -> str:
+    """사진 선별 요약 줄에 붙일 C컷 집계(예: "C컷 3장 (블러 2 · 눈감음 1)").
+    C컷 기준이 꺼져 있으면(둘 다 0) 빈 문자열. 직접 넣은 컷은 C컷 이동 대상이 아니라 뺀다."""
+    if thresholds.min_sharpness <= 0 and thresholds.min_eyes_open <= 0:
+        return ""
+    bad = [r for r in rows if r.badcut_reason and not r.selected]
+    blur = sum(1 for r in bad if "블러" in r.badcut_reason)
+    eyes = sum(1 for r in bad if "눈감음" in r.badcut_reason)
+    detail = " · ".join(part for part in (f"블러 {blur}" if blur else "", f"눈감음 {eyes}" if eyes else "") if part)
+    return f"C컷 {len(bad)}장" + (f" ({detail})" if detail else "")
 
 
 def format_badcut_preview(rows: list[ReportRow]) -> str:

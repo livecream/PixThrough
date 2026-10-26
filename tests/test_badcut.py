@@ -205,3 +205,15 @@ def test_build_badcut_rows_still_scores_once_via_split_functions(tmp_path, monke
 
     assert rows[0].selected is True
     assert "photos" in calls
+
+
+def test_badcut_reason_lists_problems_or_none():
+    thresholds = BadCutThresholds(min_sharpness=50.0, min_eyes_open=0.5)
+    blurry = PhotoScore(path=Path("a.jpg"), sharpness=10.0, exposure=1.0, face=0.2, total=10.0)
+    fine = PhotoScore(path=Path("b.jpg"), sharpness=90.0, exposure=1.0, face=None, total=90.0)
+    broken = PhotoScore(path=Path("c.jpg"), sharpness=0.0, exposure=0.0, face=None, total=0.0, error="x")
+
+    assert badcut.badcut_reason(blurry, thresholds) == "블러(선명도 낮음), 눈감음"
+    assert badcut.badcut_reason(fine, thresholds) is None
+    assert badcut.badcut_reason(broken, thresholds) is None
+    assert badcut.badcut_reason(blurry, BadCutThresholds(0.0, 0.0)) is None  # 기준 0 = 끔

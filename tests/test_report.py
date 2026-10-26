@@ -227,3 +227,15 @@ def test_csv_report_starts_with_bom_so_excel_reads_korean(tmp_path):
     raw = out.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     assert "선택됨" in raw.decode("utf-8-sig")
+
+
+def test_build_report_records_badcut_reason_and_skips_badcuts(tmp_path):
+    groups = _two_photo_scene(tmp_path)
+    first = groups[0][0].path
+
+    rows = build_report(groups, exclude=lambda s: "블러(선명도 낮음)" if s.path == first else None)
+
+    assert rows[0].badcut_reason == "블러(선명도 낮음)"
+    assert not rows[0].selected
+    assert rows[0].reason == "제외: C컷 — 블러(선명도 낮음)"
+    assert rows[1].selected and rows[1].badcut_reason is None
