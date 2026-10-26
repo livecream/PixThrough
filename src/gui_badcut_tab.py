@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QProgressBar,
+    QStackedWidget,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -55,6 +56,7 @@ from thumbnails import make_thumbnail
 from gui_input_folders import InputFolderPanel
 from gui_widgets import (
     FLAGGED_ROW,
+    GuidePanel,
     PathLabel,
     SummaryLabel,
     compact,
@@ -356,13 +358,28 @@ class BadCutTab(QWidget):
         layout.addLayout(button_row)
         layout.addWidget(self._summary_text)
         layout.addLayout(reference_button_row)
-        layout.addWidget(self._table, stretch=1)
+        # 결과가 아직 없을 때 표 자리에 띄우는 순서 안내
+        self._guide = GuidePanel(
+            "C컷 거르는 순서",
+            [
+                "위 입력 폴더 칸에 사진 폴더 넣기 (끌어다 놓아도 됩니다)",
+                "미리보기 — 사진마다 선명도·눈뜸 점수를 계산합니다 (파일은 아직 그대로)",
+                "표를 선명도·눈뜸 순으로 정렬해 '이 정도면 괜찮다' 싶은 사진을 기준으로 지정 "
+                "— 그보다 낮은 사진이 C컷이 됩니다",
+                "C컷을 옮길 폴더를 고르고 적용(이동)",
+            ],
+        )
+        self._results = QStackedWidget()
+        self._results.addWidget(self._guide)
+        self._results.addWidget(self._table)
+        layout.addWidget(self._results, stretch=1)
 
         restored_output = load_folder(self._settings, "badcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
             self._output_label.set_path(restored_output)
 
+        self._show_results()
         self.setLayout(layout)
 
     @property
@@ -400,6 +417,7 @@ class BadCutTab(QWidget):
             bad_count = sum(1 for r in (self._rows or []) if r.selected)
             self._apply_button.setEnabled(bad_count > 0)
             save_folder(self._settings, "badcut/output_dir", self._output_dir)
+            self._show_results()
 
     def _invalidate_preview(self) -> None:
         self._photos = None
@@ -408,6 +426,7 @@ class BadCutTab(QWidget):
         self._apply_button.setEnabled(False)
         self._table.setRowCount(0)
         self._update_reference_buttons()
+        self._show_results()
 
     def _run_preview(self) -> None:
         if self._busy:
@@ -586,6 +605,13 @@ class BadCutTab(QWidget):
         if self._viewer is not None:
             self._viewer.update_rows(self._rows_in_viewer_order())
 
+    def _show_results(self) -> None:
+        """결과가 있으면 표, 없으면 순서 안내."""
+        self._guide.set_done(
+            [bool(self._input_dirs), bool(self._rows), False, self._output_dir is not None]
+        )
+        self._results.setCurrentWidget(self._table if self._rows else self._guide)
+
     def _populate_table(self, rows: list[ReportRow]) -> None:
         selected = self._selected_row()
         # 채우는 도중에 정렬이 켜져 있으면 setItem마다 행이 재배치돼 칸이 뒤섞인다.
@@ -609,6 +635,7 @@ class BadCutTab(QWidget):
             paint_row(self._table, i, FLAGGED_ROW if row.selected else None, bold_column=2)
         self._table.setSortingEnabled(True)
         self._table.resizeRowsToContents()
+        self._show_results()
         if selected is not None:
             self._reselect(selected.path)
         self._update_reference_buttons()

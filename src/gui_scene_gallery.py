@@ -8,8 +8,8 @@
 두고 직접 그린다(보이는 장면만 그림). 클릭한 사진은 표의 같은 줄과 맞춰(row_index) 탭의
 기존 버튼(크게 보기·넣기/빼기)이 그대로 동작한다.
 
-조작: 클릭 = 고르기, 더블클릭/Enter = 크게 보기, Space = 넣기/빼기,
-←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면.
+조작: 클릭 = 고르기, 더블클릭/Enter = 크게 보기, Space = 넣기/빼기, P = 넣기,
+X = 빼기, ←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면.
 """
 
 from __future__ import annotations
@@ -157,6 +157,7 @@ class SceneGallery(QListView):
     photo_clicked = Signal(int)  # 결과 표 줄 번호
     photo_activated = Signal(int)
     toggle_requested = Signal(int)
+    choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
 
     def __init__(self, pixmap_for: Callable[[Path, int], QPixmap | None]) -> None:
         super().__init__()
@@ -263,6 +264,8 @@ class SceneGallery(QListView):
             self._choose(self._scenes[target].photos[0].row_index)
         elif key == Qt.Key.Key_Space and self._current is not None:
             self.toggle_requested.emit(self._current)
+        elif key in (Qt.Key.Key_P, Qt.Key.Key_X) and self._current is not None:
+            self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._current is not None:
             self.photo_activated.emit(self._current)
         else:

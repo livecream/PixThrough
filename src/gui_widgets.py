@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QTableWidget,
     QToolButton,
+    QVBoxLayout,
 )
 
 FOLDER_LIST_ROWS = 3
@@ -195,3 +197,64 @@ def paint_row(table: QTableWidget, row: int, color: QColor | None, bold_column: 
             font = QFont(item.font())
             font.setBold(color is not None)
             item.setFont(font)
+
+
+# 표 칸 아래쪽에 0~1 값을 가는 막대로 그린다(숫자만으로는 비교가 어려운 점수 칸용).
+BAR_ROLE = Qt.ItemDataRole.UserRole + 20
+_BAR_HEIGHT = 4
+
+
+class BarDelegate(QStyledItemDelegate):
+    """칸 글자는 그대로 두고, BAR_ROLE(0~1) 값이 있으면 칸 아래쪽에 막대를 그린다."""
+
+    def paint(self, painter, option, index) -> None:
+        super().paint(painter, option, index)
+        fraction = index.data(BAR_ROLE)
+        if fraction is None:
+            return
+        fraction = min(1.0, max(0.0, float(fraction)))
+        rect = option.rect.adjusted(6, 0, -6, -6)
+        track = QRect(rect.left(), rect.bottom() - _BAR_HEIGHT, rect.width(), _BAR_HEIGHT)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(128, 128, 128, 50))
+        painter.drawRoundedRect(track, 2, 2)
+        if fraction > 0:
+            painter.setBrush(option.palette.highlight())
+            painter.drawRoundedRect(QRect(track.left(), track.top(), max(2, round(track.width() * fraction)), _BAR_HEIGHT), 2, 2)
+        painter.restore()
+
+
+class GuidePanel(QFrame):
+    """결과가 아직 없을 때 결과 자리에 보여주는 순서 안내. 끝난 단계는 ✓로 바뀐다."""
+
+    def __init__(self, title: str, steps: list[str]) -> None:
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        heading = QLabel(title)
+        font = QFont(heading.font())
+        font.setBold(True)
+        font.setPointSizeF(font.pointSizeF() * 1.15)
+        heading.setFont(font)
+        self._steps = steps
+        self._labels = [QLabel() for _ in steps]
+        column = QVBoxLayout()
+        column.addStretch()
+        column.addWidget(heading)
+        column.addSpacing(8)
+        for label in self._labels:
+            label.setWordWrap(True)
+            column.addWidget(label)
+        column.addStretch()
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addLayout(column, stretch=2)
+        row.addStretch(1)
+        self.setLayout(row)
+        self.set_done([False] * len(steps))
+
+    def set_done(self, done: list[bool]) -> None:
+        for i, (label, text, finished) in enumerate(zip(self._labels, self._steps, done), start=1):
+            mark = "✓" if finished else f"{i}."
+            label.setText(f"{mark}  {text}")
+            label.setEnabled(not finished)  # 끝난 단계는 흐리게
