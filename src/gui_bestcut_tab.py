@@ -1,4 +1,10 @@
-"""M8: 베스트컷(A컷) 선별 탭. gui.py에서 분리해 QTabWidget의 탭 하나로 얹는다.
+"""M8+M10: 사진 선별 화면 — 베스트컷(A컷) 고르기와 C컷(흔들림·눈감음) 거르기를 한 화면에서.
+
+미리보기 한 번으로 사진마다 세 가지 판정을 보여준다: 베스트컷(남김) / 보통(장면에서 밀림) /
+C컷(기준보다 흐리거나 눈 감음). C컷 기준(선명도·눈뜸)은 기본값 없이 사용자가 정하고(0이면
+꺼짐), 기준을 정하면 C컷은 베스트컷 후보에서 빠진다(사용자 결정). 적용은 위험도가 달라
+"베스트컷 복사(또는 이동)"와 "C컷 이동" 두 버튼으로 나눈다. 예전에는 베스트컷 선별과 C컷
+정리가 따로 된 화면이었다.
 
 장면 간격(몇 초 이내면 같은 장면인지)은 화면에서 조절한다(PROJECT_SPEC.md 4.2절
 "N은 설정 가능한 값"). 미리보기로 한 번 스캔·스코어링해두면, 간격을 바꿀 때마다
@@ -19,28 +25,31 @@ apply_manual_choices), 장면 간격을 바꿔 다시 묶어도 유지된다.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
 
-from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QButtonGroup,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -57,29 +66,48 @@ from gui_format import (
     bestcut_grouping_help,
     bestcut_scoring_help,
     format_apply_summary,
+    format_badcut_summary,
     format_manual_choice_summary,
     format_preview_header,
     format_sharpness_region,
+    format_threshold_reference,
     sharpness_measure_help,
 )
 from gui_settings import (
     load_bool,
     load_float,
     load_folder,
-    load_folder_list,
     make_settings,
     save_bool,
     save_float,
     save_folder,
-    save_folder_list,
 )
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import score_store
 from gui_worker import CancellableWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
+from badcut import BadCutThresholds, badcut_reason
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
-from thumbnails import make_thumbnail
+from thumbnails import make_thumbnail_jpeg
+from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
+from gui_input_folders import InputFolderPanel
+from gui_widgets import (
+    BAR_ROLE,
+    FLAGGED_ROW,
+    KEPT_ROW,
+    SCENE_BAND,
+    BarDelegate,
+    GuidePanel,
+    PathLabel,
+    SummaryLabel,
+    compact,
+    fit_text,
+    make_danger,
+    make_primary,
+    paint_row,
+    status_row,
+)
 
 
 _TOTAL_TOOLTIP = (
@@ -87,9 +115,29 @@ _TOTAL_TOOLTIP = (
     "장면 안에서 이 값이 가장 높은 컷이 선택됩니다.</p>"
 )
 _SHARPNESS_TOOLTIP = (
-    "<p><b>선명도</b>: 경계선이 얼마나 또렷한지를 나타내는 원래 값입니다. "
-    "종합점수에는 같은 장면 안에서 0~1로 바꿔 반영합니다(장면 안에서 가장 선명하면 "
-    "1).</p>" + sharpness_measure_help()
+    "<p><b>선명도</b>: 같은 장면 안에서 몇 번째로 또렷한지(1위 = 가장 선명)입니다. "
+    "선명도 원래 값은 해상도·피사체마다 범위가 달라 장면끼리 비교할 수 없어 순위로 "
+    "보여주고, 원래 값은 칸에 마우스를 올리면 나옵니다. 막대는 장면 안에서 가장 흐린 "
+    "컷(빈 막대)~가장 선명한 컷(꽉 찬 막대) 사이 위치로, 종합점수에 이 값이 반영됩니다."
+    "</p>" + sharpness_measure_help()
+)
+_BADCUT_SHARPNESS_TOOLTIP = (
+    "<p><b>선명도 기준(C컷: 블러)</b>: 이보다 선명도 원래 값이 낮은 사진을 C컷으로 봅니다. "
+    "0이면 블러 판정을 하지 않습니다.</p>"
+    "<p>원래 값은 해상도·피사체마다 범위가 달라 숫자로 정하기 어려우니, 표의 '선명도' "
+    "머리글을 눌러 정렬하고(원래 값 순서) 사진을 크게 보면서 '이 정도까지는 쓸 만하다' 싶은 "
+    "사진을 고른 뒤 <b>[선명도 기준]</b>을 누르세요. 그 사진보다 흐린 "
+    "사진이 C컷이 되고, 기준 사진 자체는 남습니다.</p>" + sharpness_measure_help()
+)
+_BADCUT_EYES_TOOLTIP = (
+    "<p><b>눈뜸 기준(C컷: 눈감음)</b>: 이보다 눈이 더 감긴 사진을 C컷으로 봅니다(0~1, "
+    "0이면 판정 안 함). 얼굴이 검출되지 않았거나 눈을 분석하지 못한 사진은 빠집니다.</p>"
+    "<p>'눈뜸'으로 정렬해 크게 보면서 '이 정도 감은 건 괜찮다' 싶은 사진을 고른 뒤 "
+    "<b>[눈뜸 기준]</b>을 누르세요.</p>"
+)
+_MANUAL_SPIN_TOOLTIP = (
+    "<p>숫자를 직접 넣어 미세 조정할 수도 있습니다. 직접 바꾸면 기준 사진 지정은 풀리고 "
+    "입력한 값이 그대로 기준이 됩니다. 바꾸면 다시 스캔하지 않고 즉시 다시 판정합니다.</p>"
 )
 _EXPOSURE_TOOLTIP = (
     "<p><b>노출(0~1)</b>: 완전히 까맣게 뭉개지거나 하얗게 날아간 픽셀이 적을수록 "
@@ -113,6 +161,11 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+SETTINGS_COLLAPSED_KEY = "bestcut/settings_collapsed"
+BADCUT_DIR_SETTINGS_KEY = "badcut/output_dir"  # 예전 C컷 화면과 같은 키(마지막 폴더 이어 쓰기)
+
+
+NO_BADCUT = BadCutThresholds(min_sharpness=0.0, min_eyes_open=0.0)
 
 
 class _SelectionSettings(NamedTuple):
@@ -121,6 +174,20 @@ class _SelectionSettings(NamedTuple):
     gap_seconds: float
     split_distance: int | None  # 비슷하지 않은 사진 나누기 기준, 꺼져 있으면 None
     keep_percent: int  # 장면마다 남길 비율(%), 0이면 1장
+    thresholds: BadCutThresholds = NO_BADCUT  # C컷 기준, 둘 다 0이면 C컷 판정 안 함
+
+
+def _exclude_for(thresholds: BadCutThresholds):
+    """C컷을 베스트컷 후보에서 빼는 함수(build_report의 exclude). 기준이 없으면 None."""
+    if thresholds == NO_BADCUT:
+        return None
+    return lambda score: badcut_reason(score, thresholds)
+
+
+def _is_badcut(row: ReportRow) -> bool:
+    """C컷으로 옮길 사진: C컷 판정이고, 사용자가 직접 넣지 않은 것."""
+    return row.badcut_reason is not None and not row.selected
+
 # 스핀박스 화살표를 누르고 있으면 값이 연달아 바뀌므로, 마지막 변경 후 이만큼 조용하면
 # 그때 한 번만 다시 묶는다.
 REGROUP_DELAY_MS = 300
@@ -128,7 +195,7 @@ REGROUP_DELAY_MS = 300
 
 def _describe_choice(row: ReportRow) -> str:
     """크게 보기 창 위쪽에 보여줄 이 컷의 상태."""
-    state = "선택" if row.selected else "제외"
+    state = "선택" if row.selected else (f"C컷({row.badcut_reason})" if _is_badcut(row) else "제외")
     if row.manual_choice is not None:
         state += "(직접)"
     return f"장면 {row.scene_id} · {state} · 종합점수 {row.total:.2f}"
@@ -223,6 +290,7 @@ class PreviewWorker(CancellableWorker):
                 on_progress=on_group_progress,
                 cache=self._score_cache,
                 keep_percent=settings.keep_percent,
+                exclude=_exclude_for(settings.thresholds),
             )
             self._generate_thumbnails(rows)
             self.finished_ok.emit(photos, rows, settings, hashes)
@@ -244,7 +312,61 @@ class PreviewWorker(CancellableWorker):
             cached = self._thumbnail_cache.get(row.path)
             if cached is not None and cached[:2] == key:
                 continue
-            self._thumbnail_cache[row.path] = (*key, make_thumbnail(row.path))
+            # 갤러리용 큰 썸네일을 JPEG로 압축해 보관(표는 이것을 줄여 쓴다)
+            self._thumbnail_cache[row.path] = (*key, make_thumbnail_jpeg(row.path, THUMBNAIL_SIZE))
+
+
+def _is_unscored(row: ReportRow) -> bool:
+    return "점수 계산 실패" in row.reason
+
+
+class _SortItem(QTableWidgetItem):
+    """보이는 글자와 따로 정렬 기준(sort_key)을 갖는 칸. 값이 없으면(None) 맨 뒤로."""
+
+    def __init__(self, text: str, sort_key=None) -> None:
+        super().__init__(text)
+        self.sort_key = sort_key
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if not isinstance(other, _SortItem):
+            return super().__lt__(other)
+        if self.sort_key is None or other.sort_key is None:
+            return self.sort_key is not None and other.sort_key is None
+        return self.sort_key < other.sort_key
+
+
+def _bar_item(text: str, fraction: float | None, sort_key=None) -> QTableWidgetItem:
+    """글자 + 칸 아래 막대(0~1, None이면 막대 없음). 정렬은 sort_key(없으면 fraction)로."""
+    item = _SortItem(text, sort_key if sort_key is not None else fraction)
+    if fraction is not None:
+        item.setData(BAR_ROLE, fraction)
+    return item
+
+
+def _sharpness_ranks(rows: list[ReportRow]) -> list[tuple[int, int, float]]:
+    """줄마다 (장면 안 선명도 순위, 장면 사진 수, 장면 안 0~1 위치). 선명도 원래 값은
+    해상도·피사체마다 범위가 달라 장면끼리 비교할 수 없어, 같은 장면 안에서만 줄 세운다
+    (0~1은 종합점수 계산과 같은 방식 — 장면에서 가장 흐린 컷 0, 가장 선명한 컷 1)."""
+    scenes: dict[int, list[int]] = {}
+    for i, row in enumerate(rows):
+        if not _is_unscored(row):
+            scenes.setdefault(row.scene_id, []).append(i)
+    result = [(0, 0, 0.0)] * len(rows)
+    for members in scenes.values():
+        values = [rows[i].sharpness for i in members]
+        lo, hi = min(values), max(values)
+        ordered = sorted(members, key=lambda i: rows[i].sharpness, reverse=True)
+        for rank, i in enumerate(ordered, start=1):
+            fraction = 1.0 if hi == lo else (rows[i].sharpness - lo) / (hi - lo)
+            result[i] = (rank, len(members), fraction)
+    return result
+
+
+THUMBNAIL_SIZE = (GALLERY_THUMB, GALLERY_THUMB)
+TABLE_ICON = 64
+# 파일명 칸에 넣어 두는 결과 번호(self._rows 안 위치) — 표를 정렬해도 사진을 찾을 수 있게
+_INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
+VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 
 
 class ApplyWorker(QThread):
@@ -252,11 +374,14 @@ class ApplyWorker(QThread):
     finished_ok = Signal(list, object)  # list[FileOpResult], 판정 리포트 경로
     failed = Signal(str)
 
-    def __init__(self, rows: list[ReportRow], output_dir: Path, move: bool) -> None:
+    def __init__(
+        self, rows: list[ReportRow], output_dir: Path, move: bool, kind: str = "bestcut"
+    ) -> None:
         super().__init__()
         self._rows = rows
         self._output_dir = output_dir
         self._move = move
+        self._kind = kind  # 판정 리포트 파일 이름 앞부분(bestcut/badcut)
 
     def run(self) -> None:
         try:
@@ -268,18 +393,29 @@ class ApplyWorker(QThread):
             )
             # 파일 작업이 끝난 뒤에 쓴다 — 출력 폴더가 원본 폴더와 겹쳐 apply_selection이
             # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.
-            report_path = write_apply_report(self._rows, self._output_dir, "bestcut")
+            report_path = write_apply_report(self._rows, self._output_dir, self._kind)
             self.finished_ok.emit(results, report_path)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
 
 
 class BestCutTab(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, inputs: InputFolderPanel | None = None) -> None:
         super().__init__()
 
-        self._input_dirs: list[Path] = []
+        # 입력 폴더는 사진 선별 탭들이 같이 쓰는 칸(없으면 이 탭 혼자 쓰는 칸을 만든다)
+        self._owns_inputs = inputs is None
+        self._inputs = inputs if inputs is not None else InputFolderPanel()
+        self._inputs.changed.connect(self._invalidate_preview)
         self._output_dir: Path | None = None
+        self._badcut_dir: Path | None = None  # C컷을 옮길 폴더
+        # 실제 판정에 쓰는 C컷 기준. 스핀박스는 반올림해 보여주기만 하므로(기준 사진 눈뜸
+        # 0.456이 0.46으로 반올림되면 기준 사진 자신이 C컷이 됨), 기준 사진을 고르면 그
+        # 사진의 정확한 점수를 여기 둔다. 0이면 그 판정은 끔(기본값 없음 — CLAUDE.md).
+        self._sharpness_threshold = 0.0
+        self._eyes_threshold = 0.0
+        self._sharpness_ref_name: str | None = None
+        self._eyes_ref_name: str | None = None
         self._rows: list[ReportRow] | None = None
         # 자동 선정 결과(직접 고른 것 반영 전)와, 사용자가 직접 고른 것(경로 → 선택 여부).
         # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
@@ -295,6 +431,7 @@ class BestCutTab(QWidget):
         self._distances: dict[Path, int | None] = {}
         self._preview_worker: PreviewWorker | None = None
         self._apply_worker: ApplyWorker | None = None
+        self._badcut_worker: ApplyWorker | None = None
         self._busy = False
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
@@ -302,35 +439,65 @@ class BestCutTab(QWidget):
         # 점수·지문은 앱을 꺼도 남는 공용 저장소를 쓴다(C컷 탭과 공유, score_store).
         self._score_cache: dict = score_store.score_cache()
         self._thumbnail_cache: dict = {}
+        # (경로, 크기) → (썸네일 키, QPixmap). 표·갤러리를 다시 그릴 때 JPEG를 다시 풀지 않게
+        self._pixmap_cache: dict = {}
         self._hash_cache: dict = score_store.hash_cache()
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_list = QListWidget()
-        add_input_button = QPushButton("입력 폴더 추가...")
-        add_input_button.clicked.connect(self._add_input_dir)
-        remove_input_button = QPushButton("선택 삭제")
-        remove_input_button.clicked.connect(self._remove_selected_input_dir)
-
-        self._output_label = QLabel("출력 폴더: (선택 안 됨)")
-        output_button = QPushButton("출력 폴더 선택...")
+        self._output_label = PathLabel()
+        output_button = compact(QPushButton("선택…"))
         output_button.clicked.connect(self._choose_output_dir)
+        self._badcut_label = PathLabel()
+        badcut_button = compact(QPushButton("선택…"))
+        badcut_button.clicked.connect(self._choose_badcut_dir)
 
-        self._copy_radio = QRadioButton("복사 (기본)")
+        # C컷 기준(기본 0 = 끔)
+        self._min_sharpness_spin = QDoubleSpinBox()
+        self._min_sharpness_spin.setRange(0.0, 1_000_000.0)
+        self._min_sharpness_spin.setDecimals(1)
+        self._min_sharpness_spin.setSingleStep(10.0)
+        self._min_sharpness_spin.setToolTip(_BADCUT_SHARPNESS_TOOLTIP + _MANUAL_SPIN_TOOLTIP)
+        self._min_sharpness_spin.valueChanged.connect(self._on_sharpness_spin_changed)
+        self._min_eyes_open_spin = QDoubleSpinBox()
+        self._min_eyes_open_spin.setRange(0.0, 1.0)
+        self._min_eyes_open_spin.setDecimals(2)
+        self._min_eyes_open_spin.setSingleStep(0.05)
+        self._min_eyes_open_spin.setToolTip(_BADCUT_EYES_TOOLTIP + _MANUAL_SPIN_TOOLTIP)
+        self._min_eyes_open_spin.valueChanged.connect(self._on_eyes_spin_changed)
+        # 기준 사진 이름이 길어도 칸이 넓어지지 않게(가운데 …, 전체는 툴팁)
+        self._sharpness_ref_label = PathLabel("꺼짐")
+        self._eyes_ref_label = PathLabel("꺼짐")
+        self._sharpness_ref_button = compact(QPushButton("선명도 기준"))
+        self._sharpness_ref_button.setToolTip(
+            "<p>표·갤러리에서 고른 사진의 선명도까지는 남기고, 이보다 흐린 사진을 "
+            "C컷(블러)으로 봅니다.</p>"
+        )
+        self._sharpness_ref_button.clicked.connect(self._use_selected_as_sharpness_reference)
+        self._eyes_ref_button = compact(QPushButton("눈뜸 기준"))
+        self._eyes_ref_button.setToolTip(
+            "<p>고른 사진의 눈 뜬 정도까지는 남기고, 이보다 눈이 더 감긴 사진을 "
+            "C컷(눈감음)으로 봅니다. 얼굴이 검출된 사진만 고를 수 있습니다.</p>"
+        )
+        self._eyes_ref_button.clicked.connect(self._use_selected_as_eyes_reference)
+        self._update_reference_labels()
+
+        self._copy_radio = QRadioButton("복사 (원본 유지)")
         self._copy_radio.setChecked(True)
         self._move_radio = QRadioButton("이동")
+        self._move_radio.toggled.connect(lambda _on: self._update_apply_buttons())
 
-        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
         self._cancel_preview_button.setToolTip(
             "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
             "다시 미리보기하면 이어서 계산합니다.</p>"
         )
         self._cancel_preview_button.clicked.connect(self._cancel_preview)
-        self._preview_button = QPushButton("미리보기")
+        self._preview_button = make_primary(QPushButton("미리보기"))
         self._preview_button.setToolTip(
-            "<p>사진을 장면별로 묶고 장면마다 베스트컷 1장을 고른 결과를 보여줍니다. "
-            "파일은 아직 복사/이동하지 않습니다.</p>"
+            "<p>사진을 장면별로 묶고 장면마다 베스트컷을 고르고, C컷 기준을 정했으면 C컷도 "
+            "판정한 결과를 보여줍니다. 파일은 아직 복사/이동하지 않습니다.</p>"
         )
         self._preview_button.clicked.connect(self._run_preview)
 
@@ -356,7 +523,7 @@ class BestCutTab(QWidget):
         gap_label = QLabel("장면 간격 ⓘ:")
         self._gap_widgets = (gap_label, self._gap_spin)
 
-        self._split_checkbox = QCheckBox("비슷하지 않은 사진은 다른 장면으로 나누기")
+        self._split_checkbox = QCheckBox("비슷하지 않은 사진은 장면 나누기")
         self._split_checkbox.setChecked(load_bool(self._settings, SPLIT_ENABLED_SETTINGS_KEY, False))
         self._split_spin = QSpinBox()
         self._split_spin.setRange(SPLIT_DISTANCE_MIN, SPLIT_DISTANCE_MAX)
@@ -376,10 +543,14 @@ class BestCutTab(QWidget):
         self._split_spin.setEnabled(self._split_checkbox.isChecked())
         self._split_checkbox.toggled.connect(self._on_split_changed)
         self._split_spin.valueChanged.connect(self._on_split_changed)
-        split_row = QHBoxLayout()
+        # 체크박스와 기준 입력칸을 두 줄로 — 한 줄이면 칸이 너무 넓어진다
+        split_row = QVBoxLayout()
         split_row.addWidget(self._split_checkbox)
-        split_row.addWidget(self._split_spin)
-        split_row.addStretch()
+        split_spin_row = QHBoxLayout()
+        split_spin_row.addSpacing(22)
+        split_spin_row.addWidget(self._split_spin)
+        split_spin_row.addStretch()
+        split_row.addLayout(split_spin_row)
 
         self._keep_spin = QSpinBox()
         self._keep_spin.setRange(0, 100)
@@ -389,35 +560,39 @@ class BestCutTab(QWidget):
             int(load_float(self._settings, KEEP_PERCENT_SETTINGS_KEY, 0, 0, 100))
         )
         self._keep_spin.valueChanged.connect(self._on_keep_changed)
-        keep_label = QLabel("장면마다 남길 비율 ⓘ:")
+        keep_label = QLabel("남길 비율 ⓘ:")
         self._keep_hint = QLabel()
         self._keep_widgets = (keep_label, self._keep_spin, self._keep_hint)
-        split_row.insertWidget(0, keep_label)
-        split_row.insertWidget(1, self._keep_spin)
-        split_row.insertWidget(2, self._keep_hint)
+        keep_row = QHBoxLayout()
+        keep_row.addWidget(self._keep_spin)
+        keep_row.addWidget(self._keep_hint)
+        keep_row.addStretch()
 
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
         self._scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
         help_row = QHBoxLayout()
-        help_row.addWidget(gap_label)
         help_row.addWidget(self._gap_spin)
-        help_row.addWidget(self._grouping_help_label)
-        help_row.addWidget(self._scoring_help_label)
         help_row.addStretch()
 
-        self._apply_button = QPushButton("적용")
+        self._apply_button = make_primary(QPushButton("베스트컷 복사"))
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._run_apply)
+        self._badcut_apply_button = make_danger(QPushButton("C컷 이동"))
+        self._badcut_apply_button.setToolTip(
+            "<p>C컷으로 판정된 사진(직접 넣은 컷은 빼고)을 C컷 폴더로 <b>옮깁니다</b>. 원본 "
+            "폴더에서는 빠지고, 같은 이름의 RAW도 함께 옮깁니다.</p>"
+        )
+        self._badcut_apply_button.setEnabled(False)
+        self._badcut_apply_button.clicked.connect(self._run_badcut_apply)
 
-        self._open_output_button = QPushButton("출력 폴더 열기")
+        self._open_output_button = compact(QPushButton("열기"))
+        self._open_output_button.setToolTip("<p>베스트컷을 복사한 폴더를 엽니다.</p>")
         self._open_output_button.setEnabled(False)
         self._open_output_button.clicked.connect(self._open_output_folder)
 
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
-        self._summary_text = QPlainTextEdit()
-        self._summary_text.setReadOnly(True)
-        self._summary_text.setAcceptDrops(False)
+        self._summary_text = SummaryLabel()
 
         self._table = QTableWidget(0, 10)
         self._table.setHorizontalHeaderLabels(
@@ -444,76 +619,197 @@ class BestCutTab(QWidget):
             self._table.horizontalHeaderItem(column).setToolTip(tooltip)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setIconSize(QSize(64, 64))
+        self._table.setIconSize(QSize(TABLE_ICON, TABLE_ICON))
+        self._table.setItemDelegate(BarDelegate(self._table))
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 머리글을 누르면 정렬(C컷 기준 사진을 고를 때 선명도·눈뜸 순으로). '장면' 머리글은
+        # 원래 촬영 순서로 되돌린다. 정렬해도 줄 → 결과를 찾도록 파일명 칸에 결과 번호를 둔다.
+        self._table.setSortingEnabled(True)
+        self._table.horizontalHeader().sortIndicatorChanged.connect(lambda *_: self._apply_row_filter())
         self._table.itemSelectionChanged.connect(self._update_choice_buttons)
-        self._table.cellDoubleClicked.connect(self._open_viewer)
+        self._table.itemSelectionChanged.connect(
+            lambda: self._gallery.set_current(self._selected_table_row())
+        )
+        self._table.cellDoubleClicked.connect(lambda table_row, _c: self._open_viewer(self._index_at(table_row)))
 
-        self._view_button = QPushButton("크게 보기")
+        self._view_button = compact(QPushButton("크게 보기"))
         self._view_button.setToolTip(
             "<p>선택한 사진을 크게 엽니다. 같은 장면의 컷끼리 ←/→로 넘겨보며 고를 수 "
             "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
         )
         self._view_button.clicked.connect(self._open_viewer_for_selected)
-        self._toggle_button = QPushButton("선택에 넣기")
+        self._toggle_button = compact(QPushButton("선택에 넣기"))
         self._toggle_button.setToolTip(
             "<p>표에서 고른 사진을 선택에 넣거나 뺍니다. 장면마다 자동으로 1장을 고르지만, "
             "원하는 컷을 더 넣거나 자동으로 고른 컷을 뺄 수 있습니다.</p>"
         )
         self._toggle_button.clicked.connect(self._toggle_selected_row)
-        self._reset_choices_button = QPushButton("자동 선택으로 되돌리기")
+        self._reset_choices_button = compact(QPushButton("자동 선택으로 되돌리기"))
         self._reset_choices_button.setToolTip("<p>직접 넣거나 뺀 것을 모두 취소합니다.</p>")
         self._reset_choices_button.clicked.connect(self._reset_choices)
+        # 결과 보기: 장면별 갤러리(큰 썸네일) / 표(숫자 비교). 고른 사진은 둘이 함께 쓴다
+        self._gallery = SceneGallery(self._thumbnail_pixmap)
+        self._gallery.photo_clicked.connect(self._select_index)
+        self._gallery.photo_activated.connect(self._open_viewer)
+        self._gallery.toggle_requested.connect(self._toggle_row)
+        self._gallery.choice_requested.connect(self._choose_row)
+        # 표에서도 크게 보기 창과 같은 단축키로 고른다
+        for key, action in (
+            ("Space", self._toggle_selected_row),
+            ("P", lambda: self._choose_selected_row(True)),
+            ("X", lambda: self._choose_selected_row(False)),
+            ("Return", self._open_viewer_for_selected),
+            ("Enter", self._open_viewer_for_selected),
+        ):
+            QShortcut(QKeySequence(key), self._table, activated=action, context=Qt.ShortcutContext.WidgetShortcut)
+        # 결과가 아직 없을 때 결과 자리에 띄우는 순서 안내
+        self._guide = GuidePanel(
+            "사진 고르는 순서",
+            [
+                "위 입력 폴더 칸에 사진 폴더 넣기 (끌어다 놓아도 됩니다)",
+                "베스트컷을 복사할 폴더 고르기",
+                "미리보기 — 장면별로 묶고 장면마다 베스트컷을 골라 보여줍니다 (파일은 아직 그대로)",
+                "(선택) C컷 기준 정하기 — 흐리거나 눈 감은 사진을 C컷으로 걸러 베스트컷 후보에서 뺍니다",
+                "직접 넣기/빼기 (Space · P · X) → 베스트컷 복사, 필요하면 C컷 이동",
+            ],
+        )
+        self._results = QStackedWidget()
+        self._results.addWidget(self._guide)
+        self._results.addWidget(self._gallery)
+        self._results.addWidget(self._table)
+        self._only_kept_checkbox = QCheckBox("남기는 컷만 보기")
+        self._only_kept_checkbox.setToolTip("<p>장면마다 남기는(선택된) 컷만 보여줍니다. 빠진 컷을 다시 넣으려면 끄세요.</p>")
+        self._only_kept_checkbox.toggled.connect(self._on_only_kept_toggled)
+        self._gallery_button = QToolButton()
+        self._gallery_button.setText("갤러리")
+        self._gallery_button.setToolTip(
+            "<p>장면마다 큰 썸네일로 봅니다. 클릭해 고르고, 더블클릭하면 크게 보기, "
+            "Space 넣기/빼기, P 넣기, X 빼기, ←/→ 앞뒤 사진, ↑/↓ 앞뒤 장면.</p>"
+        )
+        self._table_button = QToolButton()
+        self._table_button.setText("표")
+        self._table_button.setToolTip("<p>점수를 숫자로 비교하는 표로 봅니다.</p>")
+        view_group = QButtonGroup(self)
+        for button in (self._gallery_button, self._table_button):
+            button.setCheckable(True)
+            view_group.addButton(button)
+        self._gallery_button.toggled.connect(self._on_view_toggled)
+        if self._settings.value(VIEW_SETTINGS_KEY, "gallery") == "table":
+            self._table_button.setChecked(True)
+        else:
+            self._gallery_button.setChecked(True)
+
         choice_button_row = QHBoxLayout()
+        choice_button_row.addWidget(self._gallery_button)
+        choice_button_row.addWidget(self._table_button)
+        choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
+        choice_button_row.addSpacing(12)
+        choice_button_row.addWidget(self._only_kept_checkbox)
         choice_button_row.addStretch()
+        choice_button_row.addWidget(
+            QLabel("Space 넣기/빼기 · P 넣기 · X 빼기 · 더블클릭/Enter 크게 보기")
+        )
 
+        # 위: 출력(왼쪽) · 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
+        output_row = QHBoxLayout()
+        output_row.addWidget(self._output_label, stretch=1)
+        output_row.addWidget(output_button)
+        output_row.addWidget(self._open_output_button)
         radio_row = QHBoxLayout()
         radio_row.addWidget(self._copy_radio)
         radio_row.addWidget(self._move_radio)
+        radio_row.addStretch()
+        badcut_row = QHBoxLayout()
+        badcut_row.addWidget(self._badcut_label, stretch=1)
+        badcut_row.addWidget(badcut_button)
+        output_form = QFormLayout()
+        output_form.addRow("베스트컷 폴더:", output_row)
+        output_form.addRow("방식:", radio_row)
+        output_form.addRow("C컷 폴더:", badcut_row)
+        output_group = QGroupBox("출력")
+        output_group.setLayout(output_form)
 
-        input_button_row = QHBoxLayout()
-        input_button_row.addWidget(add_input_button)
-        input_button_row.addWidget(remove_input_button)
+        settings_form = QFormLayout()
+        settings_form.addRow(gap_label, help_row)
+        settings_form.addRow(keep_label, keep_row)
+        settings_form.addRow(split_row)
+        settings_form.addRow(self._grouping_help_label)
+        settings_form.addRow(self._scoring_help_label)
+        settings_group = QGroupBox("장면·베스트컷 기준")
+        settings_group.setLayout(settings_form)
 
+        sharpness_label = QLabel("선명도 ⓘ:")
+        sharpness_label.setToolTip(_BADCUT_SHARPNESS_TOOLTIP)
+        eyes_label = QLabel("눈뜸 ⓘ:")
+        eyes_label.setToolTip(_BADCUT_EYES_TOOLTIP)
+        sharpness_row = QHBoxLayout()
+        sharpness_row.addWidget(self._min_sharpness_spin)
+        sharpness_row.addWidget(self._sharpness_ref_label, stretch=1)
+        eyes_row = QHBoxLayout()
+        eyes_row.addWidget(self._min_eyes_open_spin)
+        eyes_row.addWidget(self._eyes_ref_label, stretch=1)
+        reference_row = QHBoxLayout()
+        reference_row.addWidget(QLabel("고른 사진을"))
+        reference_row.addWidget(self._sharpness_ref_button)
+        reference_row.addWidget(self._eyes_ref_button)
+        reference_row.addStretch()
+        badcut_form = QFormLayout()
+        badcut_form.addRow(sharpness_label, sharpness_row)
+        badcut_form.addRow(eyes_label, eyes_row)
+        badcut_form.addRow(reference_row)
+        badcut_group = QGroupBox("C컷 기준 (0 = 끔)")
+        badcut_group.setLayout(badcut_form)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.addWidget(output_group, stretch=1)
+        top_row.addWidget(settings_group, stretch=1)
+        top_row.addWidget(badcut_group, stretch=1)
+        # 결과를 볼 때는 설정 칸을 접어 갤러리·표에 세로 공간을 더 준다(마지막 상태 기억)
+        self._settings_box = QWidget()
+        self._settings_box.setLayout(top_row)
+        self._collapse_button = QToolButton()
+        self._collapse_button.setCheckable(True)
+        self._collapse_button.setToolTip("<p>출력·기준 설정 칸을 접거나 폅니다.</p>")
+        self._collapse_button.toggled.connect(self._on_collapse_toggled)
+
+        # 실행 줄: 미리보기(왼쪽) → 적용(오른쪽) 순서로 읽히게, 주요 버튼만 강조
         button_row = QHBoxLayout()
+        button_row.addWidget(self._collapse_button)
         button_row.addWidget(self._preview_button)
         button_row.addWidget(self._cancel_preview_button)
+        button_row.addSpacing(12)
+        button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
+        button_row.addWidget(self._badcut_apply_button)
         button_row.addWidget(self._apply_button)
-        button_row.addWidget(self._open_output_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("입력 폴더 (여러 개 추가 가능):"))
-        layout.addWidget(self._folder_list)
-        layout.addLayout(input_button_row)
-        layout.addWidget(self._output_label)
-        layout.addWidget(output_button)
-        layout.addLayout(radio_row)
-        layout.addLayout(help_row)
-        layout.addLayout(split_row)
+        if self._owns_inputs:
+            layout.addWidget(self._inputs)
+        layout.addWidget(self._settings_box)
         layout.addLayout(button_row)
-        layout.addWidget(self._progress_bar)
-        layout.addWidget(self._status_label)
         layout.addWidget(self._summary_text)
-        layout.addWidget(
-            QLabel("사진을 더블클릭하면 크게 볼 수 있고, 같은 장면 컷끼리 비교하며 고를 수 있습니다.")
-        )
         layout.addLayout(choice_button_row)
-        layout.addWidget(self._table)
+        layout.addWidget(self._results, stretch=1)
 
-        for folder in load_folder_list(self._settings, "bestcut/input_dirs"):
-            self._input_dirs.append(folder)
-            self._folder_list.addItem(str(folder))
         restored_output = load_folder(self._settings, "bestcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
-            self._output_label.setText(f"출력 폴더: {restored_output}")
+            self._output_label.set_path(restored_output)
+        restored_badcut = load_folder(self._settings, BADCUT_DIR_SETTINGS_KEY)
+        if restored_badcut is not None:
+            self._badcut_dir = restored_badcut
+            self._badcut_label.set_path(restored_badcut)
 
+        self._collapse_button.setChecked(load_bool(self._settings, SETTINGS_COLLAPSED_KEY, False))
+        self._on_collapse_toggled(self._collapse_button.isChecked())
         self._update_grouping_help()
         self._update_choice_buttons()
+        self._show_results()
         self.setLayout(layout)
 
     @property
@@ -530,51 +826,49 @@ class BestCutTab(QWidget):
             self._add_folders(folders)
         event.acceptProposedAction()
 
-    def _add_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "입력 폴더 추가")
-        if directory:
-            self._add_folders([Path(directory)])
+    @property
+    def _input_dirs(self) -> list[Path]:
+        return self._inputs.folders()
+
+    @_input_dirs.setter
+    def _input_dirs(self, folders: list[Path]) -> None:
+        self._inputs.set_folders(folders)
 
     def _add_folders(self, folders: list[Path]) -> None:
-        added = False
-        for folder in folders:
-            if folder not in self._input_dirs:
-                self._input_dirs.append(folder)
-                self._folder_list.addItem(str(folder))
-                added = True
-        if not added:
-            return
-        self._invalidate_preview()
-        save_folder_list(self._settings, "bestcut/input_dirs", self._input_dirs)
-
-    def _remove_selected_input_dir(self) -> None:
-        for item in self._folder_list.selectedItems():
-            index = self._folder_list.row(item)
-            self._folder_list.takeItem(index)
-            del self._input_dirs[index]
-        self._invalidate_preview()
-        save_folder_list(self._settings, "bestcut/input_dirs", self._input_dirs)
+        self._inputs.add_folders(folders)
 
     def _choose_output_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "출력 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
-            self._output_label.setText(f"출력 폴더: {directory}")
+            self._output_label.set_path(Path(directory))
             # 미리보기 결과(스캔/장면 그룹핑/스코어링)는 출력 폴더와 무관하므로
             # 다시 계산할 필요 없음 — 적용 버튼 활성화 여부만 갱신한다.
             self._apply_button.setEnabled(bool(self._rows))
             self._open_output_button.setEnabled(False)
             save_folder(self._settings, "bestcut/output_dir", self._output_dir)
+            self._update_apply_buttons()
+            self._update_guide()
+
+    def _choose_badcut_dir(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "C컷을 옮길 폴더 선택")
+        if directory:
+            self._badcut_dir = Path(directory)
+            self._badcut_label.set_path(self._badcut_dir)
+            save_folder(self._settings, BADCUT_DIR_SETTINGS_KEY, self._badcut_dir)
+            self._update_apply_buttons()
 
     def _invalidate_preview(self) -> None:
         self._rows = None
         self._auto_rows = None
         self._photos = None
         self._close_viewer()
-        self._apply_button.setEnabled(False)
         self._open_output_button.setEnabled(False)
         self._table.setRowCount(0)
+        self._update_apply_buttons()
+        self._gallery.set_scenes([])
         self._update_choice_buttons()
+        self._show_results()
 
     def _run_preview(self) -> None:
         if self._busy:
@@ -595,6 +889,7 @@ class BestCutTab(QWidget):
 
         self._preview_worker = PreviewWorker(
             list(self._input_dirs),
+            recursive=self._inputs.recursive(),
             settings=self._current_grouping(),
             scan_cache=self._scan_cache,
             score_cache=self._score_cache,
@@ -631,14 +926,20 @@ class BestCutTab(QWidget):
 
     def _current_grouping(self) -> _SelectionSettings:
         split = self._split_spin.value() if self._split_checkbox.isChecked() else None
-        return _SelectionSettings(self._gap_spin.value(), split, self._keep_spin.value())
+        thresholds = BadCutThresholds(
+            min_sharpness=self._sharpness_threshold, min_eyes_open=self._eyes_threshold
+        )
+        return _SelectionSettings(self._gap_spin.value(), split, self._keep_spin.value(), thresholds)
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
         """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
+        previous = self._rows_grouping
         self._auto_rows = rows
         self._rows_grouping = grouping
-        # 장면 번호가 바뀌었을 수 있어, 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
-        self._close_viewer()
+        # 장면 묶음이 바뀌었으면(간격·나누기) 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
+        # 남길 비율·C컷 기준만 바뀌면 장면은 그대로라 창을 둔다(창에서 기준을 지정할 때 등).
+        if previous is None or previous[:2] != grouping[:2]:
+            self._close_viewer()
         self._refresh_selection()
 
     def _refresh_selection(self) -> None:
@@ -646,23 +947,50 @@ class BestCutTab(QWidget):
         selected_row = self._selected_table_row()
         rows = apply_manual_choices(self._auto_rows or [], self._choices)
         self._rows = rows
-        self._apply_button.setEnabled(any(r.selected for r in rows) and self._output_dir is not None)
+        self._update_apply_buttons()
         settings = self._rows_grouping
         summary = (
-            format_preview_header(rows, *settings) if settings else format_preview_header(rows)
+            format_preview_header(rows, *settings[:3]) if settings else format_preview_header(rows)
         )
+        badcut = format_badcut_summary(rows, self._current_grouping().thresholds)
         manual = format_manual_choice_summary(rows)
-        self._summary_text.setPlainText(summary + (f"\n{manual}" if manual else ""))
+        self._summary_text.setPlainText(
+            "\n".join(line for line in (summary + (f" · {badcut}" if badcut else ""), manual) if line)
+        )
         self._populate_table(rows)
         if selected_row is not None and selected_row < len(rows):
-            self._table.selectRow(selected_row)
+            self._select_index(selected_row)
         self._update_choice_buttons()
         if self._viewer is not None:
             self._viewer.update_rows(self._rows_for_paths(self._viewer_paths))
 
     def _selected_table_row(self) -> int | None:
+        """고른 사진의 결과 번호(self._rows 안 위치). 표를 정렬해도 같은 사진을 가리킨다."""
         selected = self._table.selectionModel().selectedRows()
-        return selected[0].row() if selected else None
+        return self._index_at(selected[0].row()) if selected else None
+
+    def _index_at(self, table_row: int) -> int | None:
+        item = self._table.item(table_row, 1)
+        return item.data(_INDEX_ROLE) if item is not None else None
+
+    def _select_index(self, index: int) -> None:
+        """결과 번호로 표의 줄을 고른다(갤러리 클릭 등)."""
+        for table_row in range(self._table.rowCount()):
+            if self._index_at(table_row) == index:
+                self._table.selectRow(table_row)
+                return
+
+    def _update_apply_buttons(self) -> None:
+        rows = self._rows or []
+        kept = sum(1 for r in rows if r.selected)
+        bad = sum(1 for r in rows if _is_badcut(r))
+        verb = "이동" if self._move_radio.isChecked() else "복사"
+        self._apply_button.setText(f"베스트컷 {verb} ({kept}장)" if rows else f"베스트컷 {verb}")
+        self._apply_button.setEnabled(kept > 0 and self._output_dir is not None and not self._busy)
+        self._badcut_apply_button.setText(f"C컷 이동 ({bad}장)" if rows else "C컷 이동")
+        self._badcut_apply_button.setEnabled(bad > 0 and self._badcut_dir is not None and not self._busy)
+        fit_text(self._apply_button)
+        fit_text(self._badcut_apply_button, padding=24)
 
     def _update_choice_buttons(self) -> None:
         index = self._selected_table_row()
@@ -670,6 +998,9 @@ class BestCutTab(QWidget):
         self._view_button.setEnabled(row is not None)
         self._toggle_button.setEnabled(row is not None)
         self._toggle_button.setText("선택에서 빼기" if row is not None and row.selected else "선택에 넣기")
+        scored = row is not None and not _is_unscored(row)
+        self._sharpness_ref_button.setEnabled(scored)
+        self._eyes_ref_button.setEnabled(scored and row.face is not None)
         self._reset_choices_button.setEnabled(
             any(r.manual_choice is not None for r in self._rows or [])
         )
@@ -708,11 +1039,11 @@ class BestCutTab(QWidget):
         if index is not None:
             self._open_viewer(index)
 
-    def _open_viewer(self, table_row: int, _column: int = 0) -> None:
+    def _open_viewer(self, index: int | None) -> None:
         """클릭한 사진이 속한 장면의 컷만 모아 크게 보기 창을 연다(←/→로 장면 안에서 비교)."""
-        if not self._rows:
+        if not self._rows or index is None:
             return
-        clicked = self._rows[table_row]
+        clicked = self._rows[index]
         scene_rows = [r for r in self._rows if r.scene_id == clicked.scene_id]
         self._viewer_paths = [r.path for r in scene_rows]
         self._close_viewer()
@@ -730,7 +1061,22 @@ class BestCutTab(QWidget):
                     triggered=self._toggle,
                     shortcut="Space",
                     shortcut_help="넣기/빼기",
-                )
+                ),
+                ViewerAction(
+                    label=lambda row: "이 사진을 선명도 기준으로",
+                    tooltip="<p>이 사진의 선명도까지는 남기고, 이보다 흐린 사진을 C컷(블러)으로 봅니다.</p>",
+                    enabled=lambda row: not _is_unscored(row),
+                    triggered=self._set_sharpness_reference,
+                ),
+                ViewerAction(
+                    label=lambda row: "이 사진을 눈뜸 기준으로",
+                    tooltip=(
+                        "<p>이 사진의 눈 뜬 정도까지는 남기고, 이보다 눈이 더 감긴 사진을 "
+                        "C컷(눈감음)으로 봅니다. 얼굴이 검출된 사진에서만 쓸 수 있습니다.</p>"
+                    ),
+                    enabled=lambda row: not _is_unscored(row) and row.face is not None,
+                    triggered=self._set_eyes_reference,
+                ),
             ],
             verdict=_describe_choice,
             parent=self,
@@ -750,6 +1096,112 @@ class BestCutTab(QWidget):
 
     def _on_viewer_closed(self) -> None:
         self._viewer = None
+
+    # --- C컷 기준 ---------------------------------------------------------------
+    def _on_sharpness_spin_changed(self, value: float) -> None:
+        self._sharpness_threshold = value
+        self._sharpness_ref_name = None
+        self._on_threshold_changed()
+
+    def _on_eyes_spin_changed(self, value: float) -> None:
+        self._eyes_threshold = value
+        self._eyes_ref_name = None
+        self._on_threshold_changed()
+
+    def _set_sharpness_reference(self, row: ReportRow) -> None:
+        self._sharpness_threshold = row.sharpness
+        self._sharpness_ref_name = row.path.name
+        # 스핀박스는 보여주기만 갱신한다 — valueChanged가 불리면 기준 사진 지정이 풀리고
+        # 반올림된 값이 기준이 돼버린다.
+        self._min_sharpness_spin.blockSignals(True)
+        self._min_sharpness_spin.setValue(row.sharpness)
+        self._min_sharpness_spin.blockSignals(False)
+        self._on_threshold_changed()
+
+    def _set_eyes_reference(self, row: ReportRow) -> None:
+        if row.face is None:
+            return
+        self._eyes_threshold = row.face
+        self._eyes_ref_name = row.path.name
+        self._min_eyes_open_spin.blockSignals(True)
+        self._min_eyes_open_spin.setValue(row.face)
+        self._min_eyes_open_spin.blockSignals(False)
+        self._on_threshold_changed()
+
+    def _use_selected_as_sharpness_reference(self) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._set_sharpness_reference(self._rows[index])
+
+    def _use_selected_as_eyes_reference(self) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._set_eyes_reference(self._rows[index])
+
+    def _update_reference_labels(self) -> None:
+        self._sharpness_ref_label.set_text(
+            format_threshold_reference(self._sharpness_ref_name, self._sharpness_threshold, 1)
+        )
+        self._eyes_ref_label.set_text(
+            format_threshold_reference(self._eyes_ref_name, self._eyes_threshold, 2)
+        )
+
+    def _on_threshold_changed(self) -> None:
+        """C컷 기준이 바뀌면 캐시된 점수로 즉시 다시 판정하고 다시 고른다(스캔 없음)."""
+        self._update_reference_labels()
+        self._update_guide()
+        self._on_grouping_changed()
+
+    # --- C컷 이동 ---------------------------------------------------------------
+    def _run_badcut_apply(self) -> None:
+        if self._busy:
+            QMessageBox.warning(
+                self, "작업 진행 중", "다른 작업이 진행 중입니다. 완료될 때까지 기다려주세요."
+            )
+            return
+        bad_rows = [r for r in self._rows or [] if _is_badcut(r)]
+        if not bad_rows or self._badcut_dir is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "C컷 이동 확인",
+            f"C컷 {len(bad_rows)}장을 다음 폴더로 옮깁니다(원본 폴더에서 빠지고, 같은 이름의 "
+            f"RAW도 함께 옮깁니다):\n{self._badcut_dir}\n\n직접 넣은 컷은 옮기지 않습니다. "
+            "계속하시겠습니까?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        # 옮길 사진만 selected=True로 — apply_selection은 selected인 줄만 옮긴다.
+        # 리포트에는 판정 전체(C컷 여부와 사유)를 남긴다.
+        move_rows = [replace(r, selected=_is_badcut(r)) for r in self._rows]
+        self._busy = True
+        self._update_apply_buttons()
+        self._preview_button.setEnabled(False)
+        self._progress_bar.setValue(0)
+        self._status_label.setText("C컷 이동 중...")
+        self._badcut_worker = ApplyWorker(move_rows, self._badcut_dir, move=True, kind="badcut")
+        self._badcut_worker.progress.connect(self._on_progress)
+        self._badcut_worker.finished_ok.connect(self._on_badcut_done)
+        self._badcut_worker.failed.connect(self._on_error)
+        self._badcut_worker.start()
+
+    def _on_badcut_done(self, results: list[FileOpResult], report_path: Path) -> None:
+        self._busy = False
+        self._preview_button.setEnabled(True)
+        moved = {r.source for r in results}
+        # 옮긴 사진을 빼고 남은 사진으로 다시 묶는다(점수는 캐시라 즉시)
+        if self._photos is not None:
+            self._photos = [p for p in self._photos if p.path not in moved]
+        for path in moved:
+            self._choices.pop(path, None)
+        self._rows_grouping = None
+        self._regroup()
+        self._status_label.setText(f"C컷 {len(moved)}장 이동 완료")
+        if self._rows is not None:
+            self._summary_text.setPlainText(
+                f"C컷 {len(moved)}장 이동 완료 → {self._badcut_dir}\n판정 리포트: {report_path}\n"
+                + self._summary_text.toPlainText()
+            )
 
     def _on_gap_changed(self, value: float) -> None:
         save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
@@ -786,7 +1238,12 @@ class BestCutTab(QWidget):
             groups = _make_groups(
                 self._photos, self._hashes, grouping.gap_seconds, grouping.split_distance
             )
-            rows = build_report(groups, cache=self._score_cache, keep_percent=grouping.keep_percent)
+            rows = build_report(
+                groups,
+                cache=self._score_cache,
+                keep_percent=grouping.keep_percent,
+                exclude=_exclude_for(grouping.thresholds),
+            )
         except OSError as e:
             # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
             self._invalidate_preview()
@@ -820,6 +1277,9 @@ class BestCutTab(QWidget):
         self._table.horizontalHeaderItem(2).setToolTip(help_text)
 
     def _populate_table(self, rows: list[ReportRow]) -> None:
+        sharpness_ranks = _sharpness_ranks(rows)
+        # 채우는 도중에 정렬이 켜져 있으면 setItem마다 줄이 재배치돼 칸이 뒤섞인다.
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             thumb_item = QTableWidgetItem()
@@ -827,21 +1287,62 @@ class BestCutTab(QWidget):
             if pixmap is not None:
                 thumb_item.setData(Qt.ItemDataRole.DecorationRole, pixmap)
             self._table.setItem(i, 0, thumb_item)
-            self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
-            self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
+            name_item = _SortItem(row.path.name, i)  # 파일명 정렬은 촬영 순서와 같게
+            name_item.setData(_INDEX_ROLE, i)
+            self._table.setItem(i, 1, name_item)
+            self._table.setItem(i, 2, _SortItem(str(row.scene_id), i))  # 장면 = 원래 순서
             self._table.setItem(i, 3, QTableWidgetItem(self._difference_text(row)))
-            choice = "선택" if row.selected else "제외"
+            badcut = _is_badcut(row)
+            if row.selected:
+                choice, order = "✓ 선택", 0
+            elif badcut:
+                choice, order = "C컷", 2
+            else:
+                choice, order = "제외", 1
             if row.manual_choice is not None:
                 choice += " (직접)"
-            self._table.setItem(i, 4, QTableWidgetItem(choice))
-            self._table.setItem(i, 5, QTableWidgetItem(f"{row.total:.2f}"))
-            sharpness_item = QTableWidgetItem(f"{row.sharpness:.1f}")
-            sharpness_item.setToolTip(format_sharpness_region(row.sharpness_region))
+            choice_item = _SortItem(choice, (order, i))
+            if badcut:
+                choice_item.setToolTip(f"C컷: {row.badcut_reason}")
+            self._table.setItem(i, 4, choice_item)
+            unscored = _is_unscored(row)
+            self._table.setItem(i, 5, _bar_item(f"{row.total:.2f}", None if unscored else row.total))
+            rank, count, fraction = sharpness_ranks[i]
+            # 보이는 것은 장면 안 순위, 정렬은 원래 값(C컷 기준 사진을 고를 때 쓰는 순서)
+            sharpness_item = _bar_item(
+                "–" if unscored else f"{rank}위 / {count}장",
+                None if unscored else fraction,
+                sort_key=None if unscored else row.sharpness,
+            )
+            region = format_sharpness_region(row.sharpness_region)
+            sharpness_item.setToolTip(f"선명도 원래 값 {row.sharpness:.1f}" + (f" ({region})" if region else ""))
             self._table.setItem(i, 6, sharpness_item)
-            self._table.setItem(i, 7, QTableWidgetItem(f"{row.exposure:.2f}"))
-            self._table.setItem(i, 8, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
+            self._table.setItem(i, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
+            self._table.setItem(
+                i, 8, _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+            )
             self._table.setItem(i, 9, QTableWidgetItem(row.reason))
+            # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
+            if row.selected:
+                paint_row(self._table, i, KEPT_ROW, bold_column=4)
+            elif badcut:
+                paint_row(self._table, i, FLAGGED_ROW, bold_column=4)
+            else:
+                paint_row(self._table, i, SCENE_BAND if row.scene_id % 2 == 0 else None)
+        self._table.setSortingEnabled(True)
         self._table.resizeRowsToContents()
+        self._apply_row_filter()
+        self._populate_gallery(rows)
+        self._show_results()
+
+    def _apply_row_filter(self) -> None:
+        """'남기는 컷만 보기'면 남기지 않는 줄을 숨긴다(정렬로 줄이 바뀌어도 다시 맞춤)."""
+        rows = self._rows or []
+        only_kept = self._only_kept()
+        for table_row in range(self._table.rowCount()):
+            index = self._index_at(table_row)
+            hide = only_kept and index is not None and index < len(rows) and not rows[index].selected
+            self._table.setRowHidden(table_row, hide)
 
     def _difference_text(self, row: ReportRow) -> str:
         """앞 사진과 차이 칸. 나누기를 켠 상태에서 이 차이 때문에 장면이 나뉜 자리는 ✂."""
@@ -853,12 +1354,86 @@ class BestCutTab(QWidget):
             return f"{distance} ✂"
         return str(distance)
 
-    def _thumbnail_pixmap(self, path: Path) -> QPixmap | None:
+    def _thumbnail_pixmap(self, path: Path, size: int = TABLE_ICON) -> QPixmap | None:
         cached = self._thumbnail_cache.get(path)
         if cached is None or cached[2] is None:
             return None
-        qim = ImageQt(cached[2].convert("RGBA"))
-        return QPixmap.fromImage(qim)
+        key = cached[:2]
+        entry = self._pixmap_cache.get((path, size))
+        if entry is not None and entry[0] == key:
+            return entry[1]
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(cached[2], "JPEG"):
+            return None
+        if pixmap.width() > size or pixmap.height() > size:
+            pixmap = pixmap.scaled(
+                size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        self._pixmap_cache[(path, size)] = (key, pixmap)
+        return pixmap
+
+    def _populate_gallery(self, rows: list[ReportRow]) -> None:
+        only_kept = self._only_kept()
+        by_scene: dict[int, list[GalleryPhoto]] = {}
+        for i, row in enumerate(rows):
+            photos = by_scene.setdefault(row.scene_id, [])
+            if not only_kept or row.selected:
+                photos.append(
+                    GalleryPhoto(
+                        i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row)
+                    )
+                )
+        # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다
+        scenes = [GalleryScene(scene_id, tuple(photos)) for scene_id, photos in by_scene.items() if photos]
+        self._gallery.set_scenes(scenes)
+        self._gallery.set_current(self._selected_table_row(), scroll=False)
+
+    def _on_collapse_toggled(self, collapsed: bool) -> None:
+        self._settings_box.setVisible(not collapsed)
+        self._collapse_button.setText("▸ 설정 펴기" if collapsed else "▾ 설정 접기")
+        save_bool(self._settings, SETTINGS_COLLAPSED_KEY, collapsed)
+
+    def _on_view_toggled(self, gallery: bool) -> None:
+        self._settings.setValue(VIEW_SETTINGS_KEY, "gallery" if gallery else "table")
+        self._show_results()
+
+    def _show_results(self) -> None:
+        """결과가 있으면 고른 보기(갤러리/표), 없으면 순서 안내."""
+        if not hasattr(self, "_guide"):
+            return  # 생성 중(보기 버튼을 처음 켤 때)
+        if not self._rows:
+            self._update_guide()
+            self._results.setCurrentWidget(self._guide)
+        else:
+            self._results.setCurrentWidget(self._gallery if self._gallery_button.isChecked() else self._table)
+
+    def _update_guide(self) -> None:
+        if not hasattr(self, "_guide"):
+            return
+        thresholds_set = self._sharpness_threshold > 0 or self._eyes_threshold > 0
+        self._guide.set_done(
+            [bool(self._input_dirs), self._output_dir is not None, bool(self._rows), thresholds_set, False]
+        )
+
+    def _only_kept(self) -> bool:
+        return self._only_kept_checkbox.isChecked()
+
+    def _on_only_kept_toggled(self, _checked: bool) -> None:
+        if self._rows:
+            self._populate_table(self._rows)
+
+    def _choose_selected_row(self, wanted: bool) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._set_selected(self._rows[index], wanted)
+
+    def _choose_row(self, index: int, wanted: bool) -> None:
+        self._select_index(index)
+        self._choose_selected_row(wanted)
+
+    def _toggle_row(self, index: int) -> None:
+        self._select_index(index)
+        self._toggle_selected_row()
 
     def _run_apply(self) -> None:
         if self._busy:
@@ -881,15 +1456,15 @@ class BestCutTab(QWidget):
         manual = format_manual_choice_summary(self._rows)
         confirm = QMessageBox.question(
             self,
-            "적용 확인",
-            f"선택된 사진 {selected_count}장" + (f"({manual})" if manual else "")
+            "베스트컷 " + verb + " 확인",
+            f"베스트컷 {selected_count}장" + (f"({manual})" if manual else "")
             + f"을 {self._output_dir}(으)로 {verb}하시겠습니까?",
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
         self._busy = True
-        self._apply_button.setEnabled(False)
+        self._update_apply_buttons()
         self._progress_bar.setValue(0)
 
         self._apply_worker = ApplyWorker(self._rows, self._output_dir, move)
@@ -906,7 +1481,7 @@ class BestCutTab(QWidget):
         elif self._photos is not None and self._current_grouping() != self._rows_grouping:
             # 적용하는 사이에 묶는 기준을 바꿨으면 이제 다시 묶는다.
             self._regroup_timer.start()
-        self._apply_button.setEnabled(True)
+        self._update_apply_buttons()
         self._open_output_button.setEnabled(True)
         self._summary_text.setPlainText(
             format_apply_summary(results, self._output_dir, report_path)
@@ -952,5 +1527,5 @@ class BestCutTab(QWidget):
         self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
-        self._apply_button.setEnabled(bool(self._rows) and self._output_dir is not None)
+        self._update_apply_buttons()
         QMessageBox.critical(self, "오류", message)

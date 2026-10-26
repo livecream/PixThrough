@@ -46,6 +46,15 @@ def _reason_for(sharpness: float, face: float | None, thresholds: BadCutThreshol
     return False, "정상 컷(임계값 이상)"
 
 
+def badcut_reason(score: PhotoScore, thresholds: BadCutThresholds) -> str | None:
+    """이 사진이 C컷이면 사유(예: "블러(선명도 낮음), 눈감음"), 아니면 None.
+    점수 계산에 실패한 사진은 판단 근거가 없어 None. 기준이 0이면 아무것도 C컷이 아니다."""
+    if score.error is not None:
+        return None
+    is_bad, reason = _reason_for(score.sharpness, score.face, thresholds)
+    return reason.removeprefix("C컷: ") if is_bad else None
+
+
 def score_for_badcut(
     photos: list[PhotoMetadata],
     on_progress: Callable[[int, int], None] | None = None,

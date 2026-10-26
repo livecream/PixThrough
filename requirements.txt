@@ -7,6 +7,8 @@ opencv-python-headless
 numpy
 # RAW만 찍은 폴더: RAW 안의 미리보기 JPEG와 촬영 시각(CR3 등)을 LibRaw로 읽는다
 rawpy
+# 자동 업데이트: 패키징된 앱에서 HTTPS 인증서를 찾기 위한 묶음
+certifi
 # mediapipe>=1.0 crashes on macOS (GPU service init bug in FaceLandmarker); pinned to last known-good.
 # 0.10.21 has no wheels for Python 3.13+, so newer Pythons get the closest 0.10.x that does
 # (0.10.30 passes the test suite on Linux; not yet checked on macOS). Release builds use 3.12.
