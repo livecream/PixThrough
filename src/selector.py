@@ -18,11 +18,15 @@ Python max()가 동점 시 먼저 나온 항목을 유지하는 성질을 그대
 점수를 계산하지 못한 사진(손상 파일 등)은 고를 근거가 없으므로 순위에도, 선명도 정규화
 에도 넣지 않는다. 장면 사진이 전부 그렇다면 그 장면에서는 아무것도 고르지 않는다
 (사용자가 필요하면 미리보기에서 직접 넣을 수 있다).
+
+C컷으로 판정된 사진(exclude가 사유를 돌려준 사진, 사용자 결정 — 사진 선별 통합)도 순위에서
+뺀다. 다만 선명도 정규화에는 그대로 넣어, C컷 기준을 바꿔도 나머지 사진의 종합점수는
+변하지 않는다. 장면 사진이 전부 C컷이면 그 장면은 0장(직접 넣을 수 있음).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from scanner import PhotoMetadata
@@ -41,6 +45,8 @@ class SceneSelection:
     best_index: int | None
     # 남길 컷의 장면 내 위치, 종합점수 높은 순(동점이면 먼저 찍은 순). [0]은 best_index.
     kept_indices: list[int]
+    # 후보에서 뺀 사진의 장면 내 위치 → 사유(C컷 판정 등)
+    excluded: dict[int, str] = field(default_factory=dict)
 
 
 def keep_count(scene_size: int, keep_percent: int) -> int:
@@ -72,8 +78,10 @@ def select_best(
     on_progress: Callable[[int, int], None] | None = None,
     cache: dict | None = None,
     keep_percent: int = 0,
+    exclude: Callable[[PhotoScore], str | None] | None = None,
 ) -> SceneSelection:
-    """장면 그룹에서 종합 점수가 높은 사진을 고른다 (기본 1장, keep_percent로 더 남김)."""
+    """장면 그룹에서 종합 점수가 높은 사진을 고른다 (기본 1장, keep_percent로 더 남김).
+    exclude가 주어지면 사유(문자열)를 돌려준 사진은 후보에서 뺀다(C컷 등)."""
     if not scene:
         raise ValueError("빈 장면 그룹은 베스트 컷을 선정할 수 없습니다.")
 
@@ -85,8 +93,15 @@ def select_best(
         for i, ns in zip(valid, norm_sharpness):
             combined_scores[i] = _combined_score(ns, scores[i].exposure, scores[i].face)
 
+    excluded: dict[int, str] = {}
+    if exclude is not None:
+        for i in valid:
+            reason = exclude(scores[i])
+            if reason:
+                excluded[i] = reason
+    candidates = [i for i in valid if i not in excluded]
     # sorted는 안정 정렬이라 동점이면 원래 순서(촬영 시각순)가 유지된다.
-    ranked = sorted(valid, key=lambda i: -combined_scores[i])
+    ranked = sorted(candidates, key=lambda i: -combined_scores[i])
     # 남길 수는 장면 전체 크기 기준이지만, 점수를 낸 사진 수보다 많을 수는 없다.
     kept_indices = ranked[: keep_count(len(scene), keep_percent)] if ranked else []
     best_index = kept_indices[0] if kept_indices else None
@@ -97,4 +112,5 @@ def select_best(
         best=scene[best_index] if best_index is not None else None,
         best_index=best_index,
         kept_indices=kept_indices,
+        excluded=excluded,
     )
