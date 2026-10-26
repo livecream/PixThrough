@@ -1,6 +1,8 @@
 from PIL import Image
 
-from thumbnails import load_preview_image, make_thumbnail
+import io
+
+from thumbnails import load_preview_image, make_thumbnail, make_thumbnail_jpeg
 
 
 def _make_jpeg(path, size=(200, 100), color=(200, 50, 50)):
@@ -92,3 +94,20 @@ def test_make_thumbnail_reads_large_jpeg_at_reduced_size(tmp_path, monkeypatch):
 
     assert thumb.size == (64, 48)
     assert max(decoded_sizes[0]) <= 500  # 4000px 전체가 아니라 1/8 근처로 풀었음
+
+
+def test_make_thumbnail_jpeg_is_small_decodable_jpeg(tmp_path):
+    path = _make_jpeg(tmp_path / "a.jpg", size=(400, 200))
+
+    data = make_thumbnail_jpeg(path, (160, 160))
+
+    with Image.open(io.BytesIO(data)) as img:
+        assert img.format == "JPEG"
+        assert img.size == (160, 80)
+
+
+def test_make_thumbnail_jpeg_none_for_corrupt_file(tmp_path):
+    path = tmp_path / "broken.jpg"
+    path.write_bytes(b"not an image")
+
+    assert make_thumbnail_jpeg(path, (160, 160)) is None
