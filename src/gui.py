@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from gui_file_organize_tab import FileOrganizeTab
 from gui_photo_selection_tab import PhotoSelectionTab
+from gui_update import UpdateController
 from version import __version__
 
 
@@ -30,6 +31,12 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._file_organize_tab, "사진 파일 정리")
         tabs.addTab(self._photo_selection_tab, "사진 선별")
         self.setCentralWidget(tabs)
+
+        self.updates = UpdateController(self, is_busy=self.is_busy)
+        self.updates.build_menu(self.menuBar().addMenu("도움말"))
+
+    def is_busy(self) -> bool:
+        return self._file_organize_tab.is_busy or self._photo_selection_tab.is_busy
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         busy_tabs = [
@@ -52,6 +59,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
+    window.updates.check_on_startup()
     sys.exit(app.exec())
 
 
