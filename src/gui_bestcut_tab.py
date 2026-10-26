@@ -30,11 +30,11 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QRadioButton,
@@ -80,6 +80,18 @@ from image_hash import HASH_BITS, hashes_for
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail
+from gui_widgets import (
+    KEPT_ROW,
+    SCENE_BAND,
+    FolderList,
+    PathLabel,
+    SummaryLabel,
+    compact,
+    make_primary,
+    paint_row,
+    small_button,
+    status_row,
+)
 
 
 _TOTAL_TOOLTIP = (
@@ -306,28 +318,28 @@ class BestCutTab(QWidget):
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_list = QListWidget()
-        add_input_button = QPushButton("입력 폴더 추가...")
+        self._folder_list = FolderList()
+        add_input_button = small_button("+", "입력 폴더 추가")
         add_input_button.clicked.connect(self._add_input_dir)
-        remove_input_button = QPushButton("선택 삭제")
+        remove_input_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
         remove_input_button.clicked.connect(self._remove_selected_input_dir)
 
-        self._output_label = QLabel("출력 폴더: (선택 안 됨)")
-        output_button = QPushButton("출력 폴더 선택...")
+        self._output_label = PathLabel()
+        output_button = compact(QPushButton("선택…"))
         output_button.clicked.connect(self._choose_output_dir)
 
-        self._copy_radio = QRadioButton("복사 (기본)")
+        self._copy_radio = QRadioButton("복사 (원본 유지)")
         self._copy_radio.setChecked(True)
         self._move_radio = QRadioButton("이동")
 
-        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
         self._cancel_preview_button.setToolTip(
             "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
             "다시 미리보기하면 이어서 계산합니다.</p>"
         )
         self._cancel_preview_button.clicked.connect(self._cancel_preview)
-        self._preview_button = QPushButton("미리보기")
+        self._preview_button = make_primary(QPushButton("미리보기"))
         self._preview_button.setToolTip(
             "<p>사진을 장면별로 묶고 장면마다 베스트컷 1장을 고른 결과를 보여줍니다. "
             "파일은 아직 복사/이동하지 않습니다.</p>"
@@ -392,32 +404,29 @@ class BestCutTab(QWidget):
         keep_label = QLabel("장면마다 남길 비율 ⓘ:")
         self._keep_hint = QLabel()
         self._keep_widgets = (keep_label, self._keep_spin, self._keep_hint)
-        split_row.insertWidget(0, keep_label)
-        split_row.insertWidget(1, self._keep_spin)
-        split_row.insertWidget(2, self._keep_hint)
+        keep_row = QHBoxLayout()
+        keep_row.addWidget(self._keep_spin)
+        keep_row.addWidget(self._keep_hint)
+        keep_row.addStretch()
 
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
         self._scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
         help_row = QHBoxLayout()
-        help_row.addWidget(gap_label)
         help_row.addWidget(self._gap_spin)
         help_row.addWidget(self._grouping_help_label)
-        help_row.addWidget(self._scoring_help_label)
         help_row.addStretch()
 
-        self._apply_button = QPushButton("적용")
+        self._apply_button = make_primary(QPushButton("적용"))
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._run_apply)
 
-        self._open_output_button = QPushButton("출력 폴더 열기")
+        self._open_output_button = compact(QPushButton("출력 폴더 열기"))
         self._open_output_button.setEnabled(False)
         self._open_output_button.clicked.connect(self._open_output_folder)
 
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
-        self._summary_text = QPlainTextEdit()
-        self._summary_text.setReadOnly(True)
-        self._summary_text.setAcceptDrops(False)
+        self._summary_text = SummaryLabel()
 
         self._table = QTableWidget(0, 10)
         self._table.setHorizontalHeaderLabels(
@@ -450,19 +459,19 @@ class BestCutTab(QWidget):
         self._table.itemSelectionChanged.connect(self._update_choice_buttons)
         self._table.cellDoubleClicked.connect(self._open_viewer)
 
-        self._view_button = QPushButton("크게 보기")
+        self._view_button = compact(QPushButton("크게 보기"))
         self._view_button.setToolTip(
             "<p>선택한 사진을 크게 엽니다. 같은 장면의 컷끼리 ←/→로 넘겨보며 고를 수 "
             "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
         )
         self._view_button.clicked.connect(self._open_viewer_for_selected)
-        self._toggle_button = QPushButton("선택에 넣기")
+        self._toggle_button = compact(QPushButton("선택에 넣기"))
         self._toggle_button.setToolTip(
             "<p>표에서 고른 사진을 선택에 넣거나 뺍니다. 장면마다 자동으로 1장을 고르지만, "
             "원하는 컷을 더 넣거나 자동으로 고른 컷을 뺄 수 있습니다.</p>"
         )
         self._toggle_button.clicked.connect(self._toggle_selected_row)
-        self._reset_choices_button = QPushButton("자동 선택으로 되돌리기")
+        self._reset_choices_button = compact(QPushButton("자동 선택으로 되돌리기"))
         self._reset_choices_button.setToolTip("<p>직접 넣거나 뺀 것을 모두 취소합니다.</p>")
         self._reset_choices_button.clicked.connect(self._reset_choices)
         choice_button_row = QHBoxLayout()
@@ -470,39 +479,65 @@ class BestCutTab(QWidget):
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
         choice_button_row.addStretch()
+        choice_button_row.addWidget(
+            QLabel("더블클릭하면 크게 보며 같은 장면 컷끼리 비교할 수 있습니다.")
+        )
 
+        # 위: 입력 폴더(왼쪽) · 설정(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
+        folder_buttons = QVBoxLayout()
+        folder_buttons.addWidget(add_input_button)
+        folder_buttons.addWidget(remove_input_button)
+        folder_buttons.addStretch()
+        folder_box = QHBoxLayout()
+        folder_box.addWidget(self._folder_list)
+        folder_box.addLayout(folder_buttons)
+        input_group = QGroupBox("입력 폴더")
+        input_group.setLayout(folder_box)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(self._output_label, stretch=1)
+        output_row.addWidget(output_button)
         radio_row = QHBoxLayout()
         radio_row.addWidget(self._copy_radio)
         radio_row.addWidget(self._move_radio)
+        radio_row.addStretch()
+        output_form = QFormLayout()
+        output_form.addRow("출력 폴더:", output_row)
+        output_form.addRow("작업 방식:", radio_row)
+        output_group = QGroupBox("출력")
+        output_group.setLayout(output_form)
 
-        input_button_row = QHBoxLayout()
-        input_button_row.addWidget(add_input_button)
-        input_button_row.addWidget(remove_input_button)
+        left_column = QVBoxLayout()
+        left_column.addWidget(input_group)
+        left_column.addWidget(output_group)
 
+        settings_form = QFormLayout()
+        settings_form.addRow(gap_label, help_row)
+        settings_form.addRow(keep_label, keep_row)
+        settings_form.addRow(split_row)
+        settings_form.addRow(self._scoring_help_label)
+        settings_group = QGroupBox("장면·선택 기준")
+        settings_group.setLayout(settings_form)
+
+        top_row = QHBoxLayout()
+        top_row.addLayout(left_column, stretch=1)
+        top_row.addWidget(settings_group, stretch=1)
+
+        # 실행 줄: 미리보기(왼쪽) → 적용(오른쪽) 순서로 읽히게, 주요 버튼만 강조
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
         button_row.addWidget(self._cancel_preview_button)
-        button_row.addWidget(self._apply_button)
+        button_row.addSpacing(12)
+        button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
         button_row.addWidget(self._open_output_button)
+        button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("입력 폴더 (여러 개 추가 가능):"))
-        layout.addWidget(self._folder_list)
-        layout.addLayout(input_button_row)
-        layout.addWidget(self._output_label)
-        layout.addWidget(output_button)
-        layout.addLayout(radio_row)
-        layout.addLayout(help_row)
-        layout.addLayout(split_row)
+        layout.addLayout(top_row)
         layout.addLayout(button_row)
-        layout.addWidget(self._progress_bar)
-        layout.addWidget(self._status_label)
         layout.addWidget(self._summary_text)
-        layout.addWidget(
-            QLabel("사진을 더블클릭하면 크게 볼 수 있고, 같은 장면 컷끼리 비교하며 고를 수 있습니다.")
-        )
         layout.addLayout(choice_button_row)
-        layout.addWidget(self._table)
+        layout.addWidget(self._table, stretch=1)
 
         for folder in load_folder_list(self._settings, "bestcut/input_dirs"):
             self._input_dirs.append(folder)
@@ -510,7 +545,7 @@ class BestCutTab(QWidget):
         restored_output = load_folder(self._settings, "bestcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
-            self._output_label.setText(f"출력 폴더: {restored_output}")
+            self._output_label.set_path(restored_output)
 
         self._update_grouping_help()
         self._update_choice_buttons()
@@ -559,7 +594,7 @@ class BestCutTab(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "출력 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
-            self._output_label.setText(f"출력 폴더: {directory}")
+            self._output_label.set_path(Path(directory))
             # 미리보기 결과(스캔/장면 그룹핑/스코어링)는 출력 폴더와 무관하므로
             # 다시 계산할 필요 없음 — 적용 버튼 활성화 여부만 갱신한다.
             self._apply_button.setEnabled(bool(self._rows))
@@ -830,7 +865,7 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 1, QTableWidgetItem(row.path.name))
             self._table.setItem(i, 2, QTableWidgetItem(str(row.scene_id)))
             self._table.setItem(i, 3, QTableWidgetItem(self._difference_text(row)))
-            choice = "선택" if row.selected else "제외"
+            choice = "✓ 선택" if row.selected else "제외"
             if row.manual_choice is not None:
                 choice += " (직접)"
             self._table.setItem(i, 4, QTableWidgetItem(choice))
@@ -841,6 +876,11 @@ class BestCutTab(QWidget):
             self._table.setItem(i, 7, QTableWidgetItem(f"{row.exposure:.2f}"))
             self._table.setItem(i, 8, QTableWidgetItem("" if row.face is None else f"{row.face:.2f}"))
             self._table.setItem(i, 9, QTableWidgetItem(row.reason))
+            # 남기는 컷은 초록, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를 보이게
+            if row.selected:
+                paint_row(self._table, i, KEPT_ROW, bold_column=4)
+            else:
+                paint_row(self._table, i, SCENE_BAND if row.scene_id % 2 == 0 else None)
         self._table.resizeRowsToContents()
 
     def _difference_text(self, row: ReportRow) -> str:

@@ -23,11 +23,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -54,6 +53,17 @@ from report import ReportRow, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from scoring import PhotoScore
 from thumbnails import make_thumbnail
+from gui_widgets import (
+    FLAGGED_ROW,
+    FolderList,
+    PathLabel,
+    SummaryLabel,
+    compact,
+    make_primary,
+    paint_row,
+    small_button,
+    status_row,
+)
 
 
 _SHARPNESS_TOOLTIP = (
@@ -212,14 +222,14 @@ class BadCutTab(QWidget):
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_list = QListWidget()
-        add_input_button = QPushButton("입력 폴더 추가...")
+        self._folder_list = FolderList()
+        add_input_button = small_button("+", "입력 폴더 추가")
         add_input_button.clicked.connect(self._add_input_dir)
-        remove_input_button = QPushButton("선택 삭제")
+        remove_input_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
         remove_input_button.clicked.connect(self._remove_selected_input_dir)
 
-        self._output_label = QLabel("출력 폴더: (선택 안 됨)")
-        output_button = QPushButton("출력 폴더 선택...")
+        self._output_label = PathLabel()
+        output_button = compact(QPushButton("선택…"))
         output_button.clicked.connect(self._choose_output_dir)
 
         self._recursive_checkbox = QCheckBox("하위 폴더까지 포함")
@@ -260,20 +270,20 @@ class BadCutTab(QWidget):
         threshold_form.addRow(sharpness_label, sharpness_row)
         threshold_form.addRow(eyes_label, eyes_row)
 
-        self._sharpness_ref_button = QPushButton("선택한 사진을 선명도 기준으로")
+        self._sharpness_ref_button = compact(QPushButton("선택한 사진을 선명도 기준으로"))
         self._sharpness_ref_button.setToolTip(
             "<p>표에서 고른 사진의 선명도까지는 정상으로 보고, 이보다 선명도가 낮은 "
             "사진을 C컷(블러)으로 판정합니다.</p>"
         )
         self._sharpness_ref_button.clicked.connect(self._use_selected_as_sharpness_reference)
-        self._eyes_ref_button = QPushButton("선택한 사진을 눈뜸 기준으로")
+        self._eyes_ref_button = compact(QPushButton("선택한 사진을 눈뜸 기준으로"))
         self._eyes_ref_button.setToolTip(
             "<p>표에서 고른 사진의 눈 뜬 정도까지는 정상으로 보고, 이보다 눈이 더 "
             "감긴 사진을 C컷(눈감음)으로 판정합니다. 얼굴이 검출된 사진만 고를 수 "
             "있습니다.</p>"
         )
         self._eyes_ref_button.clicked.connect(self._use_selected_as_eyes_reference)
-        self._view_button = QPushButton("크게 보기")
+        self._view_button = compact(QPushButton("크게 보기"))
         self._view_button.setToolTip("<p>선택한 사진을 크게 엽니다. 표에서 사진을 더블클릭해도 됩니다.</p>")
         self._view_button.clicked.connect(self._open_viewer_for_selected)
 
@@ -281,26 +291,28 @@ class BadCutTab(QWidget):
         reference_button_row.addWidget(self._view_button)
         reference_button_row.addWidget(self._sharpness_ref_button)
         reference_button_row.addWidget(self._eyes_ref_button)
+        reference_button_row.addStretch()
+        reference_button_row.addWidget(
+            QLabel("머리글을 누르면 정렬, 더블클릭하면 크게 볼 수 있습니다.")
+        )
 
-        self._cancel_preview_button = QPushButton("취소")
+        self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
         self._cancel_preview_button.setToolTip(
             "<p>진행 중인 미리보기(스캔·채점)를 멈춥니다. 그때까지 계산한 점수는 저장돼, "
             "다시 미리보기하면 이어서 계산합니다.</p>"
         )
         self._cancel_preview_button.clicked.connect(self._cancel_preview)
-        self._preview_button = QPushButton("미리보기")
+        self._preview_button = make_primary(QPushButton("미리보기"))
         self._preview_button.clicked.connect(self._run_preview)
 
-        self._apply_button = QPushButton("적용 (이동)")
+        self._apply_button = make_primary(QPushButton("적용 (이동)"))
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._run_apply)
 
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
-        self._summary_text = QPlainTextEdit()
-        self._summary_text.setReadOnly(True)
-        self._summary_text.setAcceptDrops(False)
+        self._summary_text = SummaryLabel()
 
         self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(["썸네일", "파일명", "판정", "선명도", "눈뜸", "사유"])
@@ -317,32 +329,52 @@ class BadCutTab(QWidget):
         self._table.cellDoubleClicked.connect(self._open_viewer)
         self._update_reference_buttons()
 
-        input_button_row = QHBoxLayout()
-        input_button_row.addWidget(add_input_button)
-        input_button_row.addWidget(remove_input_button)
+        # 위: 입력 폴더·출력(왼쪽) · C컷 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
+        folder_buttons = QVBoxLayout()
+        folder_buttons.addWidget(add_input_button)
+        folder_buttons.addWidget(remove_input_button)
+        folder_buttons.addStretch()
+        folder_box = QHBoxLayout()
+        folder_box.addWidget(self._folder_list)
+        folder_box.addLayout(folder_buttons)
+        input_layout = QVBoxLayout()
+        input_layout.addLayout(folder_box)
+        input_layout.addWidget(self._recursive_checkbox)
+        input_group = QGroupBox("입력 폴더")
+        input_group.setLayout(input_layout)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(self._output_label, stretch=1)
+        output_row.addWidget(output_button)
+        output_form = QFormLayout()
+        output_form.addRow("C컷 옮길 폴더:", output_row)
+        output_group = QGroupBox("출력")
+        output_group.setLayout(output_form)
+
+        left_column = QVBoxLayout()
+        left_column.addWidget(input_group)
+        left_column.addWidget(output_group)
+
+        threshold_group = QGroupBox("C컷 기준")
+        threshold_group.setLayout(threshold_form)
+
+        top_row = QHBoxLayout()
+        top_row.addLayout(left_column, stretch=1)
+        top_row.addWidget(threshold_group, stretch=1)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
         button_row.addWidget(self._cancel_preview_button)
+        button_row.addSpacing(12)
+        button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
         button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("입력 폴더 (여러 개 추가 가능):"))
-        layout.addWidget(self._folder_list)
-        layout.addLayout(input_button_row)
-        layout.addWidget(self._output_label)
-        layout.addWidget(output_button)
-        layout.addWidget(self._recursive_checkbox)
-        layout.addLayout(threshold_form)
+        layout.addLayout(top_row)
         layout.addLayout(button_row)
-        layout.addWidget(self._progress_bar)
-        layout.addWidget(self._status_label)
         layout.addWidget(self._summary_text)
-        layout.addWidget(
-            QLabel("표 머리글을 누르면 정렬, 사진을 더블클릭하면 크게 볼 수 있습니다.")
-        )
         layout.addLayout(reference_button_row)
-        layout.addWidget(self._table)
+        layout.addWidget(self._table, stretch=1)
 
         for folder in load_folder_list(self._settings, "badcut/input_dirs"):
             self._input_dirs.append(folder)
@@ -350,7 +382,7 @@ class BadCutTab(QWidget):
         restored_output = load_folder(self._settings, "badcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
-            self._output_label.setText(f"출력 폴더: {restored_output}")
+            self._output_label.set_path(restored_output)
 
         self.setLayout(layout)
 
@@ -397,7 +429,7 @@ class BadCutTab(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "C컷을 옮길 출력 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
-            self._output_label.setText(f"출력 폴더: {directory}")
+            self._output_label.set_path(Path(directory))
             # 미리보기 결과(스캔/스코어링)는 출력 폴더와 무관하므로 다시 계산할
             # 필요 없음 — 적용 버튼 활성화 여부만 갱신한다.
             bad_count = sum(1 for r in (self._rows or []) if r.selected)
@@ -609,6 +641,7 @@ class BadCutTab(QWidget):
             self._table.setItem(i, 3, sharpness_item)
             self._table.setItem(i, 4, _NumberItem(row.face, 2))
             self._table.setItem(i, 5, QTableWidgetItem(row.reason))
+            paint_row(self._table, i, FLAGGED_ROW if row.selected else None, bold_column=2)
         self._table.setSortingEnabled(True)
         self._table.resizeRowsToContents()
         if selected is not None:
