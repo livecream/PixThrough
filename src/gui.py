@@ -1,9 +1,9 @@
 """M8/M9/M10/M11: PixThrough 데스크톱 GUI. 기능마다 독립된 화면을 얇게 얹는 컨테이너.
 
 왼쪽 메뉴에서 화면을 고른다. "사진 파일 정리" 묶음(시간순 정렬 M9, 폴더 정리 M11 —
-gui_file_organize_tab.py)과 "사진 선별" 묶음(베스트컷 선별 M8, C컷 정리 M10 —
-gui_photo_selection_tab.py, 입력 폴더 칸을 함께 씀). 각 화면의 실제 로직은
-gui_bestcut_tab.py / gui_rename_tab.py / gui_badcut_tab.py / gui_organize_tab.py에 있다.
+gui_file_organize_tab.py)과 "사진 선별" 묶음(베스트컷 M8 + C컷 M10을 한
+화면으로 — gui_photo_selection_tab.py). 각 화면의 실제 로직은 gui_bestcut_tab.py /
+gui_rename_tab.py / gui_organize_tab.py에 있다.
 예전 2단 탭(사진 파일 정리 > 시간순 정렬)을 한 번에 고르는 메뉴로 바꿨다.
 """
 
@@ -52,7 +52,7 @@ class Page:
     icon: QStyle.StandardPixmap
 
 
-# (묶음 제목, 화면들) — 실제 작업 순서대로: 파일 정리 → 걸러내기(C컷) → 고르기(베스트컷)
+# (묶음 제목, 화면들) — 실제 작업 순서대로: 파일 정리 → 고르기(베스트컷·C컷 한 화면)
 MENU = (
     (
         "사진 파일 정리",
@@ -66,9 +66,8 @@ MENU = (
     (
         "사진 선별",
         (
-            Page("badcut", "C컷 정리", "흔들리거나 눈 감은 사진을 골라 따로 옮깁니다.",
-                 QStyle.StandardPixmap.SP_TrashIcon),
-            Page("bestcut", "베스트컷 선별", "연속 촬영한 장면마다 가장 좋은 컷을 골라 복사합니다.",
+            Page("selection", "베스트컷·C컷 선별",
+                 "장면마다 가장 좋은 컷을 골라 복사하고, 흐리거나 눈 감은 C컷은 걸러 따로 옮깁니다.",
                  QStyle.StandardPixmap.SP_DialogApplyButton),
         ),
     ),
@@ -158,6 +157,8 @@ class MainWindow(QMainWindow):
 
     def _select_page(self, key: str) -> None:
         """메뉴에서 key 화면을 고른다(없는 이름이면 첫 화면)."""
+        if key in PhotoSelectionTab.LEGACY_PAGES:  # 예전 "베스트컷 선별"/"C컷 정리" 메뉴
+            key = "selection"
         first = None
         for row in range(self._menu.count()):
             data = self._menu.item(row).data(_PAGE_ROLE)
