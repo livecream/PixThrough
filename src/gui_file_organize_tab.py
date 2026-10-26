@@ -1,22 +1,28 @@
-"""사진 파일 정리 탭 컨테이너: 시간순 정렬(M9)과 폴더 정리(M11)를 하위 탭으로 묶는다."""
+"""사진 파일 정리 묶음: 시간순 정렬(M9)과 폴더 정리(M11). 어느 쪽을 보일지는 왼쪽 메뉴가
+정한다(show_page)."""
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTabWidget
+from PySide6.QtWidgets import QStackedWidget
 
 from gui_organize_tab import OrganizeTab
 from gui_rename_tab import RenameTab
 
 
-class FileOrganizeTab(QTabWidget):
+class FileOrganizeTab(QStackedWidget):
+    PAGES = ("rename", "organize")
+
     def __init__(self) -> None:
         super().__init__()
 
         self._rename_tab = RenameTab()
         self._organize_tab = OrganizeTab()
 
-        self.addTab(self._rename_tab, "시간순 정렬")
-        self.addTab(self._organize_tab, "폴더 정리")
+        self.addWidget(self._rename_tab)
+        self.addWidget(self._organize_tab)
+
+    def show_page(self, name: str) -> None:
+        self.setCurrentIndex(self.PAGES.index(name))
 
     @property
     def is_busy(self) -> bool:

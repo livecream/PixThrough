@@ -168,7 +168,7 @@ class RenameTab(QWidget):
         self._summary_text.setPlaceholderText("미리보기를 누르면 바뀔 파일 이름 목록이 여기에 나옵니다.")
 
         description_label = QLabel(
-            "촬영 시각 순으로 정렬해 00001부터 번호를 붙입니다. 같은 초에 촬영된 파일이 "
+            "같은 초에 촬영된 파일이 "
             "겹치면 파일 경로 순으로 처리하고, 같은 파일명의 RAW는 자동으로 짝지어져 "
             "같은 번호를 받습니다. 적용 후에는 원래 파일명으로 되돌릴 수 없습니다."
         )

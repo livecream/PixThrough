@@ -8,8 +8,8 @@
 두고 직접 그린다(보이는 장면만 그림). 클릭한 사진은 표의 같은 줄과 맞춰(row_index) 탭의
 기존 버튼(크게 보기·넣기/빼기)이 그대로 동작한다.
 
-조작: 클릭 = 고르기, 더블클릭/Enter = 크게 보기, Space = 넣기/빼기,
-←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면.
+조작: 클릭 = 고르기, 더블클릭/Enter = 크게 보기, Space = 넣기/빼기, P = 넣기,
+X = 빼기, ←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ MARGIN = 8
 _SCENE_ROLE = Qt.ItemDataRole.UserRole + 1
 
 KEPT_BORDER = QColor(52, 168, 83)
+FLAGGED_BORDER = QColor(214, 54, 40)
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class GalleryPhoto:
     selected: bool
     manual: bool  # 직접 넣거나 뺌
     total: float
+    flagged: bool = False  # C컷(흔들림·눈감음)으로 옮길 사진
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class _SceneDelegate(QStyledItemDelegate):
         painter.save()
 
         kept = sum(1 for p in scene.photos if p.selected)
+        flagged = sum(1 for p in scene.photos if p.flagged)
         header = QRect(rect.x() + MARGIN, rect.y() + 4, rect.width() - 2 * MARGIN, HEADER_H - 8)
         font = QFont(painter.font())
         font.setBold(True)
@@ -91,7 +94,8 @@ class _SceneDelegate(QStyledItemDelegate):
         painter.drawText(
             header,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"장면 {scene.scene_id}   ·   {len(scene.photos)}장 중 {kept}장 남김",
+            f"장면 {scene.scene_id}   ·   {len(scene.photos)}장 중 {kept}장 남김"
+            + (f"   ·   C컷 {flagged}장" if flagged else ""),
         )
         painter.setPen(QPen(palette.mid().color(), 1))
         painter.drawLine(header.left(), rect.y() + 1, header.right(), rect.y() + 1)
@@ -134,6 +138,16 @@ class _SceneDelegate(QStyledItemDelegate):
             painter.drawEllipse(badge)
             painter.setPen(QColor("white"))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "✓")
+        if photo.flagged:
+            painter.setPen(QPen(FLAGGED_BORDER, 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(box.adjusted(1, 1, -1, -1), 4, 4)
+            badge = QRect(box.x() + 6, box.y() + 6, 40, 20)
+            painter.setBrush(FLAGGED_BORDER)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("white"))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "C컷")
         if current:
             painter.setPen(QPen(palette.highlight().color(), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -157,6 +171,7 @@ class SceneGallery(QListView):
     photo_clicked = Signal(int)  # 결과 표 줄 번호
     photo_activated = Signal(int)
     toggle_requested = Signal(int)
+    choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
 
     def __init__(self, pixmap_for: Callable[[Path, int], QPixmap | None]) -> None:
         super().__init__()
@@ -263,6 +278,8 @@ class SceneGallery(QListView):
             self._choose(self._scenes[target].photos[0].row_index)
         elif key == Qt.Key.Key_Space and self._current is not None:
             self.toggle_requested.emit(self._current)
+        elif key in (Qt.Key.Key_P, Qt.Key.Key_X) and self._current is not None:
+            self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._current is not None:
             self.photo_activated.emit(self._current)
         else:
