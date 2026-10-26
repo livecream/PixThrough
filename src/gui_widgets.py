@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 FOLDER_LIST_ROWS = 3
-PROGRESS_WIDTH = 240
+PROGRESS_WIDTH = 160
 
 _PRIMARY_STYLE = """
 QPushButton {
@@ -112,7 +112,22 @@ def small_button(text: str, tooltip: str = "") -> QToolButton:
 
 def make_primary(button: QPushButton) -> QPushButton:
     button.setStyleSheet(_PRIMARY_STYLE)
-    button.setMinimumWidth(110)
+    fit_text(button)
+    return button
+
+
+def fit_text(button: QPushButton, padding: int = 44) -> None:
+    """스타일시트로 안쪽 여백을 준 버튼은 Qt가 계산한 크기에 그 여백이 빠져 글자가 잘릴 수
+    있어, 지금 글자 폭 + 여백을 최소 폭으로 둔다(글자를 바꾼 뒤 다시 부를 것)."""
+    button.setMinimumWidth(max(110, button.fontMetrics().horizontalAdvance(button.text()) + padding))
+
+
+# 되돌리기 어려운 동작(이동·삭제) 버튼: 글자만 빨갛게(배경은 OS 기본이라 모양이 어색하지 않게)
+_DANGER_STYLE = "QPushButton:enabled { color: rgb(200, 40, 40); font-weight: 600; }"
+
+
+def make_danger(button: QPushButton) -> QPushButton:
+    button.setStyleSheet(_DANGER_STYLE)
     return button
 
 
@@ -140,6 +155,12 @@ class PathLabel(QLabel):
 
     def path_text(self) -> str:
         return self._full
+
+    def set_text(self, text: str) -> None:
+        """경로가 아닌 글자도 같은 방식(공간이 모자라면 가운데 …, 전체는 툴팁)으로."""
+        self._full = text
+        self.setToolTip(text)
+        self._update_elided()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         super().resizeEvent(event)
@@ -173,6 +194,9 @@ class SummaryLabel(QLabel):
 def status_row(progress_bar: QProgressBar, status_label: QLabel) -> QHBoxLayout:
     progress_bar.setFixedWidth(PROGRESS_WIDTH)
     progress_bar.setMaximumHeight(16)
+    # 상태 글자가 길어도 옆 버튼을 밀어내거나 창을 넓히지 않게(남는 폭만큼만 보임, 전체는 툴팁)
+    status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    status_label.setMinimumWidth(40)
     row = QHBoxLayout()
     row.addWidget(progress_bar)
     row.addWidget(status_label, stretch=1)
