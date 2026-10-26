@@ -7,8 +7,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox, QPushButton, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 import score_store
 from gui_badcut_tab import BadCutTab
@@ -18,6 +17,10 @@ from gui_input_folders import InputFolderPanel
 
 
 class PhotoSelectionTab(QWidget):
+    """입력 폴더 칸 아래에 베스트컷·C컷 화면 중 하나를 보인다(왼쪽 메뉴가 show_page로 고름)."""
+
+    PAGES = ("bestcut", "badcut")
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -25,15 +28,19 @@ class PhotoSelectionTab(QWidget):
         self._best_cut_tab = BestCutTab(self.inputs)
         self._bad_cut_tab = BadCutTab(self.inputs)
 
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._best_cut_tab, "베스트컷 선별")
-        self.tabs.addTab(self._bad_cut_tab, "C컷 정리")
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._best_cut_tab)
+        self.pages.addWidget(self._bad_cut_tab)
         self.setAcceptDrops(True)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 6, 0, 0)
-        layout.addWidget(self.inputs)
-        layout.addWidget(self.tabs, stretch=1)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # 아래 화면들의 안쪽 여백과 왼쪽 끝을 맞춘다
+        inputs_row = QHBoxLayout()
+        inputs_row.setContentsMargins(9, 0, 9, 0)
+        inputs_row.addWidget(self.inputs)
+        layout.addLayout(inputs_row)
+        layout.addWidget(self.pages, stretch=1)
         self.setLayout(layout)
 
         clear_button = QPushButton("저장된 점수 지우기")
@@ -45,7 +52,10 @@ class PhotoSelectionTab(QWidget):
             "건드리지 않습니다.</p>"
         )
         clear_button.clicked.connect(self._clear_saved_scores)
-        self.tabs.setCornerWidget(clear_button, Qt.Corner.TopRightCorner)
+        self.inputs.add_side_widget(clear_button)
+
+    def show_page(self, name: str) -> None:
+        self.pages.setCurrentIndex(self.PAGES.index(name))
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         if event.mimeData().hasUrls():

@@ -46,6 +46,7 @@ class InputFolderPanel(QGroupBox):
         side = QVBoxLayout()
         side.addWidget(self._recursive_checkbox)
         side.addStretch()
+        self._side = side
         layout = QHBoxLayout()
         layout.addWidget(self._list, stretch=1)
         layout.addLayout(buttons)
@@ -59,6 +60,10 @@ class InputFolderPanel(QGroupBox):
                 if saved:
                     break
         self._set(saved, notify=False)
+
+    def add_side_widget(self, widget) -> None:
+        """오른쪽 칸(하위 폴더 체크박스 아래)에 버튼 등을 붙인다."""
+        self._side.insertWidget(self._side.count() - 1, widget)
 
     def folders(self) -> list[Path]:
         return list(self._folders)

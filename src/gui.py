@@ -1,17 +1,33 @@
-"""M8/M9/M10/M11: PixThrough 데스크톱 GUI. 탭마다 독립된 기능을 얇게 얹는 컨테이너.
+"""M8/M9/M10/M11: PixThrough 데스크톱 GUI. 기능마다 독립된 화면을 얇게 얹는 컨테이너.
 
-최상위 탭은 두 개: "사진 파일 정리"(시간순 정렬 M9 + 폴더 정리 M11을 하위 탭으로
-묶음, gui_file_organize_tab.py)와 "사진 선별"(베스트컷 선별 M8 + C컷 정리 M10을
-하위 탭으로 묶음, gui_photo_selection_tab.py). 각 하위 탭의 실제 로직은
+왼쪽 메뉴에서 화면을 고른다. "사진 파일 정리" 묶음(시간순 정렬 M9, 폴더 정리 M11 —
+gui_file_organize_tab.py)과 "사진 선별" 묶음(베스트컷 선별 M8, C컷 정리 M10 —
+gui_photo_selection_tab.py, 입력 폴더 칸을 함께 씀). 각 화면의 실제 로직은
 gui_bestcut_tab.py / gui_rename_tab.py / gui_badcut_tab.py / gui_organize_tab.py에 있다.
+예전 2단 탭(사진 파일 정리 > 시간순 정렬)을 한 번에 고르는 메뉴로 바꿨다.
 """
 
 from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
+from dataclasses import dataclass
+
+from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QStyle,
+    QVBoxLayout,
+    QWidget,
+)
 
 from gui_file_organize_tab import FileOrganizeTab
 from gui_photo_selection_tab import PhotoSelectionTab
@@ -23,6 +39,46 @@ from version import __version__
 # 결과 표가 넉넉히 보이는 처음 크기 (13인치 노트북 화면에도 들어감)
 DEFAULT_SIZE = (1180, 780)
 GEOMETRY_SETTINGS_KEY = "window/geometry"
+PAGE_SETTINGS_KEY = "window/page"
+SIDEBAR_WIDTH = 200
+_PAGE_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+@dataclass(frozen=True)
+class Page:
+    key: str  # 묶음 안에서의 화면 이름(show_page에 넘김), 마지막 화면 기억에도 씀
+    title: str
+    description: str
+    icon: QStyle.StandardPixmap
+
+
+# (묶음 제목, 화면들) — 실제 작업 순서대로: 파일 정리 → 걸러내기(C컷) → 고르기(베스트컷)
+MENU = (
+    (
+        "사진 파일 정리",
+        (
+            Page("rename", "시간순 정렬", "여러 바디의 사진·영상을 촬영 시각 순으로 00001부터 번호를 붙입니다.",
+                 QStyle.StandardPixmap.SP_FileDialogDetailedView),
+            Page("organize", "폴더 정리", "RAW·영상 분리, 날짜별 정리, 짝 안 맞는 파일·중복 파일·빈 폴더를 정리합니다.",
+                 QStyle.StandardPixmap.SP_DirOpenIcon),
+        ),
+    ),
+    (
+        "사진 선별",
+        (
+            Page("badcut", "C컷 정리", "흔들리거나 눈 감은 사진을 골라 따로 옮깁니다.",
+                 QStyle.StandardPixmap.SP_TrashIcon),
+            Page("bestcut", "베스트컷 선별", "연속 촬영한 장면마다 가장 좋은 컷을 골라 복사합니다.",
+                 QStyle.StandardPixmap.SP_DialogApplyButton),
+        ),
+    ),
+)
+
+_SIDEBAR_STYLE = """
+QListWidget { border: none; background: transparent; outline: none; }
+QListWidget::item { padding: 7px 8px; border-radius: 6px; }
+QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+"""
 
 
 def install_korean_translation(app: QApplication) -> QTranslator | None:
@@ -49,14 +105,80 @@ class MainWindow(QMainWindow):
 
         self._file_organize_tab = FileOrganizeTab()
         self._photo_selection_tab = PhotoSelectionTab()
+        groups = (self._file_organize_tab, self._photo_selection_tab)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._file_organize_tab, "사진 파일 정리")
-        tabs.addTab(self._photo_selection_tab, "사진 선별")
-        self.setCentralWidget(tabs)
+        self._pages = QStackedWidget()
+        for group in groups:
+            self._pages.addWidget(group)
+
+        # 오른쪽 위: 지금 화면 제목과 한 줄 설명
+        self._title = QLabel()
+        title_font = QFont(self._title.font())
+        title_font.setPointSizeF(title_font.pointSizeF() * 1.35)
+        title_font.setBold(True)
+        self._title.setFont(title_font)
+        self._subtitle = QLabel()
+        self._subtitle.setWordWrap(True)
+
+        self._menu = QListWidget()
+        self._menu.setFixedWidth(SIDEBAR_WIDTH)
+        self._menu.setIconSize(QSize(18, 18))
+        self._menu.setStyleSheet(_SIDEBAR_STYLE)
+        header_font = QFont(self._menu.font())
+        header_font.setBold(True)
+        header_font.setPointSizeF(max(8.0, header_font.pointSizeF() - 1))
+        for (group_title, pages), group in zip(MENU, groups):
+            header = QListWidgetItem(group_title)
+            header.setFlags(Qt.ItemFlag.NoItemFlags)  # 고를 수 없는 묶음 제목
+            header.setFont(header_font)
+            self._menu.addItem(header)
+            for page in pages:
+                item = QListWidgetItem(self.style().standardIcon(page.icon), page.title)
+                item.setData(_PAGE_ROLE, (group, page))
+                self._menu.addItem(item)
+        self._menu.currentItemChanged.connect(self._on_menu_changed)
+
+        for label in (self._title, self._subtitle):
+            label.setContentsMargins(9, 0, 9, 0)  # 아래 화면들의 안쪽 여백과 맞춤
+        content = QVBoxLayout()
+        content.addWidget(self._title)
+        content.addWidget(self._subtitle)
+        content.addWidget(self._pages, stretch=1)
+        body = QHBoxLayout()
+        body.addWidget(self._menu)
+        body.addLayout(content, stretch=1)
+        central = QWidget()
+        central.setLayout(body)
+        self.setCentralWidget(central)
+
+        self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         self.updates.build_menu(self.menuBar().addMenu("도움말"))
+
+    def _select_page(self, key: str) -> None:
+        """메뉴에서 key 화면을 고른다(없는 이름이면 첫 화면)."""
+        first = None
+        for row in range(self._menu.count()):
+            data = self._menu.item(row).data(_PAGE_ROLE)
+            if data is None:
+                continue
+            first = first if first is not None else row
+            if data[1].key == key:
+                self._menu.setCurrentRow(row)
+                return
+        self._menu.setCurrentRow(first)
+
+    def _on_menu_changed(self, item: QListWidgetItem | None, _previous) -> None:
+        data = item.data(_PAGE_ROLE) if item is not None else None
+        if data is None:
+            return
+        group, page = data
+        group.show_page(page.key)
+        self._pages.setCurrentWidget(group)
+        self._title.setText(page.title)
+        self._subtitle.setText(page.description)
+        self._settings.setValue(PAGE_SETTINGS_KEY, page.key)
 
     def is_busy(self) -> bool:
         return self._file_organize_tab.is_busy or self._photo_selection_tab.is_busy

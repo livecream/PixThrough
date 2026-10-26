@@ -63,7 +63,7 @@
   - 사진 선별 탭 입력 폴더 공유(사용자 요청 10): 베스트컷·C컷 위에 입력 폴더 칸 하나(`gui_input_folders.InputFolderPanel`, QSettings `selection/input_dirs`, 처음엔 예전 `bestcut/`·`badcut/input_dirs`에서 옮겨 옴). "하위 폴더까지 포함"도 하나로 합침 — 예전엔 베스트컷은 항상 포함·C컷만 체크박스였고, 처음 값은 포함(`selection/recursive`). 바꾸면 두 탭 미리보기 초기화. 탭을 따로 만들면(테스트 등) 자기 칸을 만든다
   - 베스트컷 장면별 갤러리(사용자 요청 11): 결과를 장면마다 큰 썸네일(150px)로, 남기는 컷은 초록 테두리+✓, 빠지는 컷은 흐리게. 클릭=고르기(표의 같은 줄과 연동해 기존 버튼 그대로), 더블클릭/Enter=크게 보기, Space=넣기/빼기, ←/→ 사진, ↑/↓ 장면. 장면 하나를 목록 항목 하나로 직접 그려 장면이 많아도 가볍다(`gui_scene_gallery.SceneGallery`). "갤러리/표" 전환, 마지막 보기 기억(`bestcut/view`). 썸네일은 JPEG로 압축해 메모리 절약(`thumbnails.make_thumbnail_jpeg`, 표는 이걸 64px로 줄여 씀)
 
-최상위 GUI 탭은 "사진 파일 정리"(시간순 정렬 M9 + 폴더 정리 M11)와 "사진 선별"(베스트컷 선별 M8 + C컷 정리 M10) 두 개로, 각각 하위 탭을 묶는 컨테이너 위젯(`gui_file_organize_tab.py`/`gui_photo_selection_tab.py`)을 둔다.
+화면은 왼쪽 메뉴로 고른다(사용자 요청 13, 예전 2단 탭 대체): "사진 파일 정리" 묶음(시간순 정렬 M9, 폴더 정리 M11)과 "사진 선별" 묶음(C컷 정리 M10, 베스트컷 선별 M8 — 작업 순서대로). 묶음마다 화면을 담는 컨테이너(`gui_file_organize_tab.py`/`gui_photo_selection_tab.py`, `show_page`)를 두고, 메뉴 항목·제목·한 줄 설명은 `gui.MENU`. 마지막 화면 기억(QSettings `window/page`). "저장된 점수 지우기"는 사진 선별 입력 폴더 칸 오른쪽.
 
 각 마일스톤은 별도 커밋/PR 단위로 나누고, 완료 시 이 체크박스를 갱신한다.
 
