@@ -140,21 +140,30 @@ jobs:
     needs: [setup, build]
     runs-on: ubuntu-latest
     steps:
+      # 릴리스 노트(docs/release-notes/<태그>.md)를 읽으려고 태그 시점 코드를 받는다
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      # 릴리스가 없으면 새로 만들고(노트는 커밋 기록으로 자동 생성),
-      # 있으면 zip만 추가/교체한다 (--clobber: 같은 이름 파일 덮어쓰기).
+      # 릴리스가 없으면 새로 만들고, 있으면 zip만 추가/교체한다 (--clobber: 같은 이름 파일 덮어쓰기).
+      # 노트는 docs/release-notes/<태그>.md가 있으면 그 내용, 없으면 PR 목록으로 자동 생성.
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.setup.outputs.tag }}
         run: |
+          notes="docs/release-notes/$TAG.md"
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" artifacts/*.zip --clobber
+            if [ -f "$notes" ]; then gh release edit "$TAG" --notes-file "$notes"; fi
+          elif [ -f "$notes" ]; then
+            gh release create "$TAG" artifacts/*.zip --title "PixThrough $TAG" --notes-file "$notes"
           else
             gh release create "$TAG" artifacts/*.zip --title "PixThrough $TAG" --generate-notes
           fi

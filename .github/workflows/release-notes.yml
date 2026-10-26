@@ -1,0 +1,32 @@
+# 이미 나온 릴리스의 노트를 docs/release-notes/<태그>.md 내용으로 바꾼다.
+# Actions → Release notes → Run workflow에서 태그를 넣어 실행 (빌드는 다시 하지 않음).
+
+name: Release notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "노트를 바꿀 릴리스 태그 (예: v1.3.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          notes="docs/release-notes/$TAG.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes 파일이 없습니다"
+            exit 1
+          fi
+          gh release edit "$TAG" --notes-file "$notes"
