@@ -88,7 +88,8 @@ Windows Defender SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 
 Windows/macOS를 각각 빌드하고 릴리스에 두 zip을 올린다 — 로컬에서 OS별로
 따로 빌드할 필요 없음.
 
-1. `src/version.py`의 `__version__`을 올리고 커밋 (예: `1.2.0`)
+1. `src/version.py`의 `__version__`을 올리고, 릴리스 노트를 `docs/release-notes/v<버전>.md`에
+   한글로 써서 함께 커밋 (예: `1.3.0`, `docs/release-notes/v1.3.0.md` — 없으면 PR 목록으로 자동 생성)
 2. 같은 버전으로 태그를 만들어 push — 태그와 `version.py`가 다르면 빌드가 실패한다
    ```bash
    git tag v1.2.0
@@ -98,5 +99,7 @@ Windows/macOS를 각각 빌드하고 릴리스에 두 zip을 올린다 — 로�
 
 이미 있는 릴리스에 특정 OS 빌드만 추가/교체하려면 Actions → Release →
 Run workflow에서 태그와 OS를 골라 수동 실행한다.
+이미 나온 릴리스의 노트만 바꾸려면 노트 파일을 고쳐 main에 넣은 뒤 Actions →
+Release notes → Run workflow에서 태그를 넣어 실행한다(빌드는 다시 하지 않음).
 
 자세한 개발 가이드는 [CLAUDE.md](CLAUDE.md), 스펙은 [PROJECT_SPEC.md](PROJECT_SPEC.md) 참고.
