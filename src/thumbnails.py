@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -29,6 +30,17 @@ def make_thumbnail(path: Path, size: tuple[int, int] = THUMBNAIL_SIZE) -> Image.
     img = ImageOps.exif_transpose(img).convert("RGB")
     img.thumbnail(size)
     return img
+
+
+def make_thumbnail_jpeg(path: Path, size: tuple[int, int]) -> bytes | None:
+    """make_thumbnail 결과를 JPEG로 압축한 바이트. 갤러리용 큰 썸네일을 수천 장 들고 있어도
+    메모리를 적게 쓰도록(160px 기준 장당 수 KB) 압축해 보관한다."""
+    img = make_thumbnail(path, size)
+    if img is None:
+        return None
+    buffer = io.BytesIO()
+    img.save(buffer, "JPEG", quality=88)
+    return buffer.getvalue()
 
 
 def load_preview_image(path: Path) -> Image.Image | None:

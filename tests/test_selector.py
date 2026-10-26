@@ -158,3 +158,39 @@ def test_broken_photo_is_never_kept_and_does_not_skew_normalisation(tmp_path):
     with_broken = selection.combined_scores[1]
     without_broken = select_best([scene[1], scene[2]]).combined_scores[0]
     assert with_broken == pytest.approx(without_broken)
+
+
+def test_select_best_skips_excluded_photos(tmp_path):
+    """C컷처럼 후보에서 뺀 사진은 가장 선명해도 고르지 않는다."""
+    sharp_path = _make_checkerboard(tmp_path / "sharp.png")
+    blurred_path = _make_blurred_checkerboard(tmp_path / "blurred.png")
+    scene = [_meta(blurred_path, 0), _meta(sharp_path, 1)]
+
+    selection = select_best(scene, exclude=lambda s: "눈감음" if s.path == sharp_path else None)
+
+    assert selection.best.path == blurred_path
+    assert selection.excluded == {1: "눈감음"}
+
+
+def test_select_best_keeps_scores_unchanged_when_excluding(tmp_path):
+    """C컷 기준을 바꿔도 나머지 사진의 종합점수는 그대로(정규화에는 C컷도 넣음)."""
+    sharp_path = _make_checkerboard(tmp_path / "sharp.png")
+    blurred_path = _make_blurred_checkerboard(tmp_path / "blurred.png")
+    flat_path = _make_flat(tmp_path / "flat.png")
+    scene = [_meta(blurred_path, 0), _meta(sharp_path, 1), _meta(flat_path, 2)]
+
+    plain = select_best(scene)
+    excluding = select_best(scene, exclude=lambda s: "블러" if s.path == sharp_path else None)
+
+    assert excluding.combined_scores == plain.combined_scores
+
+
+def test_select_best_keeps_nothing_when_every_photo_is_excluded(tmp_path):
+    p1 = _make_flat(tmp_path / "a.png")
+    p2 = _make_flat(tmp_path / "b.png")
+    scene = [_meta(p1, 0), _meta(p2, 1)]
+
+    selection = select_best(scene, exclude=lambda s: "블러")
+
+    assert selection.best is None
+    assert selection.kept_indices == []

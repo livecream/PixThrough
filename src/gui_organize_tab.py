@@ -1,6 +1,9 @@
 """M11: 폴더 정리 탭. RAW/영상 분리, 짝 안 맞는 파일 찾기, 촬영 날짜별 정리,
 빈 폴더 정리를 폴더 하나 선택 후 버튼 한 번으로 수행한다.
 
+버튼은 하는 일의 위험도대로 세 칸에 나눠 둔다: 살펴보기(파일을 바꾸지 않음) /
+정리(파일 이동, 되돌리기 가능) / 삭제(확인 후 지움). 버튼마다 한 줄 설명을 붙인다.
+
 무거운 스코어링(mediapipe)이 없는 단순 파일 이동/조회라 QThread 없이 동기로
 처리한다.
 ponytail: 폴더 안 파일이 매우 많으면(수만 개) 버튼 클릭 시 UI가 잠깐 멈출 수
@@ -11,8 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -25,6 +30,7 @@ from PySide6.QtWidgets import (
 from gui_dnd import extract_dropped_folders
 from gui_format import format_duplicate_report, format_folder_summary
 from gui_settings import load_folder, make_settings, save_folder
+from gui_widgets import PathLabel, compact, make_danger
 from organize import (
     apply_move_plan,
     build_capture_date_plan,
@@ -40,6 +46,23 @@ from organize import (
 from rename_by_time import VIDEO_EXTENSIONS
 from scanner import RAW_EXTENSIONS
 
+def _section(title: str, actions: list[tuple[QPushButton, str]]) -> QGroupBox:
+    """제목 상자 안에 버튼과 그 아래 한 줄 설명을 차례로 쌓는다."""
+    layout = QVBoxLayout()
+    for button, description in actions:
+        layout.addWidget(button)
+        label = QLabel(description)
+        label.setWordWrap(True)
+        palette = label.palette()  # 설명은 흐린 글자색으로
+        palette.setColor(QPalette.ColorRole.WindowText, palette.color(QPalette.ColorRole.PlaceholderText))
+        label.setPalette(palette)
+        layout.addWidget(label)
+        layout.addSpacing(6)
+    layout.addStretch()
+    group = QGroupBox(title)
+    group.setLayout(layout)
+    return group
+
 
 class OrganizeTab(QWidget):
     def __init__(self) -> None:
@@ -53,8 +76,8 @@ class OrganizeTab(QWidget):
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_label = QLabel("대상 폴더: (선택 안 됨)")
-        folder_button = QPushButton("폴더 선택...")
+        self._folder_label = PathLabel("(선택 안 됨 — 폴더를 이 탭에 끌어다 놓아도 됩니다)")
+        folder_button = compact(QPushButton("선택…"))
         folder_button.clicked.connect(self._choose_folder)
 
         summary_button = QPushButton("폴더 정보 보기")
@@ -79,41 +102,84 @@ class OrganizeTab(QWidget):
         find_duplicate_button.clicked.connect(self._find_duplicates)
 
         self._delete_duplicate_button = QPushButton("중복 파일 삭제")
+        make_danger(self._delete_duplicate_button)
         self._delete_duplicate_button.setEnabled(False)
         self._delete_duplicate_button.clicked.connect(self._delete_duplicates)
 
-        self._undo_button = QPushButton("방금 작업 실행 취소")
+        make_danger(empty_button)
+
+        self._undo_button = compact(QPushButton("방금 작업 실행 취소"))
+        self._undo_button.setToolTip(
+            "<p>마지막 이동(RAW·영상·날짜별 정리)이나 빈 폴더 정리를 되돌립니다. 중복 파일 "
+            "삭제는 되돌릴 수 없습니다. 앱을 끄면 기억이 사라지지만, 폴더 안 "
+            "organize_log_*.jsonl에 기록이 남습니다.</p>"
+        )
         self._undo_button.setEnabled(False)
         self._undo_button.clicked.connect(self._undo_last_operation)
 
         self._result_text = QPlainTextEdit()
         self._result_text.setReadOnly(True)
         self._result_text.setAcceptDrops(False)
+        self._result_text.setPlaceholderText("버튼을 누르면 결과가 여기에 나옵니다.")
 
-        button_row = QHBoxLayout()
-        for button in (
-            summary_button,
-            raw_button,
-            video_button,
-            mismatch_button,
-            date_button,
-            empty_button,
-            find_duplicate_button,
-            self._delete_duplicate_button,
-            self._undo_button,
-        ):
-            button_row.addWidget(button)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("정리할 폴더:"))
+        folder_row.addWidget(self._folder_label, stretch=1)
+        folder_row.addWidget(folder_button)
+
+        sections = QHBoxLayout()
+        sections.addWidget(
+            _section(
+                "살펴보기 — 파일을 바꾸지 않음",
+                [
+                    (summary_button, "하위 폴더까지 파일 수·용량을 종류(사진·RAW·영상 등)별로 셉니다."),
+                    (mismatch_button, "같은 이름의 짝이 없는 RAW나 JPG를 알려줍니다. 옮기거나 지우지 않습니다."),
+                    (find_duplicate_button, "내용이 완전히 같은 파일을 하위 폴더까지 찾습니다."),
+                ],
+            ),
+            stretch=1,
+        )
+        sections.addWidget(
+            _section(
+                "정리 — 파일 이동 (되돌리기 가능)",
+                [
+                    (raw_button, "맨 위 폴더의 RAW 파일을 RAW/ 하위 폴더로 옮깁니다."),
+                    (video_button, "맨 위 폴더의 영상 파일을 영상/ 하위 폴더로 옮깁니다."),
+                    (date_button, "맨 위 폴더의 사진·영상을 촬영 날짜(YYYY-MM-DD) 폴더로 옮깁니다."),
+                ],
+            ),
+            stretch=1,
+        )
+        sections.addWidget(
+            _section(
+                "삭제 — 확인 후 지움",
+                [
+                    (empty_button, "파일이 하나도 없는 폴더를 하위까지 찾아 지웁니다. 되돌리기 가능."),
+                    (
+                        self._delete_duplicate_button,
+                        "'중복 파일 찾기' 결과에서 그룹마다 1개만 남기고 나머지를 영구히 지웁니다. "
+                        "되돌릴 수 없습니다.",
+                    ),
+                ],
+            ),
+            stretch=1,
+        )
+
+        result_header = QHBoxLayout()
+        result_header.addWidget(QLabel("결과"))
+        result_header.addStretch()
+        result_header.addWidget(self._undo_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(self._folder_label)
-        layout.addWidget(folder_button)
-        layout.addLayout(button_row)
-        layout.addWidget(self._result_text)
+        layout.addLayout(folder_row)
+        layout.addLayout(sections)
+        layout.addLayout(result_header)
+        layout.addWidget(self._result_text, stretch=1)
 
         restored_folder = load_folder(self._settings, "organize/folder")
         if restored_folder is not None:
             self._folder = restored_folder
-            self._folder_label.setText(f"대상 폴더: {restored_folder}")
+            self._folder_label.set_path(restored_folder)
 
         self.setLayout(layout)
 
@@ -138,7 +204,7 @@ class OrganizeTab(QWidget):
 
     def _set_folder(self, folder: Path) -> None:
         self._folder = folder
-        self._folder_label.setText(f"대상 폴더: {folder}")
+        self._folder_label.set_path(folder)
         self._result_text.setPlainText("")
         self._last_operation = None
         self._undo_button.setEnabled(False)

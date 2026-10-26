@@ -9,10 +9,11 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui_dnd import extract_dropped_folders
+from gui_widgets import FolderList, PathLabel, compact, make_primary, small_button, status_row
 from gui_format import format_rename_apply_summary, format_rename_preview
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
 from rename_by_time import (
@@ -127,10 +129,10 @@ class RenameTab(QWidget):
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_list = QListWidget()
-        add_button = QPushButton("폴더 추가...")
+        self._folder_list = FolderList()
+        add_button = small_button("+", "입력 폴더 추가")
         add_button.clicked.connect(self._add_folder)
-        remove_button = QPushButton("선택 삭제")
+        remove_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
         remove_button.clicked.connect(self._remove_selected_folder)
 
         self._recursive_checkbox = QCheckBox("하위 폴더까지 포함")
@@ -139,22 +141,22 @@ class RenameTab(QWidget):
         self._merge_checkbox = QCheckBox("한 폴더로 합치기 (원본 바디 폴더에서는 파일이 빠짐)")
         self._merge_checkbox.stateChanged.connect(self._on_merge_toggled)
 
-        self._merge_output_label = QLabel("병합 출력 폴더: (선택 안 됨)")
+        self._merge_output_label = PathLabel()
         self._merge_output_label.setEnabled(False)
-        self._merge_output_button = QPushButton("병합 출력 폴더 선택...")
+        self._merge_output_button = compact(QPushButton("선택…"))
         self._merge_output_button.setEnabled(False)
         self._merge_output_button.clicked.connect(self._choose_merge_output_dir)
-        self._create_merge_output_button = QPushButton("새 폴더 만들기...")
+        self._create_merge_output_button = compact(QPushButton("새 폴더 만들기…"))
         self._create_merge_output_button.setEnabled(False)
         self._create_merge_output_button.clicked.connect(self._create_merge_output_dir)
-        self._open_merge_output_button = QPushButton("병합 출력 폴더 열기")
+        self._open_merge_output_button = compact(QPushButton("열기"))
         self._open_merge_output_button.setEnabled(False)
         self._open_merge_output_button.clicked.connect(self._open_merge_output_folder)
 
-        self._preview_button = QPushButton("미리보기")
+        self._preview_button = make_primary(QPushButton("미리보기"))
         self._preview_button.clicked.connect(self._run_preview)
 
-        self._apply_button = QPushButton("적용")
+        self._apply_button = make_primary(QPushButton("적용"))
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._run_apply)
 
@@ -163,40 +165,54 @@ class RenameTab(QWidget):
         self._summary_text = QPlainTextEdit()
         self._summary_text.setReadOnly(True)
         self._summary_text.setAcceptDrops(False)
-
-        folder_button_row = QHBoxLayout()
-        folder_button_row.addWidget(add_button)
-        folder_button_row.addWidget(remove_button)
-
-        merge_output_button_row = QHBoxLayout()
-        merge_output_button_row.addWidget(self._merge_output_button)
-        merge_output_button_row.addWidget(self._create_merge_output_button)
-        merge_output_button_row.addWidget(self._open_merge_output_button)
-
-        button_row = QHBoxLayout()
-        button_row.addWidget(self._preview_button)
-        button_row.addWidget(self._apply_button)
+        self._summary_text.setPlaceholderText("미리보기를 누르면 바뀔 파일 이름 목록이 여기에 나옵니다.")
 
         description_label = QLabel(
-            "촬영 시각 순으로 정렬해 00001부터 번호를 붙입니다. 같은 초에 촬영된 파일이 "
+            "같은 초에 촬영된 파일이 "
             "겹치면 파일 경로 순으로 처리하고, 같은 파일명의 RAW는 자동으로 짝지어져 "
             "같은 번호를 받습니다. 적용 후에는 원래 파일명으로 되돌릴 수 없습니다."
         )
         description_label.setWordWrap(True)
 
+        folder_buttons = QVBoxLayout()
+        folder_buttons.addWidget(add_button)
+        folder_buttons.addWidget(remove_button)
+        folder_buttons.addStretch()
+        folder_box = QHBoxLayout()
+        folder_box.addWidget(self._folder_list)
+        folder_box.addLayout(folder_buttons)
+        input_layout = QVBoxLayout()
+        input_layout.addLayout(folder_box)
+        input_layout.addWidget(self._recursive_checkbox)
+        input_group = QGroupBox("입력 폴더 (바디별로 여러 개, 사진+영상 함께 정렬)")
+        input_group.setLayout(input_layout)
+
+        merge_output_row = QHBoxLayout()
+        merge_output_row.addWidget(self._merge_output_label, stretch=1)
+        merge_output_row.addWidget(self._merge_output_button)
+        merge_output_row.addWidget(self._create_merge_output_button)
+        merge_output_row.addWidget(self._open_merge_output_button)
+        merge_form = QFormLayout()
+        merge_form.addRow(self._merge_checkbox)
+        merge_form.addRow("합칠 폴더:", merge_output_row)
+        merge_group = QGroupBox("출력")
+        merge_group.setLayout(merge_form)
+
+        top_row = QHBoxLayout()
+        top_row.addWidget(input_group, stretch=1)
+        top_row.addWidget(merge_group, stretch=1)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self._preview_button)
+        button_row.addSpacing(12)
+        button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
+        button_row.addWidget(self._apply_button)
+
         layout = QVBoxLayout()
         layout.addWidget(description_label)
-        layout.addWidget(QLabel("입력 폴더 (바디별로 여러 개 추가 가능, 사진+영상 함께 정렬):"))
-        layout.addWidget(self._folder_list)
-        layout.addLayout(folder_button_row)
-        layout.addWidget(self._recursive_checkbox)
-        layout.addWidget(self._merge_checkbox)
-        layout.addWidget(self._merge_output_label)
-        layout.addLayout(merge_output_button_row)
+        layout.addLayout(top_row)
         layout.addLayout(button_row)
-        layout.addWidget(self._progress_bar)
-        layout.addWidget(self._status_label)
-        layout.addWidget(self._summary_text)
+        layout.addWidget(self._summary_text, stretch=1)
 
         for folder in load_folder_list(self._settings, "rename/input_dirs"):
             self._input_dirs.append(folder)
@@ -204,7 +220,7 @@ class RenameTab(QWidget):
         restored_merge_output = load_folder(self._settings, "rename/merge_output_dir")
         if restored_merge_output is not None:
             self._merge_output_dir = restored_merge_output
-            self._merge_output_label.setText(f"병합 출력 폴더: {restored_merge_output}")
+            self._merge_output_label.set_path(restored_merge_output)
             self._open_merge_output_button.setEnabled(self._merge_checkbox.isChecked())
 
         self.setLayout(layout)
@@ -256,7 +272,7 @@ class RenameTab(QWidget):
         self._open_merge_output_button.setEnabled(checked and self._merge_output_dir is not None)
         if not checked:
             self._merge_output_dir = None
-            self._merge_output_label.setText("병합 출력 폴더: (선택 안 됨)")
+            self._merge_output_label.set_path(None)
             save_folder(self._settings, "rename/merge_output_dir", None)
         self._invalidate_preview()
 
@@ -264,7 +280,7 @@ class RenameTab(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "병합 출력 폴더 선택")
         if directory:
             self._merge_output_dir = Path(directory)
-            self._merge_output_label.setText(f"병합 출력 폴더: {directory}")
+            self._merge_output_label.set_path(Path(directory))
             self._open_merge_output_button.setEnabled(True)
             self._invalidate_preview()
             save_folder(self._settings, "rename/merge_output_dir", self._merge_output_dir)
@@ -290,7 +306,7 @@ class RenameTab(QWidget):
             return
 
         self._merge_output_dir = new_dir
-        self._merge_output_label.setText(f"병합 출력 폴더: {new_dir}")
+        self._merge_output_label.set_path(new_dir)
         self._open_merge_output_button.setEnabled(True)
         self._invalidate_preview()
         save_folder(self._settings, "rename/merge_output_dir", self._merge_output_dir)

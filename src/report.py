@@ -33,6 +33,9 @@ class ReportRow:
     sharpness_global: float | None = None
     # 사용자가 미리보기에서 직접 바꾼 경우(MANUAL_ADDED/MANUAL_REMOVED), 자동 그대로면 None
     manual_choice: str | None = None
+    # C컷으로 판정된 사유(예: "블러(선명도 낮음)"), C컷이 아니면 None. 사진 선별 화면에서
+    # C컷 이동 대상과 빨간 표시에 쓴다(직접 넣은 컷은 옮기지 않음).
+    badcut_reason: str | None = None
 
 
 MANUAL_ADDED = "added"
@@ -51,6 +54,8 @@ def _reason_for(index: int, selection: SceneSelection, keep_percent: int) -> str
     score = selection.scores[index]
     if score.error:
         return f"제외: 점수 계산 실패 ({score.error})"
+    if index in selection.excluded:
+        return f"제외: C컷 — {selection.excluded[index]}"
     lowest_kept = selection.combined_scores[selection.kept_indices[-1]]
     if selection.combined_scores[index] == lowest_kept:
         return "제외: 동점이며 더 늦게 촬영됨"
@@ -96,9 +101,11 @@ def build_report(
     on_progress: Callable[[int, int], None] | None = None,
     cache: dict | None = None,
     keep_percent: int = 0,
+    exclude: Callable | None = None,
 ) -> list[ReportRow]:
     """장면 그룹 목록으로부터 사진별 선택/제외 리포트 행을 만든다.
     keep_percent: 장면마다 남길 비율(%), 올림·최소 1장 (selector.keep_count).
+    exclude: 점수 → 후보에서 뺄 사유(C컷 판정, badcut.badcut_reason) 또는 None.
 
     on_progress가 주어지면 전체 장면을 통틀어 사진 1장 처리할 때마다
     (누적 완료 수, 전체 수)를 알려준다 (장면마다 리셋되지 않음).
@@ -116,7 +123,7 @@ def build_report(
                 on_progress(base + i, total)
 
         selection = select_best(
-            group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent
+            group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent, exclude=exclude
         )
         done += len(group)
 
@@ -134,6 +141,7 @@ def build_report(
                     reason=_reason_for(i, selection, keep_percent),
                     sharpness_region=score.sharpness_region,
                     sharpness_global=score.sharpness_global,
+                    badcut_reason=selection.excluded.get(i),
                 )
             )
     return rows
