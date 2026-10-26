@@ -1,8 +1,8 @@
-"""사진 선별 탭 컨테이너: 베스트컷 선별(M8)과 C컷 정리(M10)를 하위 탭으로 묶는다.
+"""사진 선별 묶음: 입력 폴더 칸(gui_input_folders.py) 아래에 베스트컷·C컷을 한 화면에서
+고르는 화면(gui_bestcut_tab.BestCutTab)을 둔다. 예전에는 베스트컷 선별(M8)과 C컷 정리(M10)가
+따로 된 화면이었다.
 
-두 탭은 앱을 꺼도 남는 점수 저장소(score_store)를 함께 쓰므로, 저장된 점수를 지우는
-버튼은 이 컨테이너에 하나만 두고 지운 뒤 두 탭의 미리보기를 함께 초기화한다.
-입력 폴더도 두 탭 위에 하나만 두어 같이 쓴다(gui_input_folders.py).
+저장된 점수를 지우는 버튼도 여기(입력 폴더 칸 오른쪽)에 둔다.
 """
 
 from __future__ import annotations
@@ -10,27 +10,26 @@ from __future__ import annotations
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 import score_store
-from gui_badcut_tab import BadCutTab
 from gui_bestcut_tab import BestCutTab
 from gui_dnd import extract_dropped_folders
 from gui_input_folders import InputFolderPanel
 
 
 class PhotoSelectionTab(QWidget):
-    """입력 폴더 칸 아래에 베스트컷·C컷 화면 중 하나를 보인다(왼쪽 메뉴가 show_page로 고름)."""
+    """입력 폴더 칸 + 사진 선별 화면. 왼쪽 메뉴가 show_page를 부른다(화면은 하나)."""
 
-    PAGES = ("bestcut", "badcut")
+    # 베스트컷 선별과 C컷 정리는 한 화면(BestCutTab)으로 합쳤다. 예전 메뉴 이름도 받아 준다.
+    PAGES = ("selection",)
+    LEGACY_PAGES = ("bestcut", "badcut")
 
     def __init__(self) -> None:
         super().__init__()
 
-        self.inputs = InputFolderPanel("입력 폴더 (베스트컷 선별·C컷 정리 공통)")
+        self.inputs = InputFolderPanel("입력 폴더")
         self._best_cut_tab = BestCutTab(self.inputs)
-        self._bad_cut_tab = BadCutTab(self.inputs)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._best_cut_tab)
-        self.pages.addWidget(self._bad_cut_tab)
         self.setAcceptDrops(True)
 
         layout = QVBoxLayout()
@@ -55,7 +54,7 @@ class PhotoSelectionTab(QWidget):
         self.inputs.add_side_widget(clear_button)
 
     def show_page(self, name: str) -> None:
-        self.pages.setCurrentIndex(self.PAGES.index(name))
+        self.pages.setCurrentIndex(0)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         if event.mimeData().hasUrls():
@@ -69,7 +68,7 @@ class PhotoSelectionTab(QWidget):
 
     @property
     def is_busy(self) -> bool:
-        return self._best_cut_tab.is_busy or self._bad_cut_tab.is_busy
+        return self._best_cut_tab.is_busy
 
     def _clear_saved_scores(self) -> None:
         if self.is_busy:
@@ -89,4 +88,3 @@ class PhotoSelectionTab(QWidget):
         # 점수가 비었으니 지금 보이는 미리보기에서 간격·기준을 바꿔 다시 고르면 사진을 다시
         # 채점하느라 화면이 멈출 수 있다 — 두 탭 모두 미리보기를 새로 하도록 초기화한다.
         self._best_cut_tab._invalidate_preview()
-        self._bad_cut_tab._invalidate_preview()

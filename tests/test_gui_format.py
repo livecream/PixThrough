@@ -295,3 +295,22 @@ def test_format_apply_summary_mentions_report_path():
     summary = format_apply_summary(results, Path("/out"), Path("/out/bestcut_report_1.csv"))
 
     assert "판정 리포트" in summary and "bestcut_report_1.csv" in summary
+
+
+def test_format_threshold_reference_says_off_at_zero():
+    assert "꺼짐" in format_threshold_reference(None, 0.0, 1)
+
+
+def test_format_badcut_summary_counts_reasons_and_skips_manual_picks():
+    from badcut import BadCutThresholds
+    from gui_format import format_badcut_summary
+    from report import ReportRow
+
+    def row(name, reason, selected=False):
+        return ReportRow(path=Path(name), scene_id=1, sharpness=1.0, exposure=1.0, face=None,
+                         total=0.5, selected=selected, reason="", badcut_reason=reason)
+
+    rows = [row("a", "블러(선명도 낮음)"), row("b", "블러(선명도 낮음), 눈감음"), row("c", "눈감음", selected=True), row("d", None)]
+
+    assert format_badcut_summary(rows, BadCutThresholds(10.0, 0.3)) == "C컷 2장 (블러 2 · 눈감음 1)"
+    assert format_badcut_summary(rows, BadCutThresholds(0.0, 0.0)) == ""

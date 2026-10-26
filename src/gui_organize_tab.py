@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 from gui_dnd import extract_dropped_folders
 from gui_format import format_duplicate_report, format_folder_summary
 from gui_settings import load_folder, make_settings, save_folder
-from gui_widgets import PathLabel, compact
+from gui_widgets import PathLabel, compact, make_danger
 from organize import (
     apply_move_plan,
     build_capture_date_plan,
@@ -45,10 +45,6 @@ from organize import (
 )
 from rename_by_time import VIDEO_EXTENSIONS
 from scanner import RAW_EXTENSIONS
-
-# 삭제 버튼 글자색(배경은 OS 기본 그대로 두어 버튼 모양이 어색해지지 않게)
-_DANGER_STYLE = "QPushButton:enabled { color: rgb(200, 40, 40); font-weight: 600; }"
-
 
 def _section(title: str, actions: list[tuple[QPushButton, str]]) -> QGroupBox:
     """제목 상자 안에 버튼과 그 아래 한 줄 설명을 차례로 쌓는다."""
@@ -106,11 +102,11 @@ class OrganizeTab(QWidget):
         find_duplicate_button.clicked.connect(self._find_duplicates)
 
         self._delete_duplicate_button = QPushButton("중복 파일 삭제")
-        self._delete_duplicate_button.setStyleSheet(_DANGER_STYLE)
+        make_danger(self._delete_duplicate_button)
         self._delete_duplicate_button.setEnabled(False)
         self._delete_duplicate_button.clicked.connect(self._delete_duplicates)
 
-        empty_button.setStyleSheet(_DANGER_STYLE)
+        make_danger(empty_button)
 
         self._undo_button = compact(QPushButton("방금 작업 실행 취소"))
         self._undo_button.setToolTip(
