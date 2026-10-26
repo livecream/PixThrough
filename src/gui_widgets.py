@@ -55,9 +55,14 @@ class _ElidedItemDelegate(QStyledItemDelegate):
 class FolderList(QListWidget):
     """입력 폴더 목록. 몇 줄 높이만 차지하고, 비어 있으면 안내 문구를 가운데 그린다."""
 
-    def __init__(self, placeholder: str = "폴더를 여기로 끌어다 놓거나 + 버튼으로 추가하세요") -> None:
+    def __init__(
+        self,
+        placeholder: str = "폴더를 여기로 끌어다 놓거나 + 버튼으로 추가하세요",
+        rows: int = FOLDER_LIST_ROWS,
+    ) -> None:
         super().__init__()
         self._placeholder = placeholder
+        self._rows = rows
         self.setAcceptDrops(False)  # 끌어다 놓기는 탭 전체가 받는다
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -75,7 +80,11 @@ class FolderList(QListWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt override signature
         row = self.fontMetrics().height() + 6
-        return QSize(super().sizeHint().width(), row * FOLDER_LIST_ROWS + 2 * self.frameWidth() + 4)
+        return QSize(super().sizeHint().width(), row * self._rows + 2 * self.frameWidth() + 4)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override signature
+        # 스크롤 영역 기본 최소 높이가 줄 수 지정보다 커서, 같은 높이로 맞춘다
+        return QSize(super().minimumSizeHint().width(), self.sizeHint().height())
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         super().paintEvent(event)

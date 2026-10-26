@@ -19,7 +19,6 @@ from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -48,20 +47,19 @@ from gui_format import (
 import score_store
 from gui_worker import CancellableWorker, PreviewCancelled
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction
-from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
+from gui_settings import load_folder, make_settings, save_folder
 from report import ReportRow, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from scoring import PhotoScore
 from thumbnails import make_thumbnail
+from gui_input_folders import InputFolderPanel
 from gui_widgets import (
     FLAGGED_ROW,
-    FolderList,
     PathLabel,
     SummaryLabel,
     compact,
     make_primary,
     paint_row,
-    small_button,
     status_row,
 )
 
@@ -192,10 +190,13 @@ class ApplyWorker(QThread):
 
 
 class BadCutTab(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, inputs: InputFolderPanel | None = None) -> None:
         super().__init__()
 
-        self._input_dirs: list[Path] = []
+        # 입력 폴더는 사진 선별 탭들이 같이 쓰는 칸(없으면 이 탭 혼자 쓰는 칸을 만든다)
+        self._owns_inputs = inputs is None
+        self._inputs = inputs if inputs is not None else InputFolderPanel()
+        self._inputs.changed.connect(self._invalidate_preview)
         self._output_dir: Path | None = None
         self._photos: list[PhotoMetadata] | None = None
         self._scores: list[PhotoScore] | None = None
@@ -222,17 +223,9 @@ class BadCutTab(QWidget):
         self.setAcceptDrops(True)
         self._settings = make_settings()
 
-        self._folder_list = FolderList()
-        add_input_button = small_button("+", "입력 폴더 추가")
-        add_input_button.clicked.connect(self._add_input_dir)
-        remove_input_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
-        remove_input_button.clicked.connect(self._remove_selected_input_dir)
-
         self._output_label = PathLabel()
         output_button = compact(QPushButton("선택…"))
         output_button.clicked.connect(self._choose_output_dir)
-
-        self._recursive_checkbox = QCheckBox("하위 폴더까지 포함")
 
         self._min_sharpness_spin = QDoubleSpinBox()
         self._min_sharpness_spin.setRange(0.0, 1_000_000.0)
@@ -329,20 +322,7 @@ class BadCutTab(QWidget):
         self._table.cellDoubleClicked.connect(self._open_viewer)
         self._update_reference_buttons()
 
-        # 위: 입력 폴더·출력(왼쪽) · C컷 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
-        folder_buttons = QVBoxLayout()
-        folder_buttons.addWidget(add_input_button)
-        folder_buttons.addWidget(remove_input_button)
-        folder_buttons.addStretch()
-        folder_box = QHBoxLayout()
-        folder_box.addWidget(self._folder_list)
-        folder_box.addLayout(folder_buttons)
-        input_layout = QVBoxLayout()
-        input_layout.addLayout(folder_box)
-        input_layout.addWidget(self._recursive_checkbox)
-        input_group = QGroupBox("입력 폴더")
-        input_group.setLayout(input_layout)
-
+        # 위: 출력(왼쪽) · C컷 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
         output_row = QHBoxLayout()
         output_row.addWidget(self._output_label, stretch=1)
         output_row.addWidget(output_button)
@@ -352,8 +332,8 @@ class BadCutTab(QWidget):
         output_group.setLayout(output_form)
 
         left_column = QVBoxLayout()
-        left_column.addWidget(input_group)
         left_column.addWidget(output_group)
+        left_column.addStretch()
 
         threshold_group = QGroupBox("C컷 기준")
         threshold_group.setLayout(threshold_form)
@@ -370,15 +350,14 @@ class BadCutTab(QWidget):
         button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
+        if self._owns_inputs:
+            layout.addWidget(self._inputs)
         layout.addLayout(top_row)
         layout.addLayout(button_row)
         layout.addWidget(self._summary_text)
         layout.addLayout(reference_button_row)
         layout.addWidget(self._table, stretch=1)
 
-        for folder in load_folder_list(self._settings, "badcut/input_dirs"):
-            self._input_dirs.append(folder)
-            self._folder_list.addItem(str(folder))
         restored_output = load_folder(self._settings, "badcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
@@ -400,30 +379,16 @@ class BadCutTab(QWidget):
             self._add_folders(folders)
         event.acceptProposedAction()
 
-    def _add_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "입력 폴더 추가")
-        if directory:
-            self._add_folders([Path(directory)])
+    @property
+    def _input_dirs(self) -> list[Path]:
+        return self._inputs.folders()
+
+    @_input_dirs.setter
+    def _input_dirs(self, folders: list[Path]) -> None:
+        self._inputs.set_folders(folders)
 
     def _add_folders(self, folders: list[Path]) -> None:
-        added = False
-        for folder in folders:
-            if folder not in self._input_dirs:
-                self._input_dirs.append(folder)
-                self._folder_list.addItem(str(folder))
-                added = True
-        if not added:
-            return
-        self._invalidate_preview()
-        save_folder_list(self._settings, "badcut/input_dirs", self._input_dirs)
-
-    def _remove_selected_input_dir(self) -> None:
-        for item in self._folder_list.selectedItems():
-            index = self._folder_list.row(item)
-            self._folder_list.takeItem(index)
-            del self._input_dirs[index]
-        self._invalidate_preview()
-        save_folder_list(self._settings, "badcut/input_dirs", self._input_dirs)
+        self._inputs.add_folders(folders)
 
     def _choose_output_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "C컷을 옮길 출력 폴더 선택")
@@ -463,7 +428,7 @@ class BadCutTab(QWidget):
 
         self._score_worker = ScoreWorker(
             list(self._input_dirs),
-            self._recursive_checkbox.isChecked(),
+            self._inputs.recursive(),
             scan_cache=self._scan_cache,
             score_cache=self._score_cache,
             thumbnail_cache=self._thumbnail_cache,

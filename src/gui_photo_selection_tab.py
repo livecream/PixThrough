@@ -2,27 +2,39 @@
 
 두 탭은 앱을 꺼도 남는 점수 저장소(score_store)를 함께 쓰므로, 저장된 점수를 지우는
 버튼은 이 컨테이너에 하나만 두고 지운 뒤 두 탭의 미리보기를 함께 초기화한다.
+입력 폴더도 두 탭 위에 하나만 두어 같이 쓴다(gui_input_folders.py).
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox, QPushButton, QTabWidget
+from PySide6.QtWidgets import QMessageBox, QPushButton, QTabWidget, QVBoxLayout, QWidget
 
 import score_store
 from gui_badcut_tab import BadCutTab
 from gui_bestcut_tab import BestCutTab
+from gui_dnd import extract_dropped_folders
+from gui_input_folders import InputFolderPanel
 
 
-class PhotoSelectionTab(QTabWidget):
+class PhotoSelectionTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
 
-        self._best_cut_tab = BestCutTab()
-        self._bad_cut_tab = BadCutTab()
+        self.inputs = InputFolderPanel("입력 폴더 (베스트컷 선별·C컷 정리 공통)")
+        self._best_cut_tab = BestCutTab(self.inputs)
+        self._bad_cut_tab = BadCutTab(self.inputs)
 
-        self.addTab(self._best_cut_tab, "베스트컷 선별")
-        self.addTab(self._bad_cut_tab, "C컷 정리")
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._best_cut_tab, "베스트컷 선별")
+        self.tabs.addTab(self._bad_cut_tab, "C컷 정리")
+        self.setAcceptDrops(True)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(self.inputs)
+        layout.addWidget(self.tabs, stretch=1)
+        self.setLayout(layout)
 
         clear_button = QPushButton("저장된 점수 지우기")
         clear_button.setToolTip(
@@ -33,7 +45,17 @@ class PhotoSelectionTab(QTabWidget):
             "건드리지 않습니다.</p>"
         )
         clear_button.clicked.connect(self._clear_saved_scores)
-        self.setCornerWidget(clear_button, Qt.Corner.TopRightCorner)
+        self.tabs.setCornerWidget(clear_button, Qt.Corner.TopRightCorner)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        folders = extract_dropped_folders(event.mimeData())
+        if folders:
+            self.inputs.add_folders(folders)
+        event.acceptProposedAction()
 
     @property
     def is_busy(self) -> bool:

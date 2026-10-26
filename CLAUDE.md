@@ -59,6 +59,8 @@
   - 2단계(중복 파일 관리): 바이트 단위 해시로 완전히 동일한 파일을 하위 폴더까지 찾아 그룹화(그룹당 1개는 항상 보존), "중복 파일 삭제" 버튼으로 나머지를 실제 삭제 — 아래 "하지 말아야 할 것" 예외 참고
 - [x] M12: UX 전면 개선 — 베스트컷/C컷 미리보기를 텍스트 목록에서 썸네일 있는 테이블로 전환, 모든 폴더 입력/선택 영역에 드래그앤드롭 지원, 탭·역할별 QSettings로 마지막 사용 폴더 자동 복원(존재하지 않는 경로는 조용히 무시), 첫 버전 번호 1.0.0 도입 — `src/thumbnails.py`, `src/gui_dnd.py`, `src/gui_settings.py`, `src/version.py`. 설계: `docs/superpowers/specs/2026-09-20-ux-overhaul-design.md`
   - 화면 정돈(사용자 요청 1~7): 결과 표가 남는 세로 공간을 다 쓰도록 위쪽을 "입력 폴더·출력(왼쪽) | 기준·설정(오른쪽)" 그룹 상자로 나란히 배치, 큰 로그 칸 대신 진행률+상태 한 줄과 요약 몇 줄(`SummaryLabel`), 미리보기·적용만 강조색 버튼(`make_primary`) 나머지는 글자만큼(`compact`), 입력 폴더는 3줄짜리 목록+＋/− 버튼(비면 끌어다 놓기 안내, 긴 경로는 가운데 …), 경로 표시 `PathLabel`. 결과 표 줄 색: 베스트컷은 남기는 컷 초록·장면 하나 걸러 옅은 회색, C컷은 빨강(반투명이라 다크 모드에서도 읽힘). 창 크기·위치 기억(QSettings `window/geometry`, 처음 1180×780), Qt 기본 대화상자 한국어(qtbase_ko) — `src/gui_widgets.py`. 베스트컷·C컷·시간순 정렬 탭 적용(폴더 정리 탭은 아직)
+  - 사진 선별 탭 입력 폴더 공유(사용자 요청 10): 베스트컷·C컷 위에 입력 폴더 칸 하나(`gui_input_folders.InputFolderPanel`, QSettings `selection/input_dirs`, 처음엔 예전 `bestcut/`·`badcut/input_dirs`에서 옮겨 옴). "하위 폴더까지 포함"도 하나로 합침 — 예전엔 베스트컷은 항상 포함·C컷만 체크박스였고, 처음 값은 포함(`selection/recursive`). 바꾸면 두 탭 미리보기 초기화. 탭을 따로 만들면(테스트 등) 자기 칸을 만든다
+  - 베스트컷 장면별 갤러리(사용자 요청 11): 결과를 장면마다 큰 썸네일(150px)로, 남기는 컷은 초록 테두리+✓, 빠지는 컷은 흐리게. 클릭=고르기(표의 같은 줄과 연동해 기존 버튼 그대로), 더블클릭/Enter=크게 보기, Space=넣기/빼기, ←/→ 사진, ↑/↓ 장면. 장면 하나를 목록 항목 하나로 직접 그려 장면이 많아도 가볍다(`gui_scene_gallery.SceneGallery`). "갤러리/표" 전환, 마지막 보기 기억(`bestcut/view`). 썸네일은 JPEG로 압축해 메모리 절약(`thumbnails.make_thumbnail_jpeg`, 표는 이걸 64px로 줄여 씀)
 
 최상위 GUI 탭은 "사진 파일 정리"(시간순 정렬 M9 + 폴더 정리 M11)와 "사진 선별"(베스트컷 선별 M8 + C컷 정리 M10) 두 개로, 각각 하위 탭을 묶는 컨테이너 위젯(`gui_file_organize_tab.py`/`gui_photo_selection_tab.py`)을 둔다.
 

@@ -22,7 +22,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
@@ -38,9 +37,12 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QButtonGroup,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -66,12 +68,10 @@ from gui_settings import (
     load_bool,
     load_float,
     load_folder,
-    load_folder_list,
     make_settings,
     save_bool,
     save_float,
     save_folder,
-    save_folder_list,
 )
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import score_store
@@ -79,17 +79,17 @@ from gui_worker import CancellableWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
-from thumbnails import make_thumbnail
+from thumbnails import make_thumbnail_jpeg
+from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
+from gui_input_folders import InputFolderPanel
 from gui_widgets import (
     KEPT_ROW,
     SCENE_BAND,
-    FolderList,
     PathLabel,
     SummaryLabel,
     compact,
     make_primary,
     paint_row,
-    small_button,
     status_row,
 )
 
@@ -256,7 +256,13 @@ class PreviewWorker(CancellableWorker):
             cached = self._thumbnail_cache.get(row.path)
             if cached is not None and cached[:2] == key:
                 continue
-            self._thumbnail_cache[row.path] = (*key, make_thumbnail(row.path))
+            # 갤러리용 큰 썸네일을 JPEG로 압축해 보관(표는 이것을 줄여 쓴다)
+            self._thumbnail_cache[row.path] = (*key, make_thumbnail_jpeg(row.path, THUMBNAIL_SIZE))
+
+
+THUMBNAIL_SIZE = (GALLERY_THUMB, GALLERY_THUMB)
+TABLE_ICON = 64
+VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 
 
 class ApplyWorker(QThread):
@@ -287,10 +293,13 @@ class ApplyWorker(QThread):
 
 
 class BestCutTab(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, inputs: InputFolderPanel | None = None) -> None:
         super().__init__()
 
-        self._input_dirs: list[Path] = []
+        # 입력 폴더는 사진 선별 탭들이 같이 쓰는 칸(없으면 이 탭 혼자 쓰는 칸을 만든다)
+        self._owns_inputs = inputs is None
+        self._inputs = inputs if inputs is not None else InputFolderPanel()
+        self._inputs.changed.connect(self._invalidate_preview)
         self._output_dir: Path | None = None
         self._rows: list[ReportRow] | None = None
         # 자동 선정 결과(직접 고른 것 반영 전)와, 사용자가 직접 고른 것(경로 → 선택 여부).
@@ -314,15 +323,11 @@ class BestCutTab(QWidget):
         # 점수·지문은 앱을 꺼도 남는 공용 저장소를 쓴다(C컷 탭과 공유, score_store).
         self._score_cache: dict = score_store.score_cache()
         self._thumbnail_cache: dict = {}
+        # (경로, 크기) → (썸네일 키, QPixmap). 표·갤러리를 다시 그릴 때 JPEG를 다시 풀지 않게
+        self._pixmap_cache: dict = {}
         self._hash_cache: dict = score_store.hash_cache()
         self.setAcceptDrops(True)
         self._settings = make_settings()
-
-        self._folder_list = FolderList()
-        add_input_button = small_button("+", "입력 폴더 추가")
-        add_input_button.clicked.connect(self._add_input_dir)
-        remove_input_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
-        remove_input_button.clicked.connect(self._remove_selected_input_dir)
 
         self._output_label = PathLabel()
         output_button = compact(QPushButton("선택…"))
@@ -453,10 +458,13 @@ class BestCutTab(QWidget):
             self._table.horizontalHeaderItem(column).setToolTip(tooltip)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setIconSize(QSize(64, 64))
+        self._table.setIconSize(QSize(TABLE_ICON, TABLE_ICON))
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.itemSelectionChanged.connect(self._update_choice_buttons)
+        self._table.itemSelectionChanged.connect(
+            lambda: self._gallery.set_current(self._selected_table_row())
+        )
         self._table.cellDoubleClicked.connect(self._open_viewer)
 
         self._view_button = compact(QPushButton("크게 보기"))
@@ -474,7 +482,37 @@ class BestCutTab(QWidget):
         self._reset_choices_button = compact(QPushButton("자동 선택으로 되돌리기"))
         self._reset_choices_button.setToolTip("<p>직접 넣거나 뺀 것을 모두 취소합니다.</p>")
         self._reset_choices_button.clicked.connect(self._reset_choices)
+        # 결과 보기: 장면별 갤러리(큰 썸네일) / 표(숫자 비교). 고른 사진은 둘이 함께 쓴다
+        self._gallery = SceneGallery(self._thumbnail_pixmap)
+        self._gallery.photo_clicked.connect(self._table.selectRow)
+        self._gallery.photo_activated.connect(self._open_viewer)
+        self._gallery.toggle_requested.connect(self._toggle_row)
+        self._results = QStackedWidget()
+        self._results.addWidget(self._gallery)
+        self._results.addWidget(self._table)
+        self._gallery_button = QToolButton()
+        self._gallery_button.setText("갤러리")
+        self._gallery_button.setToolTip(
+            "<p>장면마다 큰 썸네일로 봅니다. 클릭해 고르고, 더블클릭하면 크게 보기, "
+            "Space로 넣기/빼기, ←/→ 앞뒤 사진, ↑/↓ 앞뒤 장면.</p>"
+        )
+        self._table_button = QToolButton()
+        self._table_button.setText("표")
+        self._table_button.setToolTip("<p>점수를 숫자로 비교하는 표로 봅니다.</p>")
+        view_group = QButtonGroup(self)
+        for button in (self._gallery_button, self._table_button):
+            button.setCheckable(True)
+            view_group.addButton(button)
+        self._gallery_button.toggled.connect(self._on_view_toggled)
+        if self._settings.value(VIEW_SETTINGS_KEY, "gallery") == "table":
+            self._table_button.setChecked(True)
+        else:
+            self._gallery_button.setChecked(True)
+
         choice_button_row = QHBoxLayout()
+        choice_button_row.addWidget(self._gallery_button)
+        choice_button_row.addWidget(self._table_button)
+        choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
@@ -483,17 +521,7 @@ class BestCutTab(QWidget):
             QLabel("더블클릭하면 크게 보며 같은 장면 컷끼리 비교할 수 있습니다.")
         )
 
-        # 위: 입력 폴더(왼쪽) · 설정(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
-        folder_buttons = QVBoxLayout()
-        folder_buttons.addWidget(add_input_button)
-        folder_buttons.addWidget(remove_input_button)
-        folder_buttons.addStretch()
-        folder_box = QHBoxLayout()
-        folder_box.addWidget(self._folder_list)
-        folder_box.addLayout(folder_buttons)
-        input_group = QGroupBox("입력 폴더")
-        input_group.setLayout(folder_box)
-
+        # 위: 출력(왼쪽) · 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
         output_row = QHBoxLayout()
         output_row.addWidget(self._output_label, stretch=1)
         output_row.addWidget(output_button)
@@ -508,8 +536,8 @@ class BestCutTab(QWidget):
         output_group.setLayout(output_form)
 
         left_column = QVBoxLayout()
-        left_column.addWidget(input_group)
         left_column.addWidget(output_group)
+        left_column.addStretch()
 
         settings_form = QFormLayout()
         settings_form.addRow(gap_label, help_row)
@@ -533,15 +561,14 @@ class BestCutTab(QWidget):
         button_row.addWidget(self._apply_button)
 
         layout = QVBoxLayout()
+        if self._owns_inputs:
+            layout.addWidget(self._inputs)
         layout.addLayout(top_row)
         layout.addLayout(button_row)
         layout.addWidget(self._summary_text)
         layout.addLayout(choice_button_row)
-        layout.addWidget(self._table, stretch=1)
+        layout.addWidget(self._results, stretch=1)
 
-        for folder in load_folder_list(self._settings, "bestcut/input_dirs"):
-            self._input_dirs.append(folder)
-            self._folder_list.addItem(str(folder))
         restored_output = load_folder(self._settings, "bestcut/output_dir")
         if restored_output is not None:
             self._output_dir = restored_output
@@ -565,30 +592,16 @@ class BestCutTab(QWidget):
             self._add_folders(folders)
         event.acceptProposedAction()
 
-    def _add_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "입력 폴더 추가")
-        if directory:
-            self._add_folders([Path(directory)])
+    @property
+    def _input_dirs(self) -> list[Path]:
+        return self._inputs.folders()
+
+    @_input_dirs.setter
+    def _input_dirs(self, folders: list[Path]) -> None:
+        self._inputs.set_folders(folders)
 
     def _add_folders(self, folders: list[Path]) -> None:
-        added = False
-        for folder in folders:
-            if folder not in self._input_dirs:
-                self._input_dirs.append(folder)
-                self._folder_list.addItem(str(folder))
-                added = True
-        if not added:
-            return
-        self._invalidate_preview()
-        save_folder_list(self._settings, "bestcut/input_dirs", self._input_dirs)
-
-    def _remove_selected_input_dir(self) -> None:
-        for item in self._folder_list.selectedItems():
-            index = self._folder_list.row(item)
-            self._folder_list.takeItem(index)
-            del self._input_dirs[index]
-        self._invalidate_preview()
-        save_folder_list(self._settings, "bestcut/input_dirs", self._input_dirs)
+        self._inputs.add_folders(folders)
 
     def _choose_output_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "출력 폴더 선택")
@@ -609,6 +622,7 @@ class BestCutTab(QWidget):
         self._apply_button.setEnabled(False)
         self._open_output_button.setEnabled(False)
         self._table.setRowCount(0)
+        self._gallery.set_scenes([])
         self._update_choice_buttons()
 
     def _run_preview(self) -> None:
@@ -630,6 +644,7 @@ class BestCutTab(QWidget):
 
         self._preview_worker = PreviewWorker(
             list(self._input_dirs),
+            recursive=self._inputs.recursive(),
             settings=self._current_grouping(),
             scan_cache=self._scan_cache,
             score_cache=self._score_cache,
@@ -882,6 +897,7 @@ class BestCutTab(QWidget):
             else:
                 paint_row(self._table, i, SCENE_BAND if row.scene_id % 2 == 0 else None)
         self._table.resizeRowsToContents()
+        self._populate_gallery(rows)
 
     def _difference_text(self, row: ReportRow) -> str:
         """앞 사진과 차이 칸. 나누기를 켠 상태에서 이 차이 때문에 장면이 나뉜 자리는 ✂."""
@@ -893,12 +909,44 @@ class BestCutTab(QWidget):
             return f"{distance} ✂"
         return str(distance)
 
-    def _thumbnail_pixmap(self, path: Path) -> QPixmap | None:
+    def _thumbnail_pixmap(self, path: Path, size: int = TABLE_ICON) -> QPixmap | None:
         cached = self._thumbnail_cache.get(path)
         if cached is None or cached[2] is None:
             return None
-        qim = ImageQt(cached[2].convert("RGBA"))
-        return QPixmap.fromImage(qim)
+        key = cached[:2]
+        entry = self._pixmap_cache.get((path, size))
+        if entry is not None and entry[0] == key:
+            return entry[1]
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(cached[2], "JPEG"):
+            return None
+        if pixmap.width() > size or pixmap.height() > size:
+            pixmap = pixmap.scaled(
+                size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        self._pixmap_cache[(path, size)] = (key, pixmap)
+        return pixmap
+
+    def _populate_gallery(self, rows: list[ReportRow]) -> None:
+        scenes: list[GalleryScene] = []
+        photos: list[GalleryPhoto] = []
+        for i, row in enumerate(rows):
+            if photos and rows[i - 1].scene_id != row.scene_id:
+                scenes.append(GalleryScene(rows[i - 1].scene_id, tuple(photos)))
+                photos = []
+            photos.append(GalleryPhoto(i, row.path, row.selected, row.manual_choice is not None, row.total))
+        if photos:
+            scenes.append(GalleryScene(rows[-1].scene_id, tuple(photos)))
+        self._gallery.set_scenes(scenes)
+        self._gallery.set_current(self._selected_table_row(), scroll=False)
+
+    def _on_view_toggled(self, gallery: bool) -> None:
+        self._results.setCurrentWidget(self._gallery if gallery else self._table)
+        self._settings.setValue(VIEW_SETTINGS_KEY, "gallery" if gallery else "table")
+
+    def _toggle_row(self, table_row: int) -> None:
+        self._table.selectRow(table_row)
+        self._toggle_selected_row()
 
     def _run_apply(self) -> None:
         if self._busy:
