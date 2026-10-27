@@ -172,6 +172,7 @@ class SceneGallery(QListView):
     photo_activated = Signal(int)
     toggle_requested = Signal(int)
     choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
+    compare_requested = Signal(int)  # C = 나란히 비교
 
     def __init__(self, pixmap_for: Callable[[Path, int], QPixmap | None]) -> None:
         super().__init__()
@@ -280,6 +281,8 @@ class SceneGallery(QListView):
             self.toggle_requested.emit(self._current)
         elif key in (Qt.Key.Key_P, Qt.Key.Key_X) and self._current is not None:
             self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
+        elif key == Qt.Key.Key_C and self._current is not None:
+            self.compare_requested.emit(self._current)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._current is not None:
             self.photo_activated.emit(self._current)
         else:
