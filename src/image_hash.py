@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from parallel import map_in_order
 from raw_preview import open_image
 
 HASH_BITS = 64
@@ -53,12 +54,15 @@ def hashes_for(
     paths: list[Path],
     cache: dict[Path, tuple[float, int, int | None]] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    workers: int | None = None,
 ) -> dict[Path, int | None]:
     """사진마다 지문을 구한다. cache가 주어지면 (수정 시각, 크기)가 그대로인 파일은
-    다시 계산하지 않는다(장면 간격·민감도를 바꿔 다시 묶을 때 즉시 끝나도록)."""
+    다시 계산하지 않는다(장면 간격·민감도를 바꿔 다시 묶을 때 즉시 끝나도록). 새로 계산할
+    사진은 여러 장 동시에 처리한다(workers, 기본은 parallel.default_workers())."""
     result: dict[Path, int | None] = {}
+    todo: list[tuple[Path, tuple[float, int]]] = []
     total = len(paths)
-    for i, path in enumerate(paths, start=1):
+    for path in paths:
         try:
             stat = path.stat()
             key = (stat.st_mtime, stat.st_size)
@@ -69,10 +73,18 @@ def hashes_for(
         if cached is not None and cached[:2] == key:
             result[path] = cached[2]
         else:
-            value = perceptual_hash(path)
-            result[path] = value
-            if cache is not None:
-                cache[path] = (*key, value)
+            todo.append((path, key))
+    done_before = total - len(todo)
+    if on_progress is not None and done_before:
+        on_progress(done_before, total)
+
+    def progress(done: int, _todo_total: int) -> None:
         if on_progress is not None:
-            on_progress(i, total)
-    return result
+            on_progress(done_before + done, total)
+
+    values = map_in_order(lambda item: perceptual_hash(item[0]), todo, workers, progress)
+    for (path, key), value in zip(todo, values):
+        result[path] = value
+        if cache is not None:
+            cache[path] = (*key, value)
+    return {path: result[path] for path in paths}  # 입력 순서대로
