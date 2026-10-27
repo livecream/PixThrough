@@ -23,6 +23,7 @@ def test_selection_matches_baseline():
     current = compute_selection(TEST_PHOTOS_DIR)
 
     assert current == baseline, (
-        "베스트 컷 선정 결과가 기준선과 달라졌습니다. 의도한 변경이면 "
-        "python tests/update_regression_baseline.py 로 기준선을 갱신하세요."
+        "베스트 컷 선정 결과가 기준선과 달라졌습니다. "
+        "python tests/update_regression_baseline.py 를 실행하면 바뀐 장면을 사진으로 "
+        "보여주는 검토 페이지를 만들고, 확인 후 기준선을 바꿀 수 있습니다."
     )
