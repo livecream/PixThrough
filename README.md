@@ -53,6 +53,20 @@ python3 -m venv .venv
 .venv/bin/pyinstaller packaging/PixThrough.spec --distpath dist --workpath build
 ```
 
+### 회귀 기준선 (내 사진으로 결과가 나빠지지 않았는지)
+
+`test_photos/`에 실사진을 넣어 두면 `pytest`가 베스트컷 선정 결과를 기준선
+(`test_photos/baseline.json`)과 비교한다. 점수 계산을 바꿨거나 사진을 바꿨으면:
+
+```bash
+.venv/bin/python tests/update_regression_baseline.py
+```
+
+예전 기준선과 다른 점을 보여주고, 바뀐 장면만 사진으로 나란히 놓은 검토 페이지
+(`test_photos/baseline_review.html`, 초록 = 지금 뽑힌 컷, 주황 점선 = 예전 컷)를 만든다.
+브라우저로 확인해 지금 결과가 낫다면 `y`로 기준선을 바꾼다(`--check`는 보기만,
+`--yes`는 묻지 않고 저장). `test_photos/`는 개인 사진이라 저장소에 올라가지 않는다.
+
 ## Windows에서 빌드하기
 
 PyInstaller는 크로스 컴파일을 지원하지 않는다 — macOS에서 빌드하면 macOS용
