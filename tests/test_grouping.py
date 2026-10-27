@@ -111,3 +111,41 @@ def test_distances_to_previous_in_time_order():
         photos[1].path: 3,
         photos[2].path: None,
     }
+
+
+def _photos_at(*seconds):
+    import datetime as _dt
+    from pathlib import Path as _P
+
+    from scanner import PhotoMetadata
+
+    base = _dt.datetime(2026, 5, 1, 10, 0, 0)
+    return [
+        PhotoMetadata(path=_P(f"/s/{i}.jpg"), datetime_original=base + _dt.timedelta(seconds=s), exif_source="exif")
+        for i, s in enumerate(seconds)
+    ]
+
+
+def _names(groups):
+    return [[p.path.stem for p in g] for g in groups]
+
+
+def test_apply_scene_edits_splits_and_joins_by_path():
+    from pathlib import Path as _P
+
+    from grouping import JOIN, SPLIT, apply_scene_edits, group_by_time_gap
+
+    photos = _photos_at(0, 1, 2, 10, 11)
+    groups = group_by_time_gap(photos, gap_seconds=3)
+    assert _names(groups) == [["0", "1", "2"], ["3", "4"]]
+
+    split = apply_scene_edits(groups, {_P("/s/2.jpg"): SPLIT})
+    assert _names(split) == [["0", "1"], ["2"], ["3", "4"]]
+
+    joined = apply_scene_edits(groups, {_P("/s/3.jpg"): JOIN})
+    assert _names(joined) == [["0", "1", "2", "3", "4"]]
+
+    # 이미 경계인 자리의 SPLIT, 경계가 아닌 자리의 JOIN, 맨 앞의 JOIN은 아무것도 안 바꿈
+    same = apply_scene_edits(groups, {_P("/s/3.jpg"): SPLIT, _P("/s/1.jpg"): JOIN, _P("/s/0.jpg"): JOIN})
+    assert _names(same) == _names(groups)
+    assert apply_scene_edits(groups, {}) is groups

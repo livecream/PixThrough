@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -58,6 +59,9 @@ from PySide6.QtWidgets import (
 from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, undo_moves
 from grouping import (
     DEFAULT_SCENE_GAP_SECONDS,
+    JOIN,
+    SPLIT,
+    apply_scene_edits,
     distances_to_previous,
     group_by_time_gap,
     split_dissimilar,
@@ -209,11 +213,12 @@ class _SelectionSettings(NamedTuple):
     keep_percent: int  # 장면마다 남길 비율(%), 0이면 1장
     thresholds: BadCutThresholds = NO_BADCUT  # C컷 기준, 둘 다 0이면 C컷 판정 안 함
     clock_offsets: tuple[tuple[str, float], ...] = ()  # 바디별 시차(clock_sync), 장면 묶기에 씀
+    scene_edits: tuple[tuple[Path, str], ...] = ()  # 직접 나누기/합치기(grouping.apply_scene_edits)
 
 
 def _scene_key(settings: _SelectionSettings) -> tuple:
     """장면 묶음을 바꾸는 기준(간격·나누기·바디 시차). 남길 비율·C컷 기준은 장면을 안 바꾼다."""
-    return settings.gap_seconds, settings.split_distance, settings.clock_offsets
+    return settings.gap_seconds, settings.split_distance, settings.clock_offsets, settings.scene_edits
 
 
 def _exclude_for(thresholds: BadCutThresholds):
@@ -266,13 +271,15 @@ def _make_groups(
     gap_seconds: float,
     split_distance: int | None,
     clock_offsets: tuple[tuple[str, float], ...] = (),
+    scene_edits: tuple[tuple[Path, str], ...] = (),
 ) -> list[list[PhotoMetadata]]:
-    """장면으로 묶는다. 바디별 시차가 있으면 맞춘 시각으로(원래 사진 목록은 그대로)."""
+    """장면으로 묶는다. 바디별 시차가 있으면 맞춘 시각으로(원래 사진 목록은 그대로), 마지막에
+    사용자가 직접 나누거나 합친 경계를 덮어쓴다."""
     photos = shift_photos(photos, dict(clock_offsets))
     groups = group_by_time_gap(photos, gap_seconds=gap_seconds)
-    if split_distance is None:
-        return groups
-    return split_dissimilar(groups, hashes, split_distance)
+    if split_distance is not None:
+        groups = split_dissimilar(groups, hashes, split_distance)
+    return apply_scene_edits(groups, dict(scene_edits))
 
 
 def _percent(done: int, total: int) -> int:
@@ -339,7 +346,8 @@ class PreviewWorker(CancellableWorker):
             score_photos(photos, on_progress=on_score_progress, cache=self._score_cache)
             settings = self._selection_settings
             groups = _make_groups(
-                photos, hashes, settings.gap_seconds, settings.split_distance, settings.clock_offsets
+                photos, hashes, settings.gap_seconds, settings.split_distance, settings.clock_offsets,
+                settings.scene_edits,
             )
 
             def on_group_progress(done: int, total: int) -> None:
@@ -549,6 +557,8 @@ class BestCutTab(QWidget):
         # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
         self._auto_rows: list[ReportRow] | None = None
         self._choices: dict[Path, bool] = {}
+        # 직접 나누거나 합친 장면 경계(사진 경로 → "split"/"join"). 앱을 꺼도 남는다(choice_store)
+        self._scene_edits: dict[Path, str] = {}
         self._viewer: PhotoViewerDialog | None = None
         self._compare: CompareDialog | None = None
         # 나란히 비교 창 아래 줄에 쓰는 경로 → (장면 안 선명도 순위, 장면 사진 수)
@@ -806,6 +816,8 @@ class BestCutTab(QWidget):
             lambda: self._gallery.set_current(self._selected_table_row())
         )
         self._table.cellDoubleClicked.connect(lambda table_row, _c: self._open_viewer(self._index_at(table_row)))
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
 
         self._view_button = compact(QPushButton("크게 보기"))
         self._view_button.setToolTip(
@@ -819,6 +831,28 @@ class BestCutTab(QWidget):
             "칸에 함께 적용돼, 같은 자리(눈·초점)를 같은 배율로 볼 수 있습니다. (C)</p>"
         )
         self._compare_button.clicked.connect(self._open_compare_for_selected)
+        # 장면 직접 고치기: 시간 간격으로 잘못 갈리거나 붙은 장면을 손으로 바로잡는다
+        self._split_action = QAction("여기서 나누기 (S)", self)
+        self._split_action.setToolTip("고른 사진부터 새 장면으로 나눕니다.")
+        self._split_action.triggered.connect(lambda: self._edit_scene_at_selected(SPLIT))
+        self._join_action = QAction("앞 장면과 합치기 (M)", self)
+        self._join_action.setToolTip("고른 사진이 속한 장면을 바로 앞 장면에 붙입니다.")
+        self._join_action.triggered.connect(lambda: self._edit_scene_at_selected(JOIN))
+        self._reset_scenes_action = QAction("직접 고친 장면 모두 되돌리기", self)
+        self._reset_scenes_action.triggered.connect(self._reset_scene_edits)
+        scene_menu = QMenu(self)
+        scene_menu.addAction(self._split_action)
+        scene_menu.addAction(self._join_action)
+        scene_menu.addSeparator()
+        scene_menu.addAction(self._reset_scenes_action)
+        self._scene_button = QToolButton()
+        self._scene_button.setText("장면")
+        self._scene_button.setToolTip(
+            "<p>장면을 직접 고칩니다: 고른 사진부터 <b>나누기(S)</b>, 고른 사진의 장면을 "
+            "<b>앞 장면과 합치기(M)</b>. 간격·나누기 기준을 바꿔도, 앱을 꺼도 유지됩니다.</p>"
+        )
+        self._scene_button.setMenu(scene_menu)
+        self._scene_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._toggle_button = compact(QPushButton("선택에 넣기"))
         self._toggle_button.setToolTip(
             "<p>표에서 고른 사진을 선택에 넣거나 뺍니다. 장면마다 자동으로 1장을 고르지만, "
@@ -835,6 +869,8 @@ class BestCutTab(QWidget):
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
         self._gallery.compare_requested.connect(self._open_compare)
+        self._gallery.scene_edit_requested.connect(self._edit_scene)
+        self._gallery.context_requested.connect(self._show_context_menu)
         # 표에서도 크게 보기 창과 같은 단축키로 고른다
         for key, action in (
             ("Space", self._toggle_selected_row),
@@ -843,6 +879,8 @@ class BestCutTab(QWidget):
             ("Return", self._open_viewer_for_selected),
             ("Enter", self._open_viewer_for_selected),
             ("C", self._open_compare_for_selected),
+            ("S", lambda: self._edit_scene_at_selected(SPLIT)),
+            ("M", lambda: self._edit_scene_at_selected(JOIN)),
         ):
             QShortcut(QKeySequence(key), self._table, activated=action, context=Qt.ShortcutContext.WidgetShortcut)
         # 결과가 아직 없을 때 결과 자리에 띄우는 순서 안내
@@ -884,7 +922,8 @@ class BestCutTab(QWidget):
 
         self._shortcut_hint = QLabel("Space·P·X 고르기 · Enter 크게 · C 비교")
         self._shortcut_hint.setToolTip(
-            "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교</p>"
+            "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교 · "
+            "S 여기서 나누기 · M 앞 장면과 합치기 · 오른쪽 클릭 메뉴</p>"
         )
         choice_button_row = QHBoxLayout()
         choice_button_row.addWidget(self._gallery_button)
@@ -892,6 +931,7 @@ class BestCutTab(QWidget):
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
         choice_button_row.addWidget(self._compare_button)
+        choice_button_row.addWidget(self._scene_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
         choice_button_row.addSpacing(12)
@@ -1146,6 +1186,10 @@ class BestCutTab(QWidget):
         # 지난번(앱을 끄기 전 포함)에 직접 고른 것을 불러온다. 이번 세션에서 고른 것이 우선.
         restored = choice_store.restore(p.path for p in photos if p.path not in self._choices)
         self._choices.update(restored)
+        restored_edits = choice_store.scene_edits.restore(
+            p.path for p in photos if p.path not in self._scene_edits
+        )
+        self._scene_edits.update(restored_edits)  # 미리보기 기준과 달라져 끝난 뒤 다시 묶인다
         self._show_rows(rows, grouping)
         if restored:
             self._status_label.setText(f"완료 · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
@@ -1159,7 +1203,8 @@ class BestCutTab(QWidget):
             min_sharpness=self._sharpness_threshold, min_eyes_open=self._eyes_threshold
         )
         return _SelectionSettings(
-            self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key()
+            self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key(),
+            tuple(sorted(self._scene_edits.items(), key=lambda item: str(item[0]))),
         )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
@@ -1188,6 +1233,9 @@ class BestCutTab(QWidget):
         )
         if settings and settings.clock_offsets:
             summary += f" · 바디 시계 {len(settings.clock_offsets)}대 보정"
+        edits_here = self._scene_edits_in(rows)
+        if edits_here:
+            summary += f" · 장면 직접 고침 {len(edits_here)}곳"
         badcut = format_badcut_summary(rows, self._current_grouping().thresholds)
         manual = format_manual_choice_summary(rows)
         self._summary_text.setPlainText(
@@ -1239,6 +1287,10 @@ class BestCutTab(QWidget):
         row = self._rows[index] if self._rows and index is not None else None
         self._view_button.setEnabled(row is not None)
         self._compare_button.setEnabled(row is not None)
+        self._split_action.setEnabled(row is not None)
+        self._join_action.setEnabled(row is not None)
+        self._reset_scenes_action.setEnabled(bool(self._scene_edits_in(self._rows or [])))
+        self._scene_button.setEnabled(bool(self._rows))
         self._toggle_button.setEnabled(row is not None)
         self._toggle_button.setText("선택에서 빼기" if row is not None and row.selected else "선택에 넣기")
         scored = row is not None and not _is_unscored(row)
@@ -1349,6 +1401,84 @@ class BestCutTab(QWidget):
 
     def _on_viewer_closed(self) -> None:
         self._viewer = None
+
+    # --- 장면 직접 고치기 -----------------------------------------------------------
+    def _scene_edits_in(self, rows: list[ReportRow]) -> dict[Path, str]:
+        """지금 결과의 사진에 걸린 직접 고친 경계."""
+        return {r.path: self._scene_edits[r.path] for r in rows if r.path in self._scene_edits}
+
+    def _edit_scene_at_selected(self, kind: str) -> None:
+        index = self._selected_table_row()
+        if index is not None:
+            self._edit_scene(index, kind)
+
+    def _edit_scene(self, index: int, kind: str) -> None:
+        """SPLIT: 이 사진부터 새 장면. JOIN: 이 사진의 장면을 앞 장면에 붙임. 예전에 반대로 고친
+        것이 있으면 그것을 지운다(자동 결과로 돌아감)."""
+        if self._busy or not self._rows:
+            return
+        rows = self._rows
+        row = rows[index]
+        scene_rows = [r for r in rows if r.scene_id == row.scene_id]
+        first = scene_rows[0]
+        if kind == SPLIT:
+            if row.path == first.path:
+                self._status_label.setText("이미 장면의 첫 사진이라 나눌 자리가 없습니다")
+                return
+            target = row.path
+            undo = self._scene_edits.get(target) == JOIN
+        else:
+            if rows[0].scene_id == row.scene_id:
+                self._status_label.setText("첫 장면이라 합칠 앞 장면이 없습니다")
+                return
+            target = first.path
+            undo = self._scene_edits.get(target) == SPLIT
+        if undo:
+            del self._scene_edits[target]
+        else:
+            self._scene_edits[target] = kind
+        log.info("장면 직접 고치기: %s %s", "되돌림" if undo else kind, target.name)
+        self._save_scene_edits()
+        self._regroup_timer.stop()
+        self._update_grouping_help()
+        self._regroup()
+        self._select_index(index)
+        self._status_label.setText(
+            "장면을 나눴습니다" if kind == SPLIT else "앞 장면과 합쳤습니다"
+        )
+
+    def _reset_scene_edits(self) -> None:
+        current = self._scene_edits_in(self._rows or [])
+        for path in current:
+            del self._scene_edits[path]
+        self._save_scene_edits()
+        self._regroup_timer.stop()
+        self._regroup()
+        self._status_label.setText(f"직접 고친 장면 {len(current)}곳을 자동으로 되돌렸습니다")
+
+    def _save_scene_edits(self) -> None:
+        choice_store.scene_edits.sync([r.path for r in self._auto_rows or []], self._scene_edits)
+
+    def _on_table_context_menu(self, pos) -> None:
+        table_row = self._table.rowAt(pos.y())
+        index = self._index_at(table_row) if table_row >= 0 else None
+        if index is not None:
+            self._select_index(index)
+            self._show_context_menu(index, self._table.viewport().mapToGlobal(pos))
+
+    def _show_context_menu(self, index: int, global_pos) -> None:
+        """오른쪽 클릭 메뉴: 넣기/빼기, 크게 보기, 나란히 비교, 장면 나누기/합치기."""
+        if not self._rows:
+            return
+        row = self._rows[index]
+        menu = QMenu(self)
+        menu.addAction("선택에서 빼기 (Space)" if row.selected else "선택에 넣기 (Space)", lambda: self._toggle(row))
+        menu.addAction("크게 보기 (Enter)", lambda: self._open_viewer(index))
+        menu.addAction("나란히 비교 (C)", lambda: self._open_compare(index))
+        menu.addSeparator()
+        menu.addAction("여기서 나누기 (S)", lambda: self._edit_scene(index, SPLIT))
+        menu.addAction("앞 장면과 합치기 (M)", lambda: self._edit_scene(index, JOIN))
+        menu.exec(global_pos)
 
     # --- 나란히 비교 ---------------------------------------------------------------
     def _open_compare_for_selected(self) -> None:
@@ -1740,7 +1870,7 @@ class BestCutTab(QWidget):
         try:
             groups = _make_groups(
                 self._photos, self._hashes, grouping.gap_seconds, grouping.split_distance,
-                grouping.clock_offsets,
+                grouping.clock_offsets, grouping.scene_edits,
             )
             rows = build_report(
                 groups,
@@ -1915,7 +2045,12 @@ class BestCutTab(QWidget):
                     )
                 )
         # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다
-        scenes = [GalleryScene(scene_id, tuple(photos)) for scene_id, photos in by_scene.items() if photos]
+        edited_scenes = {row.scene_id for row in rows if row.path in self._scene_edits}
+        scenes = [
+            GalleryScene(scene_id, tuple(photos), scene_id in edited_scenes)
+            for scene_id, photos in by_scene.items()
+            if photos
+        ]
         self._gallery.set_scenes(scenes)
         self._gallery.set_current(self._selected_table_row(), scroll=False)
 

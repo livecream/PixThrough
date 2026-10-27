@@ -48,6 +48,7 @@ class GalleryPhoto:
 class GalleryScene:
     scene_id: int
     photos: tuple[GalleryPhoto, ...]
+    edited: bool = False  # 사용자가 직접 나누거나 합친 장면
 
 
 def _per_row(width: int) -> int:
@@ -95,7 +96,8 @@ class _SceneDelegate(QStyledItemDelegate):
             header,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"장면 {scene.scene_id}   ·   {len(scene.photos)}장 중 {kept}장 남김"
-            + (f"   ·   C컷 {flagged}장" if flagged else ""),
+            + (f"   ·   C컷 {flagged}장" if flagged else "")
+            + ("   ·   ✎ 직접 고친 장면" if scene.edited else ""),
         )
         painter.setPen(QPen(palette.mid().color(), 1))
         painter.drawLine(header.left(), rect.y() + 1, header.right(), rect.y() + 1)
@@ -173,6 +175,8 @@ class SceneGallery(QListView):
     toggle_requested = Signal(int)
     choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
     compare_requested = Signal(int)  # C = 나란히 비교
+    scene_edit_requested = Signal(int, str)  # S = 여기서 나누기("split"), M = 앞 장면과 합치기("join")
+    context_requested = Signal(int, object)  # 오른쪽 클릭(사진 줄 번호, 화면 좌표)
 
     def __init__(self, pixmap_for: Callable[[Path, int], QPixmap | None]) -> None:
         super().__init__()
@@ -263,6 +267,12 @@ class SceneGallery(QListView):
             self._choose(photo.row_index, scroll=False)
             self.photo_activated.emit(photo.row_index)
 
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        photo = self._photo_at(event.pos())
+        if photo is not None:
+            self._choose(photo.row_index, scroll=False)
+            self.context_requested.emit(photo.row_index, event.globalPos())
+
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         key = event.key()
         if not self._order:
@@ -283,6 +293,8 @@ class SceneGallery(QListView):
             self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
         elif key == Qt.Key.Key_C and self._current is not None:
             self.compare_requested.emit(self._current)
+        elif key in (Qt.Key.Key_S, Qt.Key.Key_M) and self._current is not None:
+            self.scene_edit_requested.emit(self._current, "split" if key == Qt.Key.Key_S else "join")
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._current is not None:
             self.photo_activated.emit(self._current)
         else:

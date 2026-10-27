@@ -63,6 +63,31 @@ def split_dissimilar(
     return result
 
 
+SPLIT = "split"  # 이 사진에서 새 장면을 시작(직접 나누기)
+JOIN = "join"  # 이 사진을 앞 장면에 붙임(직접 합치기)
+
+
+def apply_scene_edits(
+    groups: list[list[PhotoMetadata]], edits: dict[Path, str]
+) -> list[list[PhotoMetadata]]:
+    """사용자가 직접 고친 장면 경계를 자동 결과(시간 간격·유사도·바디 시차로 묶은 것) 위에
+    덮어쓴다. edits는 사진 경로 → SPLIT(이 사진부터 새 장면) | JOIN(이 사진을 앞 장면에 붙임).
+    경로 기준이라 간격·시차를 바꿔 다시 묶어도 직접 고친 경계는 유지된다. 맨 앞 사진의 JOIN은
+    붙일 앞 장면이 없어 무시한다."""
+    if not edits or not groups:
+        return groups
+    starts = {group[0].path for group in groups}
+    result: list[list[PhotoMetadata]] = []
+    for photo in (p for group in groups for p in group):
+        edit = edits.get(photo.path)
+        starts_scene = edit == SPLIT or (photo.path in starts and edit != JOIN)
+        if not result or starts_scene:
+            result.append([photo])
+        else:
+            result[-1].append(photo)
+    return result
+
+
 def distances_to_previous(
     photos: list[PhotoMetadata], hashes: dict[Path, int | None]
 ) -> dict[Path, int | None]:
