@@ -327,3 +327,32 @@ def test_apply_rename_plan_renames_video_files(tmp_path):
 
     assert not video.exists()
     assert (tmp_path / "00001.mp4").read_bytes() == original_bytes
+
+
+def test_body_clock_offset_reorders_and_is_reported(tmp_path):
+    import datetime as _dt
+    from PIL import Image
+
+    def shot(folder, name, when, serial):
+        folder.mkdir(exist_ok=True)
+        exif = Image.Exif()
+        exif[0x010F] = "Canon"
+        exif[0x0110] = "Canon EOS R5"
+        ifd = exif.get_ifd(0x8769)
+        ifd[0x9003] = when.strftime("%Y:%m:%d %H:%M:%S")
+        ifd[0xA431] = serial
+        Image.new("RGB", (8, 8)).save(folder / name, "JPEG", exif=exif.tobytes())
+
+    t0 = _dt.datetime(2026, 5, 1, 14, 0, 0)
+    body_a, body_b = tmp_path / "A", tmp_path / "B"
+    shot(body_a, "a1.jpg", t0, "AAA")
+    shot(body_a, "a2.jpg", t0 + _dt.timedelta(seconds=10), "AAA")
+    shot(body_b, "b1.jpg", t0 + _dt.timedelta(seconds=95), "BBB")  # B 시계가 90초 빠름
+
+    plain = build_rename_plan([body_a, body_b])
+    fixed = build_rename_plan([body_a, body_b], offsets={"Canon EOS R5 #BBB": -90})
+
+    assert [r.old_path.name for r in plain] == ["a1.jpg", "a2.jpg", "b1.jpg"]
+    assert [r.old_path.name for r in fixed] == ["a1.jpg", "b1.jpg", "a2.jpg"]
+    assert fixed[1].clock_offset == -90 and fixed[0].clock_offset == 0
+    assert fixed[1].datetime_original == t0 + _dt.timedelta(seconds=5)

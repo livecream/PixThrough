@@ -63,6 +63,8 @@ from grouping import (
     split_dissimilar,
 )
 import app_log
+from clock_sync import shift_photos
+from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
 from gui_format import (
     bestcut_grouping_help,
@@ -206,6 +208,12 @@ class _SelectionSettings(NamedTuple):
     split_distance: int | None  # 비슷하지 않은 사진 나누기 기준, 꺼져 있으면 None
     keep_percent: int  # 장면마다 남길 비율(%), 0이면 1장
     thresholds: BadCutThresholds = NO_BADCUT  # C컷 기준, 둘 다 0이면 C컷 판정 안 함
+    clock_offsets: tuple[tuple[str, float], ...] = ()  # 바디별 시차(clock_sync), 장면 묶기에 씀
+
+
+def _scene_key(settings: _SelectionSettings) -> tuple:
+    """장면 묶음을 바꾸는 기준(간격·나누기·바디 시차). 남길 비율·C컷 기준은 장면을 안 바꾼다."""
+    return settings.gap_seconds, settings.split_distance, settings.clock_offsets
 
 
 def _exclude_for(thresholds: BadCutThresholds):
@@ -257,7 +265,10 @@ def _make_groups(
     hashes: dict[Path, int | None],
     gap_seconds: float,
     split_distance: int | None,
+    clock_offsets: tuple[tuple[str, float], ...] = (),
 ) -> list[list[PhotoMetadata]]:
+    """장면으로 묶는다. 바디별 시차가 있으면 맞춘 시각으로(원래 사진 목록은 그대로)."""
+    photos = shift_photos(photos, dict(clock_offsets))
     groups = group_by_time_gap(photos, gap_seconds=gap_seconds)
     if split_distance is None:
         return groups
@@ -327,7 +338,9 @@ class PreviewWorker(CancellableWorker):
             # 먼저 사진 전체를 여러 장 동시에 채점해 둔다(장면별로 고를 때는 저장된 점수를 씀).
             score_photos(photos, on_progress=on_score_progress, cache=self._score_cache)
             settings = self._selection_settings
-            groups = _make_groups(photos, hashes, settings.gap_seconds, settings.split_distance)
+            groups = _make_groups(
+                photos, hashes, settings.gap_seconds, settings.split_distance, settings.clock_offsets
+            )
 
             def on_group_progress(done: int, total: int) -> None:
                 self.check_cancel()
@@ -622,6 +635,18 @@ class BestCutTab(QWidget):
         self._undo_move_button.setVisible(False)
         self._undo_move_button.clicked.connect(self._undo_last_move)
 
+        # 바디별 시계 맞추기(시간순 정렬 화면과 같이 씀). 바꾸면 저장된 점수로 즉시 다시 묶는다
+        self._clock_button = compact(QPushButton("맞추기…"))
+        self._clock_button.setToolTip(
+            "<p>바디(카메라)마다 시계가 어긋났으면 시차를 넣어 맞춘 시각으로 장면을 묶습니다. "
+            "같은 순간을 찍은 두 사진으로 계산할 수도 있습니다. 원본 파일의 촬영 시각은 바꾸지 "
+            "않습니다.</p>"
+        )
+        self._clock_button.clicked.connect(self._open_clock_sync)
+        self._clock_status = QLabel()
+        offset_store().changed.connect(self._on_clock_changed)
+        self._update_clock_status()
+
         # 라이트룸 별점(RAW 옆 .xmp): 베스트컷 별점 + C컷 거부
         self._xmp_rating_spin = QSpinBox()
         self._xmp_rating_spin.setRange(RATING_MIN, RATING_MAX)
@@ -905,6 +930,12 @@ class BestCutTab(QWidget):
         settings_form = QFormLayout()
         settings_form.addRow(gap_label, help_row)
         settings_form.addRow(keep_label, keep_row)
+        clock_label = QLabel("바디 시계:")
+        clock_label.setToolTip(self._clock_button.toolTip())
+        clock_row = QHBoxLayout()
+        clock_row.addWidget(self._clock_button)
+        clock_row.addWidget(self._clock_status, stretch=1)
+        settings_form.addRow(clock_label, clock_row)
         settings_form.addRow(split_row)
         settings_form.addRow(self._grouping_help_label)
         settings_form.addRow(self._scoring_help_label)
@@ -1111,7 +1142,6 @@ class BestCutTab(QWidget):
         self._table_rows = None  # 새 미리보기는 표를 처음부터(썸네일도 새로)
         self._photos = photos
         self._hashes = hashes
-        self._distances = distances_to_previous(photos, hashes)
         self._preview_button.setEnabled(True)
         # 지난번(앱을 끄기 전 포함)에 직접 고른 것을 불러온다. 이번 세션에서 고른 것이 우선.
         restored = choice_store.restore(p.path for p in photos if p.path not in self._choices)
@@ -1128,7 +1158,9 @@ class BestCutTab(QWidget):
         thresholds = BadCutThresholds(
             min_sharpness=self._sharpness_threshold, min_eyes_open=self._eyes_threshold
         )
-        return _SelectionSettings(self._gap_spin.value(), split, self._keep_spin.value(), thresholds)
+        return _SelectionSettings(
+            self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key()
+        )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
         """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
@@ -1137,8 +1169,11 @@ class BestCutTab(QWidget):
         self._rows_grouping = grouping
         # 장면 묶음이 바뀌었으면(간격·나누기) 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
         # 남길 비율·C컷 기준만 바뀌면 장면은 그대로라 창을 둔다(창에서 기준을 지정할 때 등).
-        if previous is None or previous[:2] != grouping[:2]:
+        if previous is None or _scene_key(previous) != _scene_key(grouping):
             self._close_viewer()
+        self._distances = distances_to_previous(
+            shift_photos(self._photos or [], dict(grouping.clock_offsets)), self._hashes
+        )
         self._refresh_selection()
 
     def _refresh_selection(self) -> None:
@@ -1151,6 +1186,8 @@ class BestCutTab(QWidget):
         summary = (
             format_preview_header(rows, *settings[:3]) if settings else format_preview_header(rows)
         )
+        if settings and settings.clock_offsets:
+            summary += f" · 바디 시계 {len(settings.clock_offsets)}대 보정"
         badcut = format_badcut_summary(rows, self._current_grouping().thresholds)
         manual = format_manual_choice_summary(rows)
         self._summary_text.setPlainText(
@@ -1666,6 +1703,23 @@ class BestCutTab(QWidget):
         save_float(self._settings, KEEP_PERCENT_SETTINGS_KEY, value)
         self._on_grouping_changed()
 
+    def _open_clock_sync(self) -> None:
+        if not self._input_dirs:
+            QMessageBox.warning(self, "입력 폴더 없음", "먼저 입력 폴더를 하나 이상 추가하세요.")
+            return
+        ClockSyncDialog(
+            list(self._input_dirs), self._inputs.recursive(), self._scan_cache, parent=self
+        ).exec()
+
+    def _update_clock_status(self) -> None:
+        text, tooltip = describe_offsets(offset_store().get())
+        self._clock_status.setText(text)
+        self._clock_status.setToolTip(tooltip)
+
+    def _on_clock_changed(self) -> None:
+        self._update_clock_status()
+        self._on_grouping_changed()
+
     def _on_grouping_changed(self) -> None:
         self._update_grouping_help()
         # 아직 미리보기 전이면 다음 미리보기 때 이 기준으로 묶인다.
@@ -1685,7 +1739,8 @@ class BestCutTab(QWidget):
             return
         try:
             groups = _make_groups(
-                self._photos, self._hashes, grouping.gap_seconds, grouping.split_distance
+                self._photos, self._hashes, grouping.gap_seconds, grouping.split_distance,
+                grouping.clock_offsets,
             )
             rows = build_report(
                 groups,

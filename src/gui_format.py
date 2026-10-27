@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from clock_sync import format_offset
 from file_ops import FileOpResult
 from grouping import DEFAULT_SCENE_GAP_SECONDS
 from organize import DuplicateGroup, FolderSummary
@@ -172,9 +173,15 @@ def format_apply_summary(
 
 def format_rename_preview(rows: list[RenamePlanRow]) -> str:
     """M9 시간순 리네임 dry-run 미리보기 결과를 사람이 읽을 요약 텍스트로 만든다."""
-    lines = [f"{len(rows)}개 파일 리네임 예정 (제자리 rename, 원본 폴더는 그대로)\n"]
+    lines = [f"{len(rows)}개 파일 리네임 예정 (제자리 rename, 원본 폴더는 그대로)"]
+    shifted = [row for row in rows if row.clock_offset]
+    if shifted:
+        lines.append(f"바디 시계 보정 적용: {len(shifted)}개 파일 (시차를 더한 시각 순서)")
+    lines[-1] += "\n"
     for row in rows:
         line = f"{row.old_path.name} → {row.new_path.name}  ({row.old_path.parent})"
+        if row.clock_offset:
+            line += f"  [시차 {format_offset(row.clock_offset)}]"
         if row.raw_old_path is not None:
             line += f"  [+RAW: {row.raw_old_path.name} → {row.raw_new_path.name}]"
         lines.append(line)

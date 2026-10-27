@@ -341,3 +341,15 @@ def test_format_resize_result_reports_size_change_and_failures():
     text = format_resize_result(results, Path("/out"), 10 * 1024 * 1024, 2 * 1024 * 1024)
 
     assert "1장 저장" in text and "10.0MB → 2.0MB" in text and "실패 1장: b.jpg" in text
+
+
+def test_format_rename_preview_marks_clock_offsets():
+    from dataclasses import replace
+
+    rows = [_rename_row("A.jpg", "00001.jpg"), replace(_rename_row("B.jpg", "00002.jpg"), clock_offset=-90)]
+
+    text = format_rename_preview(rows)
+
+    assert "바디 시계 보정 적용: 1개 파일" in text
+    assert "B.jpg → 00002.jpg" in text and "[시차 -1:30]" in text
+    assert "시차" not in format_rename_preview(rows[:1])
