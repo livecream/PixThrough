@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app_log
+from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
 from gui_widgets import FolderList, PathLabel, compact, make_primary, small_button, status_row
 from gui_format import format_rename_apply_summary, format_rename_preview
@@ -34,6 +36,8 @@ from rename_by_time import (
     build_merge_plan,
     build_rename_plan,
 )
+
+log = app_log.get("rename")
 
 
 def _percent(done: int, total: int) -> int:
@@ -52,12 +56,14 @@ class PlanWorker(QThread):
         recursive: bool,
         merge_output_dir: Path | None,
         scan_cache: dict | None = None,
+        offsets: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         self._input_dirs = input_dirs
         self._recursive = recursive
         self._merge_output_dir = merge_output_dir
         self._scan_cache = scan_cache
+        self._offsets = offsets
 
     def run(self) -> None:
         try:
@@ -72,6 +78,7 @@ class PlanWorker(QThread):
                     recursive=self._recursive,
                     on_progress=on_scan_progress,
                     cache=self._scan_cache,
+                    offsets=self._offsets,
                 )
             else:
                 rows = build_rename_plan(
@@ -79,9 +86,11 @@ class PlanWorker(QThread):
                     recursive=self._recursive,
                     on_progress=on_scan_progress,
                     cache=self._scan_cache,
+                    offsets=self._offsets,
                 )
             self.finished_ok.emit(rows)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -110,6 +119,7 @@ class ApplyWorker(QThread):
                 )
             self.finished_ok.emit(results)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -134,6 +144,17 @@ class RenameTab(QWidget):
         add_button.clicked.connect(self._add_folder)
         remove_button = small_button("−", "목록에서 고른 폴더 빼기 (폴더 자체는 그대로)")
         remove_button.clicked.connect(self._remove_selected_folder)
+
+        # 바디별 시계 맞추기(시차는 바디마다 기억, 베스트컷 화면과 같이 씀)
+        self._clock_label = QLabel()
+        self._clock_button = compact(QPushButton("바디 시계 맞추기…"))
+        self._clock_button.setToolTip(
+            "<p>바디(카메라)마다 시계가 어긋났으면 시차를 넣어, 맞춘 시각 순서로 번호를 붙입니다. "
+            "원본 파일의 촬영 시각은 바꾸지 않습니다.</p>"
+        )
+        self._clock_button.clicked.connect(self._open_clock_sync)
+        offset_store().changed.connect(self._on_clock_changed)
+        self._update_clock_label()
 
         self._recursive_checkbox = QCheckBox("하위 폴더까지 포함")
         self._recursive_checkbox.stateChanged.connect(lambda _: self._invalidate_preview())
@@ -184,6 +205,10 @@ class RenameTab(QWidget):
         input_layout = QVBoxLayout()
         input_layout.addLayout(folder_box)
         input_layout.addWidget(self._recursive_checkbox)
+        clock_row = QHBoxLayout()
+        clock_row.addWidget(self._clock_button)
+        clock_row.addWidget(self._clock_label, stretch=1)
+        input_layout.addLayout(clock_row)
         input_group = QGroupBox("입력 폴더 (바디별로 여러 개, 사진+영상 함께 정렬)")
         input_group.setLayout(input_layout)
 
@@ -328,6 +353,25 @@ class RenameTab(QWidget):
         self._rows = None
         self._apply_button.setEnabled(False)
 
+    def _open_clock_sync(self) -> None:
+        if not self._input_dirs:
+            QMessageBox.warning(self, "입력 폴더 없음", "먼저 바디별 입력 폴더를 추가하세요.")
+            return
+        ClockSyncDialog(
+            list(self._input_dirs), self._recursive_checkbox.isChecked(), self._scan_cache, parent=self
+        ).exec()
+
+    def _update_clock_label(self) -> None:
+        text, tooltip = describe_offsets(offset_store().get())
+        self._clock_label.setText(text)
+        self._clock_label.setToolTip(tooltip)
+
+    def _on_clock_changed(self) -> None:
+        self._update_clock_label()
+        if self._rows is not None:
+            self._invalidate_preview()
+            self._summary_text.setPlainText("바디 시차가 바뀌었습니다. 미리보기를 다시 눌러 주세요.")
+
     def _run_preview(self) -> None:
         if self._busy:
             QMessageBox.warning(
@@ -355,6 +399,7 @@ class RenameTab(QWidget):
             self._recursive_checkbox.isChecked(),
             merge_output_dir,
             scan_cache=self._scan_cache,
+            offsets=offset_store().get(),
         )
         self._plan_worker.progress.connect(self._on_progress)
         self._plan_worker.status.connect(self._status_label.setText)

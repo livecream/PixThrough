@@ -33,8 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from clock_sync import camera_keys, shifted
 from file_ops import find_matching_raw
-from scanner import extract_metadata, scan_folder
+from scanner import PhotoMetadata, extract_metadata, scan_folder
+import app_log
+
+log = app_log.get("rename")
 
 DEFAULT_DIGITS = 5
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m4v"}
@@ -47,7 +51,8 @@ class RenamePlanRow:
     new_path: Path
     raw_old_path: Path | None
     raw_new_path: Path | None
-    datetime_original: datetime.datetime
+    datetime_original: datetime.datetime  # 바디 시차를 더한 시각(정렬 기준)
+    clock_offset: float = 0.0  # 이 파일 바디에 더한 시차(초, clock_sync)
 
 
 @dataclass(frozen=True)
@@ -70,28 +75,29 @@ def _stat_key(path: Path) -> tuple[float, int]:
     return stat.st_mtime, stat.st_size
 
 
-def _extract_datetime_cached(
-    path: Path, cache: dict[Path, tuple[float, int, datetime.datetime]] | None
-) -> datetime.datetime:
+def _extract_metadata_cached(
+    path: Path, cache: dict[Path, tuple[float, int, PhotoMetadata]] | None
+) -> PhotoMetadata:
     """cache가 주어지면 파일의 (수정 시각, 크기)가 이전과 같을 때 EXIF를 다시
-    읽지 않고 캐시된 촬영 시각을 재사용한다."""
+    읽지 않고 캐시된 메타데이터(촬영 시각·카메라)를 재사용한다."""
     if cache is None:
-        return extract_metadata(path).datetime_original
+        return extract_metadata(path)
     key = _stat_key(path)
     cached = cache.get(path)
     if cached is not None and cached[:2] == key:
         return cached[2]
-    dt = extract_metadata(path).datetime_original
-    cache[path] = (*key, dt)
-    return dt
+    meta = extract_metadata(path)
+    cache[path] = (*key, meta)
+    return meta
 
 
 def _scan_and_number(
     input_dirs: list[Path],
     recursive: bool,
     on_progress: Callable[[int, int, Path], None] | None = None,
-    cache: dict[Path, tuple[float, int, datetime.datetime]] | None = None,
-) -> list[tuple[int, Path, Path | None, datetime.datetime]]:
+    cache: dict[Path, tuple[float, int, PhotoMetadata]] | None = None,
+    offsets: dict[str, float] | None = None,
+) -> list[tuple[int, Path, Path | None, datetime.datetime, float]]:
     """여러 폴더의 사진+영상을 촬영 시각순으로 합쳐 정렬하고 순번을 매긴다.
 
     동일 촬영 시각(초 단위까지만 있는 EXIF 특성상 서로 다른 바디가 같은 초에 찍을 수
@@ -100,7 +106,8 @@ def _scan_and_number(
     튜플 목록 — 제자리 리네임/병합 두 모드 모두 이 순서/짝짓기를 그대로 쓴다.
 
     on_progress가 주어지면 파일 1개의 촬영 시각을 읽을 때마다 (완료한 수, 전체 수,
-    방금 읽은 파일 경로)를 알려준다.
+    방금 읽은 파일 경로)를 알려준다. offsets(바디 이름 → 시차 초, clock_sync)가 있으면
+    바디마다 시차를 더한 시각으로 정렬한다(영상은 같은 폴더 사진의 바디를 따름).
     """
     all_files: list[Path] = []
     for input_dir in input_dirs:
@@ -109,22 +116,29 @@ def _scan_and_number(
         all_files.extend(_scan_video_files(input_dir, recursive=recursive))
 
     total = len(all_files)
-    items: list[tuple[Path, datetime.datetime]] = []
+    metas: list[tuple[Path, PhotoMetadata | None, datetime.datetime]] = []
     for i, path in enumerate(all_files, start=1):
         if path.suffix.lower() in VIDEO_EXTENSIONS:
-            dt = datetime.datetime.fromtimestamp(path.stat().st_mtime)
+            metas.append((path, None, datetime.datetime.fromtimestamp(path.stat().st_mtime)))
         else:
-            dt = _extract_datetime_cached(path, cache)
-        items.append((path, dt))
+            meta = _extract_metadata_cached(path, cache)
+            metas.append((path, meta, meta.datetime_original))
         if on_progress is not None:
             on_progress(i, total, path)
+
+    offsets = offsets or {}
+    keys = camera_keys([(path, meta) for path, meta, _dt in metas]) if any(offsets.values()) else {}
+    items: list[tuple[Path, datetime.datetime, float]] = []
+    for path, _meta, dt in metas:
+        offset = offsets.get(keys.get(path), 0.0) if keys.get(path) is not None else 0.0
+        items.append((path, shifted(dt, keys.get(path), offsets), offset))
     items.sort(key=lambda item: (item[1], str(item[0])))
 
     numbered = []
-    for seq, (path, dt) in enumerate(items, start=1):
+    for seq, (path, dt, offset) in enumerate(items, start=1):
         is_video = path.suffix.lower() in VIDEO_EXTENSIONS
         raw = None if is_video else find_matching_raw(path)
-        numbered.append((seq, path, raw, dt))
+        numbered.append((seq, path, raw, dt, offset))
     return numbered
 
 
@@ -134,12 +148,13 @@ def build_rename_plan(
     digits: int = DEFAULT_DIGITS,
     on_progress: Callable[[int, int, Path], None] | None = None,
     cache: dict | None = None,
+    offsets: dict[str, float] | None = None,
 ) -> list[RenamePlanRow]:
     """여러 입력 폴더의 사진+영상을 촬영 시각순으로 합쳐 정렬하고, 각자 원래 폴더에서
     제자리로 리네임할 계획을 만든다 (원본 폴더는 그대로, 이름만 바뀜)."""
     rows: list[RenamePlanRow] = []
-    for seq, path, raw, dt in _scan_and_number(
-        input_dirs, recursive, on_progress=on_progress, cache=cache
+    for seq, path, raw, dt, offset in _scan_and_number(
+        input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
     ):
         stem = f"{seq:0{digits}d}"
         new_path = path.with_name(f"{stem}{path.suffix}")
@@ -152,6 +167,7 @@ def build_rename_plan(
                 raw_old_path=raw,
                 raw_new_path=raw_new,
                 datetime_original=dt,
+                clock_offset=offset,
             )
         )
     return rows
@@ -164,14 +180,15 @@ def build_merge_plan(
     digits: int = DEFAULT_DIGITS,
     on_progress: Callable[[int, int, Path], None] | None = None,
     cache: dict | None = None,
+    offsets: dict[str, float] | None = None,
 ) -> list[RenamePlanRow]:
     """여러 입력 폴더의 사진+영상을 촬영 시각순으로 합쳐 정렬하고, 하나의 출력
     폴더로 모아 옮길 계획을 만든다. RAW는 output_dir/RAW/에 모인다 (apply_selection이
     베스트컷을 복사할 때 쓰는 것과 같은 레이아웃)."""
     output_dir = Path(output_dir)
     rows: list[RenamePlanRow] = []
-    for seq, path, raw, dt in _scan_and_number(
-        input_dirs, recursive, on_progress=on_progress, cache=cache
+    for seq, path, raw, dt, offset in _scan_and_number(
+        input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
     ):
         stem = f"{seq:0{digits}d}"
         new_path = output_dir / f"{stem}{path.suffix}"
@@ -184,6 +201,7 @@ def build_merge_plan(
                 raw_old_path=raw,
                 raw_new_path=raw_new,
                 datetime_original=dt,
+                clock_offset=offset,
             )
         )
     return rows
@@ -197,6 +215,7 @@ def _row_to_report_dict(row: RenamePlanRow) -> dict:
         "raw_old_path": str(row.raw_old_path) if row.raw_old_path else None,
         "raw_new_path": str(row.raw_new_path) if row.raw_new_path else None,
         "datetime_original": row.datetime_original.isoformat(),
+        "clock_offset_seconds": row.clock_offset,
     }
 
 
@@ -297,6 +316,7 @@ def apply_rename_plan(
             if on_progress is not None:
                 on_progress(index, total)
 
+    log.info("시간순 정렬 적용: %d개 파일", len(results))
     return results
 
 
@@ -380,4 +400,5 @@ def apply_merge_plan(
             if on_progress is not None:
                 on_progress(index, total)
 
+    log.info("시간순 정렬 적용: %d개 파일", len(results))
     return results

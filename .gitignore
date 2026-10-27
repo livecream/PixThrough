@@ -7,6 +7,9 @@ venv/
 models/
 # 앱을 꺼도 남기는 점수·유사도 지문 저장소 (score_store.py)
 cache/
+# 앱 기록·업데이트 기록 (소스 실행이면 저장소 폴더에 생김, app_log.py)
+pixthrough.log*
+update.log
 output/*
 !output/.gitkeep
 test_photos/*

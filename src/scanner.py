@@ -42,6 +42,7 @@ class PhotoMetadata:
     orientation: int | None = None
     camera_make: str | None = None
     camera_model: str | None = None
+    camera_serial: str | None = None  # 같은 기종 바디 두 대를 구분(바디별 시계 맞추기)
     aperture: str | None = None
     iso: str | None = None
     shutter_speed: str | None = None
@@ -136,7 +137,7 @@ def extract_metadata(path: Path) -> PhotoMetadata:
         )
 
     dt_original = None
-    orientation = camera_make = camera_model = None
+    orientation = camera_make = camera_model = camera_serial = None
     aperture = iso = shutter_speed = None
 
     try:
@@ -153,6 +154,9 @@ def extract_metadata(path: Path) -> PhotoMetadata:
             camera_make = str(tags["Image Make"]).strip()
         if "Image Model" in tags:
             camera_model = str(tags["Image Model"]).strip()
+        serial = tags.get("EXIF BodySerialNumber")
+        if serial is not None and str(serial).strip():
+            camera_serial = str(serial).strip()
         if "EXIF FNumber" in tags:
             aperture = str(tags["EXIF FNumber"])
         if "EXIF ISOSpeedRatings" in tags:
@@ -177,6 +181,7 @@ def extract_metadata(path: Path) -> PhotoMetadata:
         orientation=orientation,
         camera_make=camera_make,
         camera_model=camera_model,
+        camera_serial=camera_serial,
         aperture=aperture,
         iso=iso,
         shutter_speed=shutter_speed,
