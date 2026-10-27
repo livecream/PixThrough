@@ -92,6 +92,19 @@ from badcut import BadCutThresholds, badcut_reason
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from thumbnails import make_thumbnail_jpeg
+from xmp_rating import (
+    ACTION_CREATED,
+    ACTION_SKIPPED,
+    ACTION_UPDATED,
+    RATING_MAX,
+    RATING_MIN,
+    XmpPlanRow,
+    XmpResult,
+    default_run_dir,
+    plan_xmp,
+    undo_xmp,
+    write_xmp,
+)
 from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
 from gui_input_folders import InputFolderPanel
 from gui_widgets import (
@@ -163,6 +176,16 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
+_XMP_TOOLTIP = (
+    "<p>파일을 옮기지 않고, 라이트룸에서 바로 걸러 볼 수 있게 RAW 옆에 같은 이름의 "
+    ".xmp를 씁니다: 베스트컷은 고른 별점, C컷은 거부 표시. RAW 파일 자체는 건드리지 "
+    "않습니다.</p><p>라이트룸은 RAW만 옆의 .xmp를 읽어서 JPG만 있는 사진은 건너뜁니다. "
+    "이미 .xmp가 있으면(보정 기록 등) 다른 내용은 그대로 두고 별점·거부 칸만 바꾸고, "
+    "바꾸기 전 파일은 백업해 둡니다.</p><p>라이트룸에 이미 가져온 사진은 사진을 고르고 "
+    "<b>메타데이터 → 파일에서 메타데이터 읽기</b>를 해야 반영됩니다. 거부 표시는 "
+    "Lightroom Classic 13.2 이상에서 읽힙니다.</p>"
+)
 SETTINGS_COLLAPSED_KEY = "bestcut/settings_collapsed"
 BADCUT_DIR_SETTINGS_KEY = "badcut/output_dir"  # 예전 C컷 화면과 같은 키(마지막 폴더 이어 쓰기)
 
@@ -414,6 +437,23 @@ class ApplyWorker(QThread):
             self.failed.emit(str(e), [])
 
 
+class XmpWorker(QThread):
+    """라이트룸 별점을 RAW 옆 .xmp에 쓴다(수천 장이면 잠깐 걸려 스레드로)."""
+
+    finished_ok = Signal(list)  # list[XmpResult]
+    failed = Signal(str)
+
+    def __init__(self, rows: list[XmpPlanRow], rating: int, run_dir: Path) -> None:
+        super().__init__()
+        self._args = (rows, rating, run_dir)
+
+    def run(self) -> None:
+        try:
+            self.finished_ok.emit(write_xmp(*self._args))
+        except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            self.failed.emit(str(e))
+
+
 class UndoWorker(QThread):
     """방금 옮긴 사진을 원래 폴더로 되돌린다(다른 드라이브면 복사라 오래 걸릴 수 있어 스레드로)."""
 
@@ -483,7 +523,10 @@ class BestCutTab(QWidget):
         self._apply_worker: ApplyWorker | None = None
         self._badcut_worker: ApplyWorker | None = None
         self._undo_worker: UndoWorker | None = None
+        self._xmp_worker: XmpWorker | None = None
         self._last_move: _LastMove | None = None
+        # 되돌릴 수 있는 마지막 라이트룸 별점 쓰기(결과, 백업·기록 폴더). 이동과 둘 중 최근 것 하나만
+        self._last_xmp: tuple[list[XmpResult], Path] | None = None
         self._busy = False
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
@@ -547,6 +590,20 @@ class BestCutTab(QWidget):
         )
         self._undo_move_button.setVisible(False)
         self._undo_move_button.clicked.connect(self._undo_last_move)
+
+        # 라이트룸 별점(RAW 옆 .xmp): 베스트컷 별점 + C컷 거부
+        self._xmp_rating_spin = QSpinBox()
+        self._xmp_rating_spin.setRange(RATING_MIN, RATING_MAX)
+        self._xmp_rating_spin.setSuffix(" ★")
+        self._xmp_rating_spin.setValue(
+            int(load_float(self._settings, XMP_RATING_SETTINGS_KEY, 3, RATING_MIN, RATING_MAX))
+        )
+        self._xmp_rating_spin.valueChanged.connect(
+            lambda value: save_float(self._settings, XMP_RATING_SETTINGS_KEY, value)
+        )
+        self._xmp_button = compact(QPushButton("별점 쓰기"))
+        self._xmp_button.setToolTip(_XMP_TOOLTIP)
+        self._xmp_button.clicked.connect(self._run_xmp)
 
         self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
@@ -798,10 +855,19 @@ class BestCutTab(QWidget):
         badcut_row = QHBoxLayout()
         badcut_row.addWidget(self._badcut_label, stretch=1)
         badcut_row.addWidget(badcut_button)
+        xmp_row = QHBoxLayout()
+        xmp_row.addWidget(QLabel("베스트컷"))
+        xmp_row.addWidget(self._xmp_rating_spin)
+        xmp_row.addWidget(QLabel("· C컷 거부"))
+        xmp_row.addStretch()
+        xmp_row.addWidget(self._xmp_button)
         output_form = QFormLayout()
         output_form.addRow("베스트컷 폴더:", output_row)
         output_form.addRow("방식:", radio_row)
         output_form.addRow("C컷 폴더:", badcut_row)
+        xmp_label = QLabel("라이트룸 ⓘ:")
+        xmp_label.setToolTip(_XMP_TOOLTIP)
+        output_form.addRow(xmp_label, xmp_row)
         output_group = QGroupBox("출력")
         output_group.setLayout(output_form)
 
@@ -1081,6 +1147,7 @@ class BestCutTab(QWidget):
         self._badcut_apply_button.setEnabled(bad > 0 and self._badcut_dir is not None and not self._busy)
         fit_text(self._apply_button)
         fit_text(self._badcut_apply_button, padding=24)
+        self._xmp_button.setEnabled(bool(rows) and not self._busy)
 
     def _update_choice_buttons(self) -> None:
         index = self._selected_table_row()
@@ -1369,19 +1436,28 @@ class BestCutTab(QWidget):
         self._last_move = _LastMove(
             kind, results, log_dir, photos_before, self._photos, choices_before
         )
+        self._last_xmp = None  # 되돌리기는 가장 최근 작업 하나만
         self._update_undo_button()
 
     def _update_undo_button(self) -> None:
         move = self._last_move
-        self._undo_move_button.setVisible(move is not None)
-        self._undo_move_button.setEnabled(move is not None and not self._busy)
+        available = move is not None or self._last_xmp is not None
+        self._undo_move_button.setVisible(available)
+        self._undo_move_button.setEnabled(available and not self._busy)
         if move is not None:
             label = "C컷" if move.kind == "badcut" else "베스트컷"
             count = sum(1 for r in move.results if r.action == "move")
             self._undo_move_button.setText(f"↶ {label} 되돌리기 ({count}장)")
             fit_text(self._undo_move_button, padding=24)
+        elif self._last_xmp is not None:
+            count = sum(1 for r in self._last_xmp[0] if r.action != ACTION_SKIPPED)
+            self._undo_move_button.setText(f"↶ 별점 되돌리기 ({count}개)")
+            fit_text(self._undo_move_button, padding=24)
 
     def _undo_last_move(self) -> None:
+        if self._last_xmp is not None and self._last_move is None and not self._busy:
+            self._undo_last_xmp()
+            return
         move = self._last_move
         if self._busy or move is None:
             return
@@ -1445,6 +1521,88 @@ class BestCutTab(QWidget):
         self._last_move = None
         self._update_undo_button()
         self._on_error(message)
+
+    # --- 라이트룸 별점(.xmp) ------------------------------------------------------------
+    def _run_xmp(self) -> None:
+        if self._busy or not self._rows:
+            return
+        rating = self._xmp_rating_spin.value()
+        best = [r.path for r in self._rows if r.selected]
+        rejects = [r.path for r in self._rows if _is_badcut(r)]
+        plan = plan_xmp(best, rejects)
+        with_raw = [row for row in plan if row.xmp is not None]
+        if not with_raw:
+            QMessageBox.information(
+                self,
+                "라이트룸 별점",
+                "베스트컷·C컷 중 RAW가 있는 사진이 없습니다. 라이트룸은 RAW 옆의 .xmp만 읽어서 "
+                "JPG만 있는 사진에는 별점을 쓸 수 없습니다.",
+            )
+            return
+        best_count = sum(1 for row in with_raw if row.mark == "best")
+        reject_count = len(with_raw) - best_count
+        existing = sum(1 for row in with_raw if row.existing)
+        no_raw = len(plan) - len(with_raw)
+        lines = [f"베스트컷 {best_count}장에 {'★' * rating}, C컷 {reject_count}장에 거부 표시를 "
+                 "RAW 옆 .xmp에 씁니다(RAW·JPG 파일은 그대로)."]
+        lines.append(f"새로 만들기 {len(with_raw) - existing}개 · 기존 .xmp 고치기 {existing}개"
+                     "(별점·거부 칸만, 고치기 전 파일은 백업)")
+        if no_raw:
+            lines.append(f"RAW가 없어 건너뜀 {no_raw}장 (JPG만 있는 사진)")
+        confirm = QMessageBox.question(self, "라이트룸 별점 쓰기", "\n".join(lines) + "\n\n계속하시겠습니까?")
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._busy = True
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText("라이트룸 별점 쓰는 중...")
+        run_dir = default_run_dir(score_store.cache_dir().parent)
+        self._xmp_worker = XmpWorker(plan, rating, run_dir)
+        self._xmp_worker.finished_ok.connect(lambda results: self._on_xmp_done(results, run_dir))
+        self._xmp_worker.failed.connect(self._on_error)
+        self._xmp_worker.start()
+
+    def _on_xmp_done(self, results: list[XmpResult], run_dir: Path) -> None:
+        self._busy = False
+        self._preview_button.setEnabled(True)
+        created = sum(1 for r in results if r.action == ACTION_CREATED)
+        updated = sum(1 for r in results if r.action == ACTION_UPDATED)
+        skipped = [r for r in results if r.action == ACTION_SKIPPED]
+        if created or updated:
+            self._last_xmp = (results, run_dir)
+            self._last_move = None  # 되돌리기는 가장 최근 작업 하나만
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText(f"라이트룸 별점: 만듦 {created} · 고침 {updated} · 건너뜀 {len(skipped)}")
+        self._summary_text.setPlainText(
+            f"라이트룸 별점: .xmp 새로 만듦 {created}개 · 고침 {updated}개 · 건너뜀 {len(skipped)}장\n"
+            f"백업·처리 기록: {run_dir}\n"
+            "라이트룸에 이미 가져온 사진은 메타데이터 → 파일에서 메타데이터 읽기를 해야 반영됩니다.\n"
+            + self._summary_text.toPlainText()
+        )
+        unsafe = [r for r in skipped if r.plan.xmp is not None]
+        if unsafe:
+            lines = "\n".join(f"- {r.plan.xmp.name}: {r.reason}" for r in unsafe[:10])
+            QMessageBox.warning(self, "일부 .xmp는 건드리지 않음", f"{len(unsafe)}개는 그대로 두었습니다:\n{lines}")
+
+    def _undo_last_xmp(self) -> None:
+        results, run_dir = self._last_xmp
+        count = sum(1 for r in results if r.action != ACTION_SKIPPED)
+        confirm = QMessageBox.question(
+            self,
+            "별점 되돌리기",
+            f"방금 쓴 라이트룸 별점 {count}개를 되돌립니다: 새로 만든 .xmp는 지우고, 고친 .xmp는 "
+            f"백업({run_dir})으로 되돌립니다. 그 뒤로 내용이 바뀐 파일은 그대로 둡니다. 계속하시겠습니까?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        restored, skipped = undo_xmp(results)
+        self._last_xmp = None
+        self._update_undo_button()
+        self._status_label.setText(f"별점 {restored}개를 되돌렸습니다")
+        if skipped:
+            lines = "\n".join(f"- {path.name}: {why}" for path, why in skipped[:10])
+            QMessageBox.warning(self, "일부는 되돌리지 못함", f"{len(skipped)}개는 그대로 두었습니다:\n{lines}")
 
     def _on_gap_changed(self, value: float) -> None:
         save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
