@@ -82,6 +82,7 @@ from gui_settings import (
     save_float,
     save_folder,
 )
+from gui_compare_view import STATE_FLAGGED, STATE_KEPT, STATE_NONE, CompareDialog
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import choice_store
 import score_store
@@ -192,6 +193,16 @@ def _is_badcut(row: ReportRow) -> bool:
 # 스핀박스 화살표를 누르고 있으면 값이 연달아 바뀌므로, 마지막 변경 후 이만큼 조용하면
 # 그때 한 번만 다시 묶는다.
 REGROUP_DELAY_MS = 300
+
+
+def _compare_state(row: ReportRow) -> tuple[str, str]:
+    """나란히 비교 창의 칸 제목 오른쪽 글자와 색."""
+    manual = " (직접)" if row.manual_choice is not None else ""
+    if row.selected:
+        return "✓ 남김" + manual, STATE_KEPT
+    if _is_badcut(row):
+        return f"C컷: {row.badcut_reason}", STATE_FLAGGED
+    return "빠짐" + manual, STATE_NONE
 
 
 def _describe_choice(row: ReportRow) -> str:
@@ -458,6 +469,9 @@ class BestCutTab(QWidget):
         self._auto_rows: list[ReportRow] | None = None
         self._choices: dict[Path, bool] = {}
         self._viewer: PhotoViewerDialog | None = None
+        self._compare: CompareDialog | None = None
+        # 나란히 비교 창 아래 줄에 쓰는 경로 → (장면 안 선명도 순위, 장면 사진 수)
+        self._ranks_by_path: dict[Path, tuple[int, int]] = {}
         self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
@@ -686,6 +700,12 @@ class BestCutTab(QWidget):
             "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
         )
         self._view_button.clicked.connect(self._open_viewer_for_selected)
+        self._compare_button = compact(QPushButton("나란히 비교"))
+        self._compare_button.setToolTip(
+            "<p>고른 사진과 같은 장면의 컷을 2~4장 나란히 놓고 비교합니다. 확대·이동이 모든 "
+            "칸에 함께 적용돼, 같은 자리(눈·초점)를 같은 배율로 볼 수 있습니다. (C)</p>"
+        )
+        self._compare_button.clicked.connect(self._open_compare_for_selected)
         self._toggle_button = compact(QPushButton("선택에 넣기"))
         self._toggle_button.setToolTip(
             "<p>표에서 고른 사진을 선택에 넣거나 뺍니다. 장면마다 자동으로 1장을 고르지만, "
@@ -701,6 +721,7 @@ class BestCutTab(QWidget):
         self._gallery.photo_activated.connect(self._open_viewer)
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
+        self._gallery.compare_requested.connect(self._open_compare)
         # 표에서도 크게 보기 창과 같은 단축키로 고른다
         for key, action in (
             ("Space", self._toggle_selected_row),
@@ -708,6 +729,7 @@ class BestCutTab(QWidget):
             ("X", lambda: self._choose_selected_row(False)),
             ("Return", self._open_viewer_for_selected),
             ("Enter", self._open_viewer_for_selected),
+            ("C", self._open_compare_for_selected),
         ):
             QShortcut(QKeySequence(key), self._table, activated=action, context=Qt.ShortcutContext.WidgetShortcut)
         # 결과가 아직 없을 때 결과 자리에 띄우는 순서 안내
@@ -747,19 +769,22 @@ class BestCutTab(QWidget):
         else:
             self._gallery_button.setChecked(True)
 
+        self._shortcut_hint = QLabel("Space·P·X 고르기 · Enter 크게 · C 비교")
+        self._shortcut_hint.setToolTip(
+            "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교</p>"
+        )
         choice_button_row = QHBoxLayout()
         choice_button_row.addWidget(self._gallery_button)
         choice_button_row.addWidget(self._table_button)
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
+        choice_button_row.addWidget(self._compare_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._only_kept_checkbox)
         choice_button_row.addStretch()
-        choice_button_row.addWidget(
-            QLabel("Space 넣기/빼기 · P 넣기 · X 빼기 · 더블클릭/Enter 크게 보기")
-        )
+        choice_button_row.addWidget(self._shortcut_hint)
 
         # 위: 출력(왼쪽) · 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
         output_row = QHBoxLayout()
@@ -1021,8 +1046,13 @@ class BestCutTab(QWidget):
         if selected_row is not None and selected_row < len(rows):
             self._select_index(selected_row)
         self._update_choice_buttons()
+        self._ranks_by_path = {
+            r.path: (rank, count) for r, (rank, count, _f) in zip(rows, _sharpness_ranks(rows))
+        }
         if self._viewer is not None:
             self._viewer.update_rows(self._rows_for_paths(self._viewer_paths))
+        if self._compare is not None:
+            self._compare.update_rows(self._rows_for_paths(self._compare.paths))
 
     def _selected_table_row(self) -> int | None:
         """고른 사진의 결과 번호(self._rows 안 위치). 표를 정렬해도 같은 사진을 가리킨다."""
@@ -1056,6 +1086,7 @@ class BestCutTab(QWidget):
         index = self._selected_table_row()
         row = self._rows[index] if self._rows and index is not None else None
         self._view_button.setEnabled(row is not None)
+        self._compare_button.setEnabled(row is not None)
         self._toggle_button.setEnabled(row is not None)
         self._toggle_button.setText("선택에서 빼기" if row is not None and row.selected else "선택에 넣기")
         scored = row is not None and not _is_unscored(row)
@@ -1156,12 +1187,53 @@ class BestCutTab(QWidget):
         self._viewer.show()
 
     def _close_viewer(self) -> None:
+        """크게 보기·나란히 비교 창을 닫는다(장면 묶음이 바뀌어 창의 컷 목록이 맞지 않을 때)."""
         if self._viewer is not None:
             self._viewer.close()
             self._viewer = None
+        if self._compare is not None:
+            self._compare.close()
+            self._compare = None
 
     def _on_viewer_closed(self) -> None:
         self._viewer = None
+
+    # --- 나란히 비교 ---------------------------------------------------------------
+    def _open_compare_for_selected(self) -> None:
+        index = self._selected_table_row()
+        if index is not None:
+            self._open_compare(index)
+
+    def _open_compare(self, index: int | None) -> None:
+        """고른 사진이 속한 장면의 컷을 나란히 놓고 비교하는 창을 연다(고른 컷부터)."""
+        if not self._rows or index is None:
+            return
+        clicked = self._rows[index]
+        scene_rows = [r for r in self._rows if r.scene_id == clicked.scene_id]
+        if self._compare is not None:
+            self._compare.close()
+        self._compare = CompareDialog(
+            scene_rows,
+            scene_rows.index(clicked),
+            state=_compare_state,
+            describe=self._describe_for_compare,
+            on_toggle=self._toggle,
+            on_choose=self._set_selected,
+            parent=self,
+        )
+        self._compare.finished.connect(self._on_compare_closed)
+        self._compare.show()
+
+    def _on_compare_closed(self) -> None:
+        self._compare = None
+
+    def _describe_for_compare(self, row: ReportRow) -> str:
+        if _is_unscored(row):
+            return "점수 계산 실패"
+        rank, count = self._ranks_by_path.get(row.path, (0, 0))
+        eyes = "눈뜸 없음" if row.face is None else f"눈뜸 {row.face:.2f}"
+        sharpness = f"선명도 장면 안 {rank}위/{count}" if rank else "선명도 —"
+        return f"종합 {row.total:.2f} · {sharpness} · {eyes}"
 
     # --- C컷 기준 ---------------------------------------------------------------
     def _on_sharpness_spin_changed(self, value: float) -> None:
