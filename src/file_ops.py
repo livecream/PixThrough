@@ -18,6 +18,9 @@ from typing import Callable
 from raw_preview import is_raw
 from report import ReportRow
 from scanner import RAW_EXTENSIONS
+import app_log
+
+log = app_log.get("files")
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,9 @@ def apply_selection(
                 if on_progress is not None:
                     on_progress(index, total)
 
+    log.info("%s: %d장 → %s (실패 %d)", "이동" if move else "복사", len(results), output_dir, len(errors))
+    for source, error in errors:
+        log.warning("%s 실패: %s — %s", "이동" if move else "복사", source, error)
     if errors:
         raise ApplyError(f"{len(errors)}개 파일 처리 실패 (누락 감지): {errors}", results)
 
@@ -265,4 +271,7 @@ def undo_moves(results: list[FileOpResult], log_dir: Path) -> UndoOutcome:
                 skipped.append((result.destination, problem))
             log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
     restored.reverse()
+    log.info("이동 되돌리기: %d장 복원, %d개 건너뜀 (기록 %s)", len(restored), len(skipped), log_path)
+    for path, why in skipped:
+        log.warning("되돌리지 못함: %s — %s", path, why)
     return UndoOutcome(restored=restored, skipped=skipped)

@@ -29,6 +29,9 @@ from PIL import Image
 
 from raw_preview import RAW_EXTENSIONS
 from scanner import SUPPORTED_EXTENSIONS  # HEIC를 열 수 있게 pillow_heif도 등록된다
+import app_log
+
+log = app_log.get("resize")
 
 LONG_EDGE_MIN = 100
 LONG_EDGE_MAX = 20_000
@@ -266,4 +269,9 @@ def apply_resize_plan(
             log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
             if on_progress is not None:
                 on_progress(index, len(todo))
+    failed = [r for r in results if r.error is not None]
+    log.info("사진 축소 %dpx·화질 %d: %d장 저장 → %s (실패 %d)", long_edge, quality,
+             len(results) - len(failed), output_dir, len(failed))
+    for result in failed:
+        log.warning("축소 실패: %s — %s", result.source, result.error)
     return results

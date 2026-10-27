@@ -21,6 +21,9 @@ import updater
 from gui_settings import make_settings
 from gui_worker import CancellableWorker
 from version import __version__
+import app_log
+
+log = app_log.get("update")
 
 SETTINGS_AUTO_CHECK = "update/check_on_startup"
 SETTINGS_SKIPPED = "update/skipped_version"
@@ -126,10 +129,12 @@ class UpdateController(QObject):
         self._check_worker = None
 
     def _on_check_failed(self, message: str) -> None:
+        log.warning("업데이트 확인 실패: %s", message)
         if not self._silent:
             QMessageBox.warning(self._window, "업데이트 확인", message)
 
     def _on_found(self, release: updater.ReleaseInfo) -> None:
+        log.info("업데이트 확인: 최신 v%s (지금 v%s)", release.version, __version__)
         silent = self._silent
         if not updater.is_newer(release.version, __version__):
             if not silent:
@@ -231,6 +236,7 @@ class UpdateController(QObject):
         self._download_worker = None
 
     def _on_download_failed(self, message: str) -> None:
+        log.warning("업데이트 받기 실패: %s", message)
         self._close_progress()
         QMessageBox.warning(self._window, "업데이트 실패", f"{message}\n\n지금 버전은 그대로입니다.")
 
@@ -254,8 +260,10 @@ class UpdateController(QObject):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
+            log.info("업데이트 교체 시작: v%s (%s)", self._release.version, staged)
             updater.launch_installer(self._target, staged, _log_path())
         except OSError as e:
+            log.exception("업데이트 교체를 시작하지 못함")
             QMessageBox.warning(self._window, "업데이트 실패", f"교체를 시작하지 못했습니다: {e}")
             return
         QApplication.quit()

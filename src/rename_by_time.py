@@ -35,6 +35,9 @@ from typing import Callable
 
 from file_ops import find_matching_raw
 from scanner import extract_metadata, scan_folder
+import app_log
+
+log = app_log.get("rename")
 
 DEFAULT_DIGITS = 5
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m4v"}
@@ -297,6 +300,7 @@ def apply_rename_plan(
             if on_progress is not None:
                 on_progress(index, total)
 
+    log.info("시간순 정렬 적용: %d개 파일", len(results))
     return results
 
 
@@ -380,4 +384,5 @@ def apply_merge_plan(
             if on_progress is not None:
                 on_progress(index, total)
 
+    log.info("시간순 정렬 적용: %d개 파일", len(results))
     return results

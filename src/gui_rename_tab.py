@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app_log
 from gui_dnd import extract_dropped_folders
 from gui_widgets import FolderList, PathLabel, compact, make_primary, small_button, status_row
 from gui_format import format_rename_apply_summary, format_rename_preview
@@ -34,6 +35,8 @@ from rename_by_time import (
     build_merge_plan,
     build_rename_plan,
 )
+
+log = app_log.get("rename")
 
 
 def _percent(done: int, total: int) -> int:
@@ -82,6 +85,7 @@ class PlanWorker(QThread):
                 )
             self.finished_ok.emit(rows)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -110,6 +114,7 @@ class ApplyWorker(QThread):
                 )
             self.finished_ok.emit(results)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 

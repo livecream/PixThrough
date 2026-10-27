@@ -23,6 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scanner import RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, extract_metadata
+import app_log
+
+log = app_log.get("organize")
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,7 @@ def write_operation_log(items: list, folder: Path, action: str) -> Path:
                 json.dumps({"timestamp": datetime.datetime.now().isoformat(), **entry}, ensure_ascii=False)
                 + "\n"
             )
+    log.info("폴더 정리 %s: %d개 (기록 %s)", action, len(items), log_path)
     return log_path
 
 

@@ -25,6 +25,7 @@ apply_manual_choices), 장면 간격을 바꿔 다시 묶어도 유지된다.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -61,6 +62,7 @@ from grouping import (
     group_by_time_gap,
     split_dissimilar,
 )
+import app_log
 from gui_dnd import extract_dropped_folders
 from gui_format import (
     bestcut_grouping_help,
@@ -125,6 +127,8 @@ from gui_widgets import (
     paint_row,
     status_row,
 )
+
+log = app_log.get("bestcut")
 
 
 _TOTAL_TOOLTIP = (
@@ -342,6 +346,7 @@ class PreviewWorker(CancellableWorker):
         except PreviewCancelled:
             self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
     def _generate_thumbnails(self, rows: list[ReportRow]) -> None:
@@ -454,6 +459,7 @@ class ApplyWorker(QThread):
         except ApplyError as e:
             self.failed.emit(str(e), e.results)
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e), [])
 
 
@@ -471,6 +477,7 @@ class XmpWorker(QThread):
         try:
             self.finished_ok.emit(write_xmp(*self._args))
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -489,6 +496,7 @@ class UndoWorker(QThread):
         try:
             self.finished_ok.emit(undo_moves(self._results, self._log_dir))
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -1065,6 +1073,16 @@ class BestCutTab(QWidget):
             thumbnail_cache=self._thumbnail_cache,
             hash_cache=self._hash_cache,
         )
+        grouping = self._current_grouping()
+        log.info(
+            "미리보기 시작: 폴더 %d개 (%s), 하위 폴더 %s · 간격 %s초 · 나누기 %s · 남길 비율 %s%% · "
+            "C컷 기준 선명도 %s·눈뜸 %s",
+            len(self._input_dirs), ", ".join(str(d) for d in self._input_dirs),
+            "포함" if self._inputs.recursive() else "제외", grouping.gap_seconds,
+            grouping.split_distance if grouping.split_distance is not None else "끔",
+            grouping.keep_percent, grouping.thresholds.min_sharpness, grouping.thresholds.min_eyes_open,
+        )
+        self._preview_started = time.monotonic()
         self._preview_worker.progress.connect(self._on_progress)
         self._preview_worker.status.connect(self._status_label.setText)
         self._preview_worker.finished_ok.connect(self._on_preview_done)
@@ -1083,6 +1101,11 @@ class BestCutTab(QWidget):
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
         self._status_label.setText("완료")
+        log.info(
+            "미리보기 끝: 사진 %d장, 장면 %d개, 점수 실패 %d장, %.1f초",
+            len(rows), len({r.scene_id for r in rows}), sum(1 for r in rows if _is_unscored(r)),
+            time.monotonic() - getattr(self, "_preview_started", time.monotonic()),
+        )
         score_store.save()
         self._forget_move_snapshot()
         self._table_rows = None  # 새 미리보기는 표를 처음부터(썸네일도 새로)
@@ -1972,6 +1995,7 @@ class BestCutTab(QWidget):
         # 그때까지 계산한 점수는 캐시에 이미 들어가 있다 — 저장해 두면 다음에 이어서 계산된다.
         score_store.save()
         self._status_label.setText("미리보기를 취소했습니다 (그때까지 계산한 점수는 저장됨)")
+        log.info("미리보기 취소")
         self._summary_text.setPlainText(
             "미리보기를 취소했습니다. 다시 미리보기를 누르면 이미 계산한 사진은 건너뛰고 이어서 "
             "계산합니다."

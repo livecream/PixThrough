@@ -30,6 +30,9 @@ from pathlib import Path
 
 from file_ops import find_matching_raw
 from raw_preview import is_raw
+import app_log
+
+log = app_log.get("xmp")
 
 RATING_MIN, RATING_MAX = 1, 5
 MARK_BEST = "best"
@@ -214,6 +217,9 @@ def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path) -> list[XmpRes
                 )
                 + "\n"
             )
+    counts = {action: sum(1 for r in results if r.action == action) for action in (ACTION_CREATED, ACTION_UPDATED, ACTION_SKIPPED)}
+    log.info("라이트룸 별점 %d★: 만듦 %d · 고침 %d · 건너뜀 %d (백업·기록 %s)", rating,
+             counts[ACTION_CREATED], counts[ACTION_UPDATED], counts[ACTION_SKIPPED], run_dir)
     return results
 
 
@@ -264,6 +270,7 @@ def undo_xmp(results: list[XmpResult]) -> tuple[int, list[tuple[Path, str]]]:
             restored += 1
         except OSError as e:
             skipped.append((xmp, str(e)))
+    log.info("라이트룸 별점 되돌리기: %d개 복원, %d개 건너뜀", restored, len(skipped))
     return restored, skipped
 
 

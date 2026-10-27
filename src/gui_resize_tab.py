@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app_log
 from gui_dnd import extract_dropped_folders
 from gui_format import format_resize_plan_summary, format_resize_result
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
@@ -58,6 +59,8 @@ QUALITY_START = 90
 
 _COLUMNS = ("파일", "원래 크기", "새 크기", "처리", "저장 이름")
 
+log = app_log.get("resize")
+
 
 def _size_text(size: tuple[int, int] | None) -> str:
     return f"{size[0]} × {size[1]}" if size else "—"
@@ -84,6 +87,7 @@ class PlanWorker(CancellableWorker):
         except PreviewCancelled:
             self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 
@@ -106,6 +110,7 @@ class SaveWorker(CancellableWorker):
         except PreviewCancelled:
             self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
 
 

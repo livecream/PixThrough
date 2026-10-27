@@ -13,8 +13,8 @@ import sys
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app_log
 from gui_file_organize_tab import FileOrganizeTab
 from gui_photo_selection_tab import PhotoSelectionTab
 from gui_settings import make_settings
@@ -155,7 +156,35 @@ class MainWindow(QMainWindow):
         self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
-        self.updates.build_menu(self.menuBar().addMenu("도움말"))
+        help_menu = self.menuBar().addMenu("도움말")
+        self.updates.build_menu(help_menu)
+        help_menu.addSeparator()
+        open_logs = QAction("로그 폴더 열기", self)
+        open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
+        open_logs.triggered.connect(self.open_log_folder)
+        help_menu.addAction(open_logs)
+
+    def open_log_folder(self) -> None:
+        folder = app_log.app_data_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.warning(self, "폴더 열기 실패", f"폴더를 열지 못했습니다: {folder}")
+
+    def show_unexpected_error(self, message: str) -> None:
+        """잡지 못한 오류를 짧게 알린다(자세한 내용은 기록 파일에)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("예상하지 못한 오류")
+        box.setText("예상하지 못한 오류가 났습니다. 하던 작업을 다시 시도해 보세요.")
+        box.setInformativeText(
+            f"{message}\n\n자세한 내용은 기록 파일({app_log.LOG_NAME})에 남았습니다. "
+            "문제가 계속되면 이 파일을 보내 주세요."
+        )
+        open_button = box.addButton("로그 폴더 열기", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is open_button:
+            self.open_log_folder()
 
     def _select_page(self, key: str) -> None:
         """메뉴에서 key 화면을 고른다(없는 이름이면 첫 화면)."""
@@ -205,9 +234,14 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    try:
+        app_log.setup(__version__)
+    except OSError:
+        pass  # 기록 파일을 못 만들어도(권한 등) 앱은 그대로 쓴다
     app = QApplication(sys.argv)
     install_korean_translation(app)
     window = MainWindow()
+    app_log.install_excepthooks(on_error=window.show_unexpected_error)
     window.show()
     window.updates.check_on_startup()
     sys.exit(app.exec())
