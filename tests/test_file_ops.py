@@ -246,3 +246,78 @@ def test_apply_selection_raises_when_output_dir_nested_inside_input_dir(tmp_path
     # The guard must fire before output_dir gets created, so no stray
     # "보정대기" directory is left inside the source folder.
     assert sorted(p.name for p in src_dir.iterdir()) == ["a.jpg"]
+
+
+def _move_one(tmp_path, with_raw=False):
+    src_dir = tmp_path / "in"
+    src_dir.mkdir(exist_ok=True)
+    photo = src_dir / "a.jpg"
+    photo.write_bytes(b"jpg")
+    if with_raw:
+        (src_dir / "a.CR3").write_bytes(b"raw")
+    out = tmp_path / "out"
+    results = apply_selection([_row(photo, True)], out, move=True)
+    return photo, out, results
+
+
+def test_undo_moves_puts_photo_and_raw_back(tmp_path):
+    from file_ops import undo_moves
+
+    photo, out, results = _move_one(tmp_path, with_raw=True)
+    assert not photo.exists()
+
+    outcome = undo_moves(results, out)
+
+    assert photo.read_bytes() == b"jpg"
+    assert (photo.parent / "a.CR3").read_bytes() == b"raw"
+    assert not (out / "a.jpg").exists() and not (out / "RAW" / "a.CR3").exists()
+    assert outcome.restored == results and outcome.skipped == []
+    log = next(out.glob("undo_log_*.jsonl")).read_text(encoding="utf-8")
+    assert "undo_move" in log
+
+
+def test_undo_moves_never_overwrites_a_new_file_at_the_original_place(tmp_path):
+    from file_ops import undo_moves
+
+    photo, out, results = _move_one(tmp_path, with_raw=True)
+    photo.write_bytes(b"new")
+
+    outcome = undo_moves(results, out)
+
+    assert photo.read_bytes() == b"new"
+    assert (out / "a.jpg").read_bytes() == b"jpg"
+    # 사진을 못 돌려놓았으면 RAW도 그대로 둔다
+    assert (out / "RAW" / "a.CR3").exists()
+    assert outcome.restored == [] and len(outcome.skipped) == 1
+
+
+def test_undo_moves_ignores_copies(tmp_path):
+    from file_ops import undo_moves
+
+    src_dir = tmp_path / "in"
+    src_dir.mkdir()
+    photo = src_dir / "a.jpg"
+    photo.write_bytes(b"jpg")
+    out = tmp_path / "out"
+    results = apply_selection([_row(photo, True)], out)
+
+    outcome = undo_moves(results, out)
+
+    assert (out / "a.jpg").exists() and photo.exists()
+    assert outcome.restored == []
+
+
+def test_apply_error_keeps_results_done_before_the_failure(tmp_path, monkeypatch):
+    import file_ops
+    from file_ops import ApplyError
+
+    src_dir = tmp_path / "in"
+    src_dir.mkdir()
+    good = src_dir / "a.jpg"
+    good.write_bytes(b"jpg")
+    missing = src_dir / "b.jpg"  # 없는 파일 → 실패
+
+    with pytest.raises(ApplyError) as info:
+        file_ops.apply_selection([_row(good, True), _row(missing, True)], tmp_path / "out", move=True)
+
+    assert [r.source for r in info.value.results] == [good]

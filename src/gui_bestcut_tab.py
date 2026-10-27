@@ -25,7 +25,7 @@ apply_manual_choices), 장면 간격을 바꿔 다시 묶어도 유지된다.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from file_ops import FileOpResult, apply_selection
+from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, undo_moves
 from grouping import (
     DEFAULT_SCENE_GAP_SECONDS,
     distances_to_previous,
@@ -83,6 +83,7 @@ from gui_settings import (
     save_folder,
 )
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
+import choice_store
 import score_store
 from gui_worker import CancellableWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
@@ -372,7 +373,8 @@ VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 class ApplyWorker(QThread):
     progress = Signal(int, int)
     finished_ok = Signal(list, object)  # list[FileOpResult], 판정 리포트 경로
-    failed = Signal(str)
+    # 오류 메시지와, 실패 전에 이미 끝낸 파일 작업(이동이었다면 되돌릴 수 있게)
+    failed = Signal(str, list)
 
     def __init__(
         self, rows: list[ReportRow], output_dir: Path, move: bool, kind: str = "bestcut"
@@ -395,8 +397,42 @@ class ApplyWorker(QThread):
             # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.
             report_path = write_apply_report(self._rows, self._output_dir, self._kind)
             self.finished_ok.emit(results, report_path)
+        except ApplyError as e:
+            self.failed.emit(str(e), e.results)
+        except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            self.failed.emit(str(e), [])
+
+
+class UndoWorker(QThread):
+    """방금 옮긴 사진을 원래 폴더로 되돌린다(다른 드라이브면 복사라 오래 걸릴 수 있어 스레드로)."""
+
+    finished_ok = Signal(object)  # UndoOutcome
+    failed = Signal(str)
+
+    def __init__(self, results: list[FileOpResult], log_dir: Path) -> None:
+        super().__init__()
+        self._results = results
+        self._log_dir = log_dir
+
+    def run(self) -> None:
+        try:
+            self.finished_ok.emit(undo_moves(self._results, self._log_dir))
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             self.failed.emit(str(e))
+
+
+@dataclass
+class _LastMove:
+    """되돌릴 수 있는 마지막 이동(앱을 끄면 잊는다 — 폴더 정리의 실행 취소와 같게)."""
+
+    kind: str  # "badcut" | "bestcut"
+    results: list[FileOpResult]
+    log_dir: Path
+    # 옮기기 직전·직후의 미리보기 사진 목록과 직접 고른 것. 그 뒤로 새로 미리보기하지
+    # 않았으면 되돌린 사진을 다시 넣어 바로 다시 묶는다.
+    photos_before: list[PhotoMetadata] | None
+    photos_after: list[PhotoMetadata] | None
+    choices_before: dict[Path, bool]
 
 
 class BestCutTab(QWidget):
@@ -432,6 +468,8 @@ class BestCutTab(QWidget):
         self._preview_worker: PreviewWorker | None = None
         self._apply_worker: ApplyWorker | None = None
         self._badcut_worker: ApplyWorker | None = None
+        self._undo_worker: UndoWorker | None = None
+        self._last_move: _LastMove | None = None
         self._busy = False
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔/스코어링한 파일은 다시 처리하지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 계산됨.
@@ -486,6 +524,15 @@ class BestCutTab(QWidget):
         self._copy_radio.setChecked(True)
         self._move_radio = QRadioButton("이동")
         self._move_radio.toggled.connect(lambda _on: self._update_apply_buttons())
+
+        self._undo_move_button = compact(QPushButton("↶ 방금 이동 되돌리기"))
+        self._undo_move_button.setToolTip(
+            "<p>방금 옮긴 C컷(또는 베스트컷 이동)을 원래 폴더로 되돌립니다(같이 옮긴 RAW 포함). "
+            "원래 자리에 같은 이름의 파일이 새로 생겼으면 그 사진은 덮어쓰지 않고 둡니다.</p>"
+            "<p>마지막 이동 한 번만, 앱을 끄기 전까지 되돌릴 수 있습니다.</p>"
+        )
+        self._undo_move_button.setVisible(False)
+        self._undo_move_button.clicked.connect(self._undo_last_move)
 
         self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
@@ -784,6 +831,7 @@ class BestCutTab(QWidget):
         button_row.addWidget(self._cancel_preview_button)
         button_row.addSpacing(12)
         button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
+        button_row.addWidget(self._undo_move_button)
         button_row.addWidget(self._badcut_apply_button)
         button_row.addWidget(self._apply_button)
 
@@ -858,7 +906,13 @@ class BestCutTab(QWidget):
             save_folder(self._settings, BADCUT_DIR_SETTINGS_KEY, self._badcut_dir)
             self._update_apply_buttons()
 
+    def _forget_move_snapshot(self) -> None:
+        """미리보기가 바뀌면 되돌린 뒤 예전 사진 목록으로 다시 묶지 않게 한다(되돌리기는 그대로)."""
+        if self._last_move is not None:
+            self._last_move.photos_before = None
+
     def _invalidate_preview(self) -> None:
+        self._forget_move_snapshot()
         self._rows = None
         self._auto_rows = None
         self._photos = None
@@ -915,11 +969,17 @@ class BestCutTab(QWidget):
         self._cancel_preview_button.setEnabled(False)
         self._status_label.setText("완료")
         score_store.save()
+        self._forget_move_snapshot()
         self._photos = photos
         self._hashes = hashes
         self._distances = distances_to_previous(photos, hashes)
         self._preview_button.setEnabled(True)
+        # 지난번(앱을 끄기 전 포함)에 직접 고른 것을 불러온다. 이번 세션에서 고른 것이 우선.
+        restored = choice_store.restore(p.path for p in photos if p.path not in self._choices)
+        self._choices.update(restored)
         self._show_rows(rows, grouping)
+        if restored:
+            self._status_label.setText(f"완료 · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
         # 미리보기가 도는 사이에 묶는 기준을 바꿨으면, 끝난 뒤 새 기준으로 다시 묶는다.
         if grouping != self._current_grouping():
             self._regroup_timer.start()
@@ -1014,6 +1074,7 @@ class BestCutTab(QWidget):
             self._choices.pop(row.path, None)
         else:
             self._choices[row.path] = wanted
+        self._save_choices()
         self._refresh_selection()
 
     def _set_selected(self, row: ReportRow, wanted: bool) -> None:
@@ -1028,7 +1089,12 @@ class BestCutTab(QWidget):
 
     def _reset_choices(self) -> None:
         self._choices.clear()
+        self._save_choices()
         self._refresh_selection()
+
+    def _save_choices(self) -> None:
+        """직접 고른 것을 앱을 꺼도 남게 저장한다(지금 화면의 사진 기준, choice_store)."""
+        choice_store.sync([r.path for r in self._auto_rows or []], self._choices)
 
     def _rows_for_paths(self, paths: list[Path]) -> list[ReportRow]:
         by_path = {r.path: r for r in self._rows or []}
@@ -1176,13 +1242,14 @@ class BestCutTab(QWidget):
         move_rows = [replace(r, selected=_is_badcut(r)) for r in self._rows]
         self._busy = True
         self._update_apply_buttons()
+        self._update_undo_button()
         self._preview_button.setEnabled(False)
         self._progress_bar.setValue(0)
         self._status_label.setText("C컷 이동 중...")
         self._badcut_worker = ApplyWorker(move_rows, self._badcut_dir, move=True, kind="badcut")
         self._badcut_worker.progress.connect(self._on_progress)
         self._badcut_worker.finished_ok.connect(self._on_badcut_done)
-        self._badcut_worker.failed.connect(self._on_error)
+        self._badcut_worker.failed.connect(self._on_badcut_failed)
         self._badcut_worker.start()
 
     def _on_badcut_done(self, results: list[FileOpResult], report_path: Path) -> None:
@@ -1190,11 +1257,7 @@ class BestCutTab(QWidget):
         self._preview_button.setEnabled(True)
         moved = {r.source for r in results}
         # 옮긴 사진을 빼고 남은 사진으로 다시 묶는다(점수는 캐시라 즉시)
-        if self._photos is not None:
-            self._photos = [p for p in self._photos if p.path not in moved]
-        for path in moved:
-            self._choices.pop(path, None)
-        self._rows_grouping = None
+        self._remember_move("badcut", results, self._badcut_dir)
         self._regroup()
         self._status_label.setText(f"C컷 {len(moved)}장 이동 완료")
         if self._rows is not None:
@@ -1202,6 +1265,114 @@ class BestCutTab(QWidget):
                 f"C컷 {len(moved)}장 이동 완료 → {self._badcut_dir}\n판정 리포트: {report_path}\n"
                 + self._summary_text.toPlainText()
             )
+
+    def _on_badcut_failed(self, message: str, results: list[FileOpResult]) -> None:
+        # 일부만 옮기고 실패했어도 옮긴 것은 되돌릴 수 있게 기억하고, 남은 사진으로 다시 묶는다
+        self._remember_move("badcut", results, self._badcut_dir)
+        self._on_error(message)
+        self._regroup()
+
+    def _on_apply_failed(self, message: str, results: list[FileOpResult]) -> None:
+        self._remember_move("bestcut", results, self._output_dir)
+        self._on_error(message)
+
+    # --- 방금 이동 되돌리기 -------------------------------------------------------
+    def _remember_move(self, kind: str, results: list[FileOpResult], log_dir: Path | None) -> None:
+        """옮긴 사진을 미리보기에서 빼고, 되돌릴 수 있게 기억한다(이동이 아니면 아무것도 안 함)."""
+        moved = {r.source for r in results if r.action == "move"}
+        if not moved or log_dir is None:
+            return
+        photos_before = self._photos
+        choices_before = dict(self._choices)
+        if kind == "badcut":
+            if self._photos is not None:
+                self._photos = [p for p in self._photos if p.path not in moved]
+            for path in moved:
+                self._choices.pop(path, None)
+            choice_store.forget(moved)
+            self._rows_grouping = None
+        else:
+            # 옮긴 파일은 더 이상 입력 폴더에 없어, 간격을 바꿔 다시 묶을 수 없다.
+            self._photos = None
+        self._last_move = _LastMove(
+            kind, results, log_dir, photos_before, self._photos, choices_before
+        )
+        self._update_undo_button()
+
+    def _update_undo_button(self) -> None:
+        move = self._last_move
+        self._undo_move_button.setVisible(move is not None)
+        self._undo_move_button.setEnabled(move is not None and not self._busy)
+        if move is not None:
+            label = "C컷" if move.kind == "badcut" else "베스트컷"
+            count = sum(1 for r in move.results if r.action == "move")
+            self._undo_move_button.setText(f"↶ {label} 되돌리기 ({count}장)")
+            fit_text(self._undo_move_button, padding=24)
+
+    def _undo_last_move(self) -> None:
+        move = self._last_move
+        if self._busy or move is None:
+            return
+        label = "C컷" if move.kind == "badcut" else "베스트컷"
+        count = sum(1 for r in move.results if r.action == "move")
+        confirm = QMessageBox.question(
+            self,
+            "이동 되돌리기",
+            f"방금 옮긴 {label} {count}장(같이 옮긴 RAW 포함)을 원래 폴더로 되돌립니다.\n"
+            f"{move.log_dir} → 원래 폴더\n\n원래 자리에 같은 이름의 파일이 새로 생겼으면 그 "
+            "사진은 덮어쓰지 않고 그대로 둡니다. 계속하시겠습니까?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._busy = True
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._preview_button.setEnabled(False)
+        self._status_label.setText("원래 폴더로 되돌리는 중...")
+        self._undo_worker = UndoWorker(move.results, move.log_dir)
+        self._undo_worker.finished_ok.connect(self._on_undo_done)
+        self._undo_worker.failed.connect(self._on_undo_failed)
+        self._undo_worker.start()
+
+    def _on_undo_done(self, outcome: UndoOutcome) -> None:
+        move = self._last_move
+        self._last_move = None
+        self._busy = False
+        self._preview_button.setEnabled(True)
+        self._update_undo_button()
+        restored = {r.source for r in outcome.restored}
+        if move is not None and self._photos is move.photos_after and move.photos_before is not None:
+            # 옮긴 뒤로 새로 미리보기하지 않았으면, 되돌린 사진을 다시 넣어 바로 다시 묶는다.
+            moved = {r.source for r in move.results if r.action == "move"}
+            self._photos = [
+                p for p in move.photos_before if p.path not in moved or p.path in restored
+            ]
+            for path in restored:
+                if path in move.choices_before:
+                    self._choices[path] = move.choices_before[path]
+            self._rows_grouping = None
+            self._regroup()
+            self._save_choices()
+            note = ""
+        else:
+            note = " — 다시 미리보기하면 되돌린 사진도 함께 보입니다"
+        message = f"{len(restored)}장을 원래 폴더로 되돌렸습니다{note}"
+        self._status_label.setText(message)
+        self._update_apply_buttons()
+        if outcome.skipped:
+            lines = "\n".join(f"- {path.name}: {why}" for path, why in outcome.skipped[:10])
+            more = f"\n…외 {len(outcome.skipped) - 10}개" if len(outcome.skipped) > 10 else ""
+            QMessageBox.warning(
+                self,
+                "일부는 되돌리지 못함",
+                f"{len(outcome.skipped)}개 파일은 되돌리지 못하고 그대로 두었습니다:\n{lines}{more}",
+            )
+
+    def _on_undo_failed(self, message: str) -> None:
+        # 어디까지 되돌렸는지 알 수 없어 다시 시도하지 않게 잊는다(기록은 undo_log에 있음)
+        self._last_move = None
+        self._update_undo_button()
+        self._on_error(message)
 
     def _on_gap_changed(self, value: float) -> None:
         save_float(self._settings, SCENE_GAP_SETTINGS_KEY, value)
@@ -1465,23 +1636,24 @@ class BestCutTab(QWidget):
 
         self._busy = True
         self._update_apply_buttons()
+        self._update_undo_button()
         self._progress_bar.setValue(0)
 
         self._apply_worker = ApplyWorker(self._rows, self._output_dir, move)
         self._apply_worker.progress.connect(self._on_progress)
         self._apply_worker.finished_ok.connect(self._on_apply_done)
-        self._apply_worker.failed.connect(self._on_error)
+        self._apply_worker.failed.connect(self._on_apply_failed)
         self._apply_worker.start()
 
     def _on_apply_done(self, results: list[FileOpResult], report_path: Path) -> None:
         self._busy = False
         if self._move_radio.isChecked():
-            # 옮긴 파일은 더 이상 입력 폴더에 없어, 간격을 바꿔 다시 묶을 수 없다.
-            self._photos = None
+            self._remember_move("bestcut", results, self._output_dir)
         elif self._photos is not None and self._current_grouping() != self._rows_grouping:
             # 적용하는 사이에 묶는 기준을 바꿨으면 이제 다시 묶는다.
             self._regroup_timer.start()
         self._update_apply_buttons()
+        self._update_undo_button()
         self._open_output_button.setEnabled(True)
         self._summary_text.setPlainText(
             format_apply_summary(results, self._output_dir, report_path)
@@ -1528,4 +1700,5 @@ class BestCutTab(QWidget):
         self._busy = False
         self._preview_button.setEnabled(True)
         self._update_apply_buttons()
+        self._update_undo_button()
         QMessageBox.critical(self, "오류", message)

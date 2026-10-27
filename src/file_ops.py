@@ -29,6 +29,21 @@ class FileOpResult:
     action: str  # "copy" | "move"
 
 
+class ApplyError(RuntimeError):
+    """일부 파일 작업이 실패했다. results에는 그 전에 성공한 것이 들어 있어, 이동이었다면
+    이미 옮긴 파일을 되돌릴 수 있다(undo_moves)."""
+
+    def __init__(self, message: str, results: list[FileOpResult]) -> None:
+        super().__init__(message)
+        self.results = results
+
+
+@dataclass(frozen=True)
+class UndoOutcome:
+    restored: list[FileOpResult]  # 사진(과 RAW)을 원래 자리로 돌려놓은 것
+    skipped: list[tuple[Path, str]]  # 돌려놓지 못한 파일과 이유
+
+
 def _raw_candidates(directory: Path, stem: str, raw_exts_lower: set[str]) -> list[Path]:
     return sorted(
         p
@@ -193,6 +208,61 @@ def apply_selection(
                     on_progress(index, total)
 
     if errors:
-        raise RuntimeError(f"{len(errors)}개 파일 처리 실패 (누락 감지): {errors}")
+        raise ApplyError(f"{len(errors)}개 파일 처리 실패 (누락 감지): {errors}", results)
 
     return results
+
+
+def _move_back(moved_to: Path, original: Path) -> str | None:
+    """옮긴 파일을 원래 자리로 되돌린다. 못 하면 이유를 돌려준다(원래 자리에 다른 파일이
+    생겼으면 덮어쓰지 않는다)."""
+    if original.exists():
+        return "원래 자리에 같은 이름의 파일이 있어 덮어쓰지 않음"
+    if not moved_to.exists():
+        return "옮긴 파일을 찾을 수 없음(그 사이 옮겨졌거나 지워짐)"
+    try:
+        original.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(moved_to), str(original))
+    except OSError as e:
+        return str(e)
+    return None
+
+
+def undo_moves(results: list[FileOpResult], log_dir: Path) -> UndoOutcome:
+    """apply_selection(move=True)로 옮긴 사진(과 같이 옮긴 RAW)을 원래 폴더로 되돌린다.
+
+    복사(copy)한 것은 원본이 그대로 있어 대상이 아니다(복사본을 지우지 않는다). 되돌린
+    내역은 log_dir/undo_log_<타임스탬프>.jsonl에 남긴다. 사진을 못 되돌리면 그 RAW도
+    그대로 둔다(짝이 서로 다른 폴더로 갈라지지 않게).
+    """
+    restored: list[FileOpResult] = []
+    skipped: list[tuple[Path, str]] = []
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"undo_log_{datetime.datetime.now():%Y%m%d_%H%M%S}.jsonl"
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        for result in reversed(results):
+            if result.action != "move":
+                continue
+            entry = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "action": "undo_move",
+                "from": str(result.destination),
+                "to": str(result.source),
+            }
+            problem = _move_back(result.destination, result.source)
+            if problem is None and result.raw_source is not None and result.raw_destination is not None:
+                raw_problem = _move_back(result.raw_destination, result.raw_source)
+                entry["raw_from"] = str(result.raw_destination)
+                entry["raw_to"] = str(result.raw_source)
+                if raw_problem is not None:
+                    entry["raw_error"] = raw_problem
+                    skipped.append((result.raw_destination, raw_problem))
+            if problem is None:
+                restored.append(result)
+            else:
+                entry["error"] = problem
+                skipped.append((result.destination, problem))
+            log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    restored.reverse()
+    return UndoOutcome(restored=restored, skipped=skipped)
