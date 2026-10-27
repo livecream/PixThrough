@@ -10,6 +10,7 @@ from grouping import DEFAULT_SCENE_GAP_SECONDS
 from organize import DuplicateGroup, FolderSummary
 from rename_by_time import RenamePlanRow, RenameResult
 from report import MANUAL_ADDED, MANUAL_REMOVED, ReportRow
+from resize import ACTION_CONVERT, ACTION_COPY, ACTION_ERROR, ACTION_RESIZE, ResizePlanRow, ResizeResult
 from scoring import (
     FOCUS_GRID,
     FOCUS_LONG_SIDE,
@@ -296,4 +297,37 @@ def format_duplicate_report(groups: list[DuplicateGroup]) -> str:
         lines.append(f"보존: {group.keep}")
         for dup in group.duplicates:
             lines.append(f"  삭제 후보: {dup}")
+    return "\n".join(lines)
+
+
+def format_resize_plan_summary(rows: list[ResizePlanRow], skipped_raw: int, long_edge: int) -> str:
+    """사진 축소 미리보기 한 줄 요약."""
+    counts = {action: 0 for action in (ACTION_RESIZE, ACTION_CONVERT, ACTION_COPY, ACTION_ERROR)}
+    for row in rows:
+        counts[row.action] += 1
+    saved = len(rows) - counts[ACTION_ERROR]
+    parts = [f"사진 {len(rows)}장 중 {saved}장 저장 예정 (긴 변 {long_edge}px)"]
+    detail = [f"축소 {counts[ACTION_RESIZE]}"]
+    if counts[ACTION_COPY] or counts[ACTION_CONVERT]:
+        detail.append(f"이미 작아 그대로 {counts[ACTION_COPY] + counts[ACTION_CONVERT]}")
+    if counts[ACTION_ERROR]:
+        detail.append(f"열 수 없어 건너뜀 {counts[ACTION_ERROR]}")
+    if skipped_raw:
+        detail.append(f"RAW {skipped_raw}개 건너뜀")
+    return parts[0] + " · " + " · ".join(detail)
+
+
+def format_resize_result(
+    results: list[ResizeResult], output_dir: Path, source_bytes: int, saved_bytes: int
+) -> str:
+    """사진 축소 결과 요약(몇 장, 용량 변화, 실패)."""
+    ok = [r for r in results if r.error is None]
+    failed = [r for r in results if r.error is not None]
+    lines = [
+        f"{len(ok)}장 저장 → {output_dir}",
+        f"용량 {_format_bytes(source_bytes)} → {_format_bytes(saved_bytes)} · 처리 기록: resize_log_*.jsonl",
+    ]
+    if failed:
+        lines.append(f"실패 {len(failed)}장: " + ", ".join(r.source.name for r in failed[:5])
+                     + (" …" if len(failed) > 5 else ""))
     return "\n".join(lines)

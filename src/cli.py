@@ -1,5 +1,5 @@
 """CLI 진입점. `scan`(M1) + `group`(M2) + `score`(M3) + `select`(M4) + `report`(M5) +
-`apply`(M6) + `rename`(M9) + `badcut`(M10)."""
+`apply`(M6) + `rename`(M9) + `badcut`(M10) + `resize`(사진 축소)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from rename_by_time import (
     write_rename_report,
 )
 from report import build_report, write_report
+from resize import ACTION_ERROR, ACTION_LABELS, apply_resize_plan, build_resize_plan
 from scanner import scan_and_extract
 from scoring import score_photos
 from selector import select_best
@@ -172,6 +173,28 @@ def cmd_badcut(args: argparse.Namespace) -> None:
 
     op_results = apply_selection(rows, Path(args.output), move=True)
     print(f"이동 완료: {len(op_results)}장 → {args.output} (리포트: {args.report})")
+
+
+def cmd_resize(args: argparse.Namespace) -> None:
+    output = Path(args.output)
+    plan = build_resize_plan(Path(args.input), output, args.long_edge, recursive=args.recursive)
+    for row in plan.rows:
+        size = (
+            f"{row.original_size[0]}×{row.original_size[1]} → {row.new_size[0]}×{row.new_size[1]}"
+            if row.original_size and row.new_size
+            else row.error
+        )
+        print(f"{row.source} → {row.destination.name}: {ACTION_LABELS[row.action]} ({size})")
+    todo = sum(1 for r in plan.rows if r.action != ACTION_ERROR)
+    if not args.apply:
+        print(
+            f"[dry-run] {todo}장 저장 예정 → {output} (RAW {plan.skipped_raw}개 건너뜀)\n"
+            "실제로 저장하려면 --apply를 추가하세요."
+        )
+        return
+    results = apply_resize_plan(plan.rows, output, args.long_edge, args.quality)
+    failed = [r for r in results if r.error]
+    print(f"완료: {len(results) - len(failed)}장 저장 → {output}" + (f", 실패 {len(failed)}장" if failed else ""))
 
 
 def main() -> None:
@@ -356,6 +379,19 @@ def main() -> None:
         help="실제로 이동을 수행. 없으면 dry-run(리포트만 생성)으로 끝남",
     )
     p_badcut.set_defaults(func=cmd_badcut)
+
+    p_resize = sub.add_parser(
+        "resize", help="사진을 긴 변 기준 픽셀로 줄여 JPG로 새 폴더에 저장 (원본 그대로, RAW 제외)"
+    )
+    p_resize.add_argument("--input", required=True, help="축소할 사진 폴더")
+    p_resize.add_argument("--output", required=True, help="축소본을 저장할 폴더(입력 폴더와 겹치면 안 됨)")
+    p_resize.add_argument("--long-edge", type=int, required=True, dest="long_edge", help="긴 변 픽셀")
+    p_resize.add_argument("--quality", type=int, default=90, help="JPG 화질 1~100, 기본값 90")
+    p_resize.add_argument("--recursive", action="store_true", help="하위 폴더까지(같은 구조로 저장)")
+    p_resize.add_argument(
+        "--apply", action="store_true", help="실제로 저장. 없으면 dry-run(계획만 출력)으로 끝남"
+    )
+    p_resize.set_defaults(func=cmd_resize)
 
     args = parser.parse_args()
     args.func(args)

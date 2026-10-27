@@ -61,6 +61,8 @@ MENU = (
                  QStyle.StandardPixmap.SP_FileDialogDetailedView),
             Page("organize", "폴더 정리", "RAW·영상 분리, 날짜별 정리, 짝 안 맞는 파일·중복 파일·빈 폴더를 정리합니다.",
                  QStyle.StandardPixmap.SP_DirOpenIcon),
+            Page("resize", "사진 축소", "사진의 긴 변을 정한 픽셀로 줄여 JPG로 새 폴더에 저장합니다. 원본은 그대로 둡니다.",
+                 QStyle.StandardPixmap.SP_FileDialogContentsView),
         ),
     ),
     (

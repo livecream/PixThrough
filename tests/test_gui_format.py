@@ -314,3 +314,30 @@ def test_format_badcut_summary_counts_reasons_and_skips_manual_picks():
 
     assert format_badcut_summary(rows, BadCutThresholds(10.0, 0.3)) == "C컷 2장 (블러 2 · 눈감음 1)"
     assert format_badcut_summary(rows, BadCutThresholds(0.0, 0.0)) == ""
+
+
+def test_format_resize_plan_summary_counts_actions():
+    from gui_format import format_resize_plan_summary
+    from resize import ResizePlanRow
+
+    def row(action):
+        return ResizePlanRow(Path("a.jpg"), Path("out/a.jpg"), (10, 10), (10, 10), action)
+
+    rows = [row("resize"), row("resize"), row("copy"), row("convert"), row("error")]
+
+    assert format_resize_plan_summary(rows, 3, 2048) == (
+        "사진 5장 중 4장 저장 예정 (긴 변 2048px) · 축소 2 · 이미 작아 그대로 2 · "
+        "열 수 없어 건너뜀 1 · RAW 3개 건너뜀"
+    )
+
+
+def test_format_resize_result_reports_size_change_and_failures():
+    from gui_format import format_resize_result
+    from resize import ResizeResult
+
+    results = [ResizeResult(Path("a.jpg"), Path("/out/a.jpg"), "resize"),
+               ResizeResult(Path("b.jpg"), None, "resize", "broken")]
+
+    text = format_resize_result(results, Path("/out"), 10 * 1024 * 1024, 2 * 1024 * 1024)
+
+    assert "1장 저장" in text and "10.0MB → 2.0MB" in text and "실패 1장: b.jpg" in text
