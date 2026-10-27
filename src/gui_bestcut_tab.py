@@ -91,6 +91,8 @@ from image_hash import HASH_BITS, hashes_for
 from badcut import BadCutThresholds, badcut_reason
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
+from parallel import map_in_order
+from scoring import score_photos
 from thumbnails import make_thumbnail_jpeg
 from xmp_rating import (
     ACTION_CREATED,
@@ -312,6 +314,14 @@ class PreviewWorker(CancellableWorker):
             hashes = hashes_for(
                 [p.path for p in photos], cache=self._hash_cache, on_progress=on_hash_progress
             )
+
+            def on_score_progress(done: int, total: int) -> None:
+                self.check_cancel()
+                self.progress.emit(done, total)
+                self.status.emit(f"사진 채점 중... ({done}/{total}, {_percent(done, total)}%)")
+
+            # 먼저 사진 전체를 여러 장 동시에 채점해 둔다(장면별로 고를 때는 저장된 점수를 씀).
+            score_photos(photos, on_progress=on_score_progress, cache=self._score_cache)
             settings = self._selection_settings
             groups = _make_groups(photos, hashes, settings.gap_seconds, settings.split_distance)
 
@@ -337,18 +347,28 @@ class PreviewWorker(CancellableWorker):
     def _generate_thumbnails(self, rows: list[ReportRow]) -> None:
         if self._thumbnail_cache is None:
             return
+        todo: list[tuple[Path, tuple[float, int]]] = []
         for row in rows:
-            self.check_cancel()
             try:
                 stat = row.path.stat()
             except OSError:
                 continue
             key = (stat.st_mtime, stat.st_size)
             cached = self._thumbnail_cache.get(row.path)
-            if cached is not None and cached[:2] == key:
-                continue
-            # 갤러리용 큰 썸네일을 JPEG로 압축해 보관(표는 이것을 줄여 쓴다)
-            self._thumbnail_cache[row.path] = (*key, make_thumbnail_jpeg(row.path, THUMBNAIL_SIZE))
+            if cached is None or cached[:2] != key:
+                todo.append((row.path, key))
+
+        def on_progress(done: int, total: int) -> None:
+            self.check_cancel()
+            self.progress.emit(done, total)
+            self.status.emit(f"썸네일 만드는 중... ({done}/{total}, {_percent(done, total)}%)")
+
+        # 갤러리용 큰 썸네일을 JPEG로 압축해 보관(표는 이것을 줄여 쓴다). 여러 장 동시에
+        thumbnails = map_in_order(
+            lambda item: make_thumbnail_jpeg(item[0], THUMBNAIL_SIZE), todo, on_progress=on_progress
+        )
+        for (path, key), data in zip(todo, thumbnails):
+            self._thumbnail_cache[path] = (*key, data)
 
 
 def _is_unscored(row: ReportRow) -> bool:
@@ -512,6 +532,9 @@ class BestCutTab(QWidget):
         self._compare: CompareDialog | None = None
         # 나란히 비교 창 아래 줄에 쓰는 경로 → (장면 안 선명도 순위, 장면 사진 수)
         self._ranks_by_path: dict[Path, tuple[int, int]] = {}
+        # 표에 지금 채워진 결과(같은 사진·순서면 바뀐 줄만 다시 채우려고)와 그때의 나누기 기준
+        self._table_rows: list[ReportRow] | None = None
+        self._table_split: int | None = None
         self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
@@ -1010,6 +1033,7 @@ class BestCutTab(QWidget):
         self._close_viewer()
         self._open_output_button.setEnabled(False)
         self._table.setRowCount(0)
+        self._table_rows = None
         self._update_apply_buttons()
         self._gallery.set_scenes([])
         self._update_choice_buttons()
@@ -1061,6 +1085,7 @@ class BestCutTab(QWidget):
         self._status_label.setText("완료")
         score_store.save()
         self._forget_move_snapshot()
+        self._table_rows = None  # 새 미리보기는 표를 처음부터(썸네일도 새로)
         self._photos = photos
         self._hashes = hashes
         self._distances = distances_to_previous(photos, hashes)
@@ -1678,63 +1703,90 @@ class BestCutTab(QWidget):
         self._table.horizontalHeaderItem(2).setToolTip(help_text)
 
     def _populate_table(self, rows: list[ReportRow]) -> None:
-        sharpness_ranks = _sharpness_ranks(rows)
-        # 채우는 도중에 정렬이 켜져 있으면 setItem마다 줄이 재배치돼 칸이 뒤섞인다.
-        self._table.setSortingEnabled(False)
-        self._table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            thumb_item = QTableWidgetItem()
-            pixmap = self._thumbnail_pixmap(row.path)
-            if pixmap is not None:
-                thumb_item.setData(Qt.ItemDataRole.DecorationRole, pixmap)
-            self._table.setItem(i, 0, thumb_item)
-            name_item = _SortItem(row.path.name, i)  # 파일명 정렬은 촬영 순서와 같게
-            name_item.setData(_INDEX_ROLE, i)
-            self._table.setItem(i, 1, name_item)
-            self._table.setItem(i, 2, _SortItem(str(row.scene_id), i))  # 장면 = 원래 순서
-            self._table.setItem(i, 3, QTableWidgetItem(self._difference_text(row)))
-            badcut = _is_badcut(row)
-            if row.selected:
-                choice, order = "✓ 선택", 0
-            elif badcut:
-                choice, order = "C컷", 2
-            else:
-                choice, order = "제외", 1
-            if row.manual_choice is not None:
-                choice += " (직접)"
-            choice_item = _SortItem(choice, (order, i))
-            if badcut:
-                choice_item.setToolTip(f"C컷: {row.badcut_reason}")
-            self._table.setItem(i, 4, choice_item)
-            unscored = _is_unscored(row)
-            self._table.setItem(i, 5, _bar_item(f"{row.total:.2f}", None if unscored else row.total))
-            rank, count, fraction = sharpness_ranks[i]
-            # 보이는 것은 장면 안 순위, 정렬은 원래 값(C컷 기준 사진을 고를 때 쓰는 순서)
-            sharpness_item = _bar_item(
-                "–" if unscored else f"{rank}위 / {count}장",
-                None if unscored else fraction,
-                sort_key=None if unscored else row.sharpness,
-            )
-            region = format_sharpness_region(row.sharpness_region)
-            sharpness_item.setToolTip(f"선명도 원래 값 {row.sharpness:.1f}" + (f" ({region})" if region else ""))
-            self._table.setItem(i, 6, sharpness_item)
-            self._table.setItem(i, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
-            self._table.setItem(
-                i, 8, _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
-            )
-            self._table.setItem(i, 9, QTableWidgetItem(row.reason))
-            # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
-            if row.selected:
-                paint_row(self._table, i, KEPT_ROW, bold_column=4)
-            elif badcut:
-                paint_row(self._table, i, FLAGGED_ROW, bold_column=4)
-            else:
-                paint_row(self._table, i, SCENE_BAND if row.scene_id % 2 == 0 else None)
-        self._table.setSortingEnabled(True)
-        self._table.resizeRowsToContents()
+        split = self._rows_grouping.split_distance if self._rows_grouping else None
+        previous = self._table_rows
+        if (
+            previous is not None
+            and len(previous) == len(rows)
+            and self._table_split == split
+            and all(a.path == b.path for a, b in zip(previous, rows))
+        ):
+            # 같은 사진·같은 순서(넣기/빼기, C컷 기준 변경 등): 바뀐 줄만 다시 채운다 — 수천 장에서
+            # 표 전체를 다시 만들면 Space 한 번에 0.5초 넘게 걸렸다.
+            changed = [i for i, (a, b) in enumerate(zip(previous, rows)) if a != b]
+            if changed:
+                ranks = _sharpness_ranks(rows)
+                table_row_of = {self._index_at(t): t for t in range(self._table.rowCount())}
+                self._table.setSortingEnabled(False)
+                for i in changed:
+                    self._fill_table_row(table_row_of[i], i, rows[i], ranks[i])
+                self._table.setSortingEnabled(True)
+        else:
+            sharpness_ranks = _sharpness_ranks(rows)
+            # 채우는 도중에 정렬이 켜져 있으면 setItem마다 줄이 재배치돼 칸이 뒤섞인다.
+            self._table.setSortingEnabled(False)
+            self._table.setRowCount(len(rows))
+            for i, row in enumerate(rows):
+                self._fill_table_row(i, i, row, sharpness_ranks[i])
+            self._table.setSortingEnabled(True)
+            self._table.resizeRowsToContents()
+        self._table_rows = rows
+        self._table_split = split
         self._apply_row_filter()
         self._populate_gallery(rows)
         self._show_results()
+
+    def _fill_table_row(
+        self, table_row: int, i: int, row: ReportRow, rank_info: tuple[int, int, float]
+    ) -> None:
+        """표의 table_row 줄을 결과 i번째 사진(row)으로 채운다(정렬돼 있으면 둘이 다를 수 있음)."""
+        thumb_item = QTableWidgetItem()
+        pixmap = self._thumbnail_pixmap(row.path)
+        if pixmap is not None:
+            thumb_item.setData(Qt.ItemDataRole.DecorationRole, pixmap)
+        self._table.setItem(table_row, 0, thumb_item)
+        name_item = _SortItem(row.path.name, i)  # 파일명 정렬은 촬영 순서와 같게
+        name_item.setData(_INDEX_ROLE, i)
+        self._table.setItem(table_row, 1, name_item)
+        self._table.setItem(table_row, 2, _SortItem(str(row.scene_id), i))  # 장면 = 원래 순서
+        self._table.setItem(table_row, 3, QTableWidgetItem(self._difference_text(row)))
+        badcut = _is_badcut(row)
+        if row.selected:
+            choice, order = "✓ 선택", 0
+        elif badcut:
+            choice, order = "C컷", 2
+        else:
+            choice, order = "제외", 1
+        if row.manual_choice is not None:
+            choice += " (직접)"
+        choice_item = _SortItem(choice, (order, i))
+        if badcut:
+            choice_item.setToolTip(f"C컷: {row.badcut_reason}")
+        self._table.setItem(table_row, 4, choice_item)
+        unscored = _is_unscored(row)
+        self._table.setItem(table_row, 5, _bar_item(f"{row.total:.2f}", None if unscored else row.total))
+        rank, count, fraction = rank_info
+        # 보이는 것은 장면 안 순위, 정렬은 원래 값(C컷 기준 사진을 고를 때 쓰는 순서)
+        sharpness_item = _bar_item(
+            "–" if unscored else f"{rank}위 / {count}장",
+            None if unscored else fraction,
+            sort_key=None if unscored else row.sharpness,
+        )
+        region = format_sharpness_region(row.sharpness_region)
+        sharpness_item.setToolTip(f"선명도 원래 값 {row.sharpness:.1f}" + (f" ({region})" if region else ""))
+        self._table.setItem(table_row, 6, sharpness_item)
+        self._table.setItem(table_row, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
+        self._table.setItem(
+            table_row, 8, _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+        )
+        self._table.setItem(table_row, 9, QTableWidgetItem(row.reason))
+        # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
+        if row.selected:
+            paint_row(self._table, table_row, KEPT_ROW, bold_column=4)
+        elif badcut:
+            paint_row(self._table, table_row, FLAGGED_ROW, bold_column=4)
+        else:
+            paint_row(self._table, table_row, SCENE_BAND if row.scene_id % 2 == 0 else None)
 
     def _apply_row_filter(self) -> None:
         """'남기는 컷만 보기'면 남기지 않는 줄을 숨긴다(정렬로 줄이 바뀌어도 다시 맞춤)."""

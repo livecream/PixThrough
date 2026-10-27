@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python import vision as mp_vision
 
+from parallel import map_in_order
 from raw_preview import open_image
 from scanner import PhotoMetadata
 
@@ -74,8 +76,10 @@ _YUNET_URL = (
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
 )
 
-_landmarker: mp_vision.FaceLandmarker | None = None
-_face_detector: cv2.FaceDetectorYN | None = None
+# 얼굴 모델은 동시에 여러 장을 채점할 때(parallel) 스레드끼리 같이 쓰면 안 돼서(검출기는
+# 입력 크기를 바꿔 가며 쓰고, mediapipe도 스레드 안전하지 않음) 스레드마다 하나씩 만든다.
+_models = threading.local()
+_download_lock = threading.Lock()
 
 # YuNet이 얼굴로 인정하는 최소 확신도. 사용자와 정한 초기값(0.9: 얼굴 없는 사진에서
 # 오검출이 거의 없는 쪽)이며 test_photos 결과로 조정할 수 있다.
@@ -124,13 +128,21 @@ def _decode(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """
     with open_image(path) as img:  # RAW만 있으면 안에 든 미리보기 JPEG
         rgb_img = img.convert("RGB")
-        gray = np.array(rgb_img.convert("L"))
-        rgb = np.array(rgb_img)
+        gray = _to_array(rgb_img.convert("L"))
+        rgb = _to_array(rgb_img)
     return gray, rgb
 
 
+def _to_array(image) -> np.ndarray:
+    """PIL 이미지를 numpy 배열로(읽기 전용). np.array(image)와 값은 같지만 복사를 한 번 덜
+    해서, 2400만 화소 RGB 기준 ~1.1s → ~0.1s(최신 Pillow). 이 배열에 직접 쓰는 곳은 없다."""
+    return np.asarray(image)
+
+
 def _sharpness_from_gray(gray: np.ndarray) -> float:
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    # numpy .var()와 같은 값(상대 오차 1e-16 수준)이지만 2400만 화소에서 ~1.2s → ~0.04s
+    _mean, std = cv2.meanStdDev(cv2.Laplacian(gray, cv2.CV_64F))
+    return float(std[0][0] ** 2)
 
 
 def _downscale(gray: np.ndarray, long_side: int = FOCUS_LONG_SIDE) -> np.ndarray:
@@ -210,34 +222,43 @@ def exposure_score(path: Path) -> float:
 
 
 def _ensure_model(path: Path = _MODEL_PATH, url: str = _MODEL_URL) -> Path:
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(url, path)
+    """모델 파일이 없으면 받는다. 여러 스레드가 처음에 동시에 와도 한 번만, 다 받은 뒤에만
+    보이게(임시 파일 → 이름 바꾸기) 해서 반쯤 받은 파일을 읽지 않게 한다."""
+    if path.exists():
+        return path
+    with _download_lock:
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".download")
+            urllib.request.urlretrieve(url, tmp)
+            os.replace(tmp, path)
     return path
 
 
 def _get_face_detector(width: int, height: int) -> cv2.FaceDetectorYN:
-    global _face_detector
-    if _face_detector is None:
-        _face_detector = cv2.FaceDetectorYN.create(
+    detector = getattr(_models, "face_detector", None)
+    if detector is None:
+        detector = cv2.FaceDetectorYN.create(
             str(_ensure_model(_YUNET_PATH, _YUNET_URL)),
             "",
             (width, height),
             FACE_DETECTION_MIN_SCORE,
         )
-    _face_detector.setInputSize((width, height))
-    return _face_detector
+        _models.face_detector = detector
+    detector.setInputSize((width, height))
+    return detector
 
 
 def _get_landmarker() -> mp_vision.FaceLandmarker:
-    global _landmarker
-    if _landmarker is None:
+    landmarker = getattr(_models, "landmarker", None)
+    if landmarker is None:
         base_options = mp.tasks.BaseOptions(model_asset_path=str(_ensure_model()))
         options = mp_vision.FaceLandmarkerOptions(
             base_options=base_options, output_face_blendshapes=True, num_faces=5
         )
-        _landmarker = mp_vision.FaceLandmarker.create_from_options(options)
-    return _landmarker
+        landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+        _models.landmarker = landmarker
+    return landmarker
 
 
 def _eyes_open_from_scores(blink_left: float, blink_right: float) -> float:
@@ -384,6 +405,22 @@ def _stat_key(path: Path) -> tuple[float, int]:
     return stat.st_mtime, stat.st_size
 
 
+def _cached_score(
+    meta: PhotoMetadata, cache: dict[Path, tuple[float, int, PhotoScore]] | None
+) -> PhotoScore | None:
+    """파일이 그대로면 저장된 점수(없거나 바뀌었으면 None)."""
+    if cache is None:
+        return None
+    cached = cache.get(meta.path)
+    if cached is None:
+        return None
+    try:
+        key = _stat_key(meta.path)
+    except OSError:
+        return None
+    return cached[2] if cached[:2] == key else None
+
+
 def _score_photo_cached(
     meta: PhotoMetadata, cache: dict[Path, tuple[float, int, PhotoScore]] | None
 ) -> PhotoScore:
@@ -405,15 +442,34 @@ def score_photos(
     photos: list[PhotoMetadata],
     on_progress: Callable[[int, int], None] | None = None,
     cache: dict[Path, tuple[float, int, PhotoScore]] | None = None,
+    workers: int | None = None,
 ) -> list[PhotoScore]:
-    """사진 목록 각각의 품질 점수를 계산한다.
+    """사진 목록 각각의 품질 점수를 계산한다(입력 순서대로).
 
-    on_progress가 주어지면 사진 1장 처리할 때마다 (완료한 수, 전체 수)를 알려준다.
+    여러 장을 동시에 채점한다(workers, 기본은 parallel.default_workers()). 사진 한 장의
+    점수는 몇 장을 동시에 돌리든 같다. on_progress가 주어지면 사진 1장이 끝날 때마다
+    (완료한 수, 전체 수)를 알려준다.
     """
     total = len(photos)
-    results: list[PhotoScore] = []
-    for i, m in enumerate(photos, start=1):
-        results.append(_score_photo_cached(m, cache))
+    results: list[PhotoScore | None] = [None] * total
+    todo: list[int] = []
+    # 저장된 점수가 있는 사진은 바로 쓰고(장면마다 다시 부를 때 스레드를 띄우지 않게),
+    # 새로 계산할 사진만 여러 장 동시에 채점한다.
+    for i, meta in enumerate(photos):
+        cached = _cached_score(meta, cache)
+        if cached is None:
+            todo.append(i)
+        else:
+            results[i] = cached
+    done_before = total - len(todo)
+    if on_progress is not None and done_before:
+        on_progress(done_before, total)
+
+    def progress(done: int, _todo_total: int) -> None:
         if on_progress is not None:
-            on_progress(i, total)
-    return results
+            on_progress(done_before + done, total)
+
+    scored = map_in_order(lambda i: _score_photo_cached(photos[i], cache), todo, workers, progress)
+    for i, score in zip(todo, scored):
+        results[i] = score
+    return results  # type: ignore[return-value]
