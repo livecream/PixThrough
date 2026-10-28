@@ -29,6 +29,7 @@ from typing import Callable
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import app_log
+import choice_store
 from file_ops import FileOpResult, apply_selection
 from raw_preview import open_image
 from report import ReportRow
@@ -252,11 +253,15 @@ def parse_selection(text: str) -> ClientSelection:
 
 
 def match_selection(
-    selection: ClientSelection, folder: Path, recursive: bool = False
+    selection: ClientSelection,
+    folder: Path,
+    recursive: bool = False,
+    items: list[tuple[str, Path]] | None = None,
 ) -> tuple[list[MatchedPick], list[str]]:
     """고객이 고른 것을 원본 폴더 사진과 맞춘다. 경로(id)가 같으면 그대로, 아니면 확장자를 뺀
     파일 이름이 하나뿐일 때만 그 사진(둘 이상이면 못 찾음으로 — 잘못 복사하지 않게)."""
-    items = list_photos(folder, recursive)
+    if items is None:
+        items = list_photos(folder, recursive)
     by_id = {photo_id: path for photo_id, path in items}
     by_stem: dict[str, list[tuple[str, Path]]] = {}
     for photo_id, path in items:
@@ -277,6 +282,12 @@ def match_selection(
             seen.add(hit[0])
             matched.append(MatchedPick(hit[0], hit[1], selection.notes.get(wanted, "")))
     return matched, missing
+
+
+def record_client_picks(matched: list[MatchedPick], photos: list[Path]) -> None:
+    """고객이 고른 사진을 앱 데이터에 기억한다(베스트컷 화면에 "고객 선택"으로 표시). photos(그
+    폴더 사진 전부)의 예전 기록은 이번 결과로 바꾼다 — 고객이 다시 고르면 빠진 사진은 표시 해제."""
+    choice_store.client_picks.sync(photos, {pick.source: pick.note for pick in matched})
 
 
 def copy_selection(
