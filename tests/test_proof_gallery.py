@@ -140,3 +140,24 @@ def test_copy_selection_copies_photo_and_raw_and_writes_list(tmp_path):
     assert rows[1][0] == "a.jpg" and rows[1][2] == "밝게"
     with pytest.raises(ValueError):
         copy_selection(matched, src / "picked", src)
+
+
+def test_record_client_picks_replaces_previous_picks_for_the_folder(tmp_path, monkeypatch):
+    import choice_store
+    import score_store
+    from proof_gallery import list_photos, record_client_picks
+
+    monkeypatch.setattr(score_store, "cache_dir", lambda: tmp_path / "cache")
+    choice_store.clear_memory()
+    src = _photos(tmp_path / "shoot")
+    photos = [path for _, path in list_photos(src)]
+
+    matched, _ = match_selection(ClientSelection(ids=["a", "b"], notes={"a": "밝게"}), src)
+    record_client_picks(matched, photos)
+    choice_store.clear_memory()  # 앱을 껐다 켠 것처럼
+    assert choice_store.client_picks.restore(photos) == {src / "a.jpg": "밝게", src / "b.jpg": ""}
+
+    matched, _ = match_selection(ClientSelection(ids=["b"]), src)
+    record_client_picks(matched, photos)  # 고객이 다시 고르면 빠진 사진은 표시 해제
+    assert choice_store.client_picks.restore(photos) == {src / "b.jpg": ""}
+    choice_store.clear_memory()

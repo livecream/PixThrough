@@ -15,6 +15,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app_log
 from gui_dnd import extract_dropped_folders
 from gui_errors import overlap_warning, show_error
 from gui_navigation import NextStep, NextStepBar
@@ -67,8 +69,21 @@ from proof_gallery import (
     ProofResult,
     build_proof,
     copy_selection,
+    list_photos,
     match_selection,
     parse_selection,
+    record_client_picks,
+)
+from xmp_rating import (
+    ACTION_CREATED,
+    ACTION_SKIPPED,
+    ACTION_UPDATED,
+    LABEL_PRESETS,
+    XmpResult,
+    default_run_dir,
+    plan_xmp,
+    undo_xmp,
+    write_xmp,
 )
 
 INPUT_KEY = "proof/input_dir"
@@ -78,6 +93,7 @@ RECURSIVE_KEY = "proof/recursive"
 LONG_EDGE_KEY = "proof/long_edge"
 LIMIT_KEY = "proof/limit"
 WATERMARK_KEY = "proof/watermark"
+LABEL_KEY = "proof/xmp_label"
 
 _COLUMNS = ("고객이 고른 사진", "원본", "메모")
 
@@ -194,6 +210,29 @@ class ProofTab(QWidget):
         self._open_copy_button.clicked.connect(lambda: self._open_folder(self._copy_dir))
         self._copy_button = make_primary(QPushButton("복사"))
         self._copy_button.clicked.connect(self._run_copy)
+        # 라이트룸 색 라벨(고객 선택 표시) — 원본 RAW 옆 .xmp에, 사진 파일은 그대로
+        self._label_combo = QComboBox()
+        self._label_combo.setEditable(True)
+        self._label_combo.addItems(LABEL_PRESETS)
+        self._label_combo.setCurrentText(str(self._settings.value(LABEL_KEY, LABEL_PRESETS[0]) or LABEL_PRESETS[0]))
+        self._label_combo.setMinimumContentsLength(8)
+        self._label_combo.setToolTip(
+            "<p>고객이 고른 사진의 RAW 옆 .xmp에 이 색 라벨을 씁니다(별점은 그대로). 라이트룸은 라벨 "
+            "글자가 지금 쓰는 색상 레이블 세트 이름과 같아야 색으로 보여줍니다 — 영문 라이트룸은 "
+            "Green·Red 등, 한국어 라이트룸에서 색이 안 보이면 라이트룸의 메타데이터 › 색상 레이블 세트 › "
+            "편집에 나오는 이름을 그대로 적으세요.</p>"
+        )
+        self._label_combo.currentTextChanged.connect(lambda text: self._settings.setValue(LABEL_KEY, text.strip()))
+        self._label_button = compact(QPushButton("라벨 쓰기"))
+        self._label_button.clicked.connect(self._run_label)
+        self._undo_label_button = compact(QPushButton("↶ 라벨 되돌리기"))
+        self._undo_label_button.setToolTip(
+            "<p>방금 쓴 라벨을 되돌립니다: 새로 만든 .xmp는 지우고, 고친 .xmp는 백업으로. 그 뒤로 "
+            "라이트룸 등이 다시 쓴 파일은 그대로 둡니다.</p>"
+        )
+        self._undo_label_button.clicked.connect(self._undo_label)
+        self._last_label: list[XmpResult] | None = None
+        self._label_run_dir: Path | None = None
 
         import_form = QFormLayout()
         result_row = QHBoxLayout()
@@ -210,6 +249,13 @@ class ProofTab(QWidget):
         copy_row.addWidget(copy_note, stretch=1)
         copy_row.addWidget(self._copy_button)
         import_form.addRow(copy_row)
+        label_row = QHBoxLayout()
+        label_row.addWidget(QLabel("색 라벨"))
+        label_row.addWidget(self._label_combo)
+        label_row.addStretch(1)
+        label_row.addWidget(self._undo_label_button)
+        label_row.addWidget(self._label_button)
+        import_form.addRow("라이트룸:", label_row)
         import_group = QGroupBox("② 고객이 고른 사진 가져오기")
         import_group.setLayout(import_form)
 
@@ -394,8 +440,14 @@ class ProofTab(QWidget):
             return
         folder, recursive = self._input_dir, self._recursive_checkbox.isChecked()
         self._selection = selection
-        self._start("match", "원본과 맞추는 중...",
-                    lambda progress: match_selection(selection, folder, recursive))
+
+        def match(progress) -> tuple[list[MatchedPick], list[str]]:
+            items = list_photos(folder, recursive)
+            matched, missing = match_selection(selection, folder, recursive, items=items)
+            record_client_picks(matched, [path for _, path in items])  # 베스트컷 화면 "고객 선택" 표시
+            return matched, missing
+
+        self._start("match", "원본과 맞추는 중...", match)
 
     def _on_match_done(self, value: tuple[list[MatchedPick], list[str]]) -> None:
         self._matched, self._missing = value
@@ -459,6 +511,75 @@ class ProofTab(QWidget):
             folders = (self._copy_dir,)
             self._next_steps.set_steps([NextStep("resize", folders), NextStep("rename", folders)])
 
+    # --- 라이트룸 색 라벨 --------------------------------------------------------------
+    def _run_label(self) -> None:
+        if self.is_busy or not self._matched:
+            return
+        label = self._label_combo.currentText().strip()
+        if not label:
+            QMessageBox.warning(self, "라벨 이름 필요", "색 라벨 이름을 적어 주세요(예: Green).")
+            return
+        plan = plan_xmp([], [], [pick.source for pick in self._matched])
+        with_raw = [row for row in plan if row.xmp is not None]
+        if not with_raw:
+            QMessageBox.information(
+                self, "라이트룸 색 라벨",
+                "고객이 고른 사진 중 RAW가 있는 사진이 없습니다. 라이트룸은 RAW 옆의 .xmp만 읽어서 "
+                "JPG만 있는 사진에는 라벨을 쓸 수 없습니다.",
+            )
+            return
+        existing = sum(1 for row in with_raw if row.existing)
+        lines = [
+            f"고객이 고른 {len(with_raw)}장의 원본 RAW 옆 .xmp에 색 라벨 \"{label}\"을 씁니다"
+            "(별점·보정 기록과 RAW·JPG 파일은 그대로).",
+            f"새로 만들기 {len(with_raw) - existing}개 · 기존 .xmp 고치기 {existing}개(라벨 칸만, 고치기 전 파일은 백업)",
+        ]
+        if len(plan) > len(with_raw):
+            lines.append(f"RAW가 없어 건너뜀 {len(plan) - len(with_raw)}장 (JPG만 있는 사진)")
+        if QMessageBox.question(self, "라이트룸 색 라벨 쓰기", "\n".join(lines) + "\n\n계속하시겠습니까?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        run_dir = default_run_dir(app_log.app_data_dir())
+        self._label_run_dir = run_dir
+        self._start("label", "라이트룸 라벨 쓰는 중...", lambda progress: write_xmp(plan, 0, run_dir, label=label))
+
+    def _on_label_done(self, results: list[XmpResult]) -> None:
+        created = sum(1 for r in results if r.action == ACTION_CREATED)
+        updated = sum(1 for r in results if r.action == ACTION_UPDATED)
+        skipped = [r for r in results if r.action == ACTION_SKIPPED]
+        if created or updated:
+            self._last_label = results
+        self._status_label.setText(f"라이트룸 라벨: 만듦 {created} · 고침 {updated} · 건너뜀 {len(skipped)}")
+        self._summary.setPlainText(
+            f"라이트룸 색 라벨: .xmp 새로 만듦 {created}개 · 고침 {updated}개 · 건너뜀 {len(skipped)}장\n"
+            f"백업·처리 기록: {self._label_run_dir}\n"
+            "라이트룸에 이미 가져온 사진은 메타데이터 → 파일에서 메타데이터 읽기를 해야 반영됩니다."
+        )
+        unsafe = [r for r in skipped if r.plan.xmp is not None]
+        if unsafe:
+            listing = "\n".join(f"- {r.plan.xmp.name}: {r.reason}" for r in unsafe[:10])
+            QMessageBox.warning(self, "일부 .xmp는 건드리지 않음", f"{len(unsafe)}개는 그대로 두었습니다:\n{listing}")
+
+    def _undo_label(self) -> None:
+        if self.is_busy or not self._last_label:
+            return
+        results = self._last_label
+        count = sum(1 for r in results if r.action != ACTION_SKIPPED and (r.action == ACTION_CREATED or r.backup))
+        if QMessageBox.question(
+            self, "라벨 되돌리기",
+            f"방금 쓴 라이트룸 라벨 {count}개를 되돌립니다: 새로 만든 .xmp는 지우고, 고친 .xmp는 백업으로 "
+            "되돌립니다. 그 뒤로 내용이 바뀐 파일은 그대로 둡니다. 계속하시겠습니까?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        restored, skipped = undo_xmp(results)
+        self._last_label = None
+        text = f"라벨 {restored}개를 되돌렸습니다"
+        if skipped:
+            text += f" · {len(skipped)}개는 그 뒤로 바뀌어 그대로 둠"
+        self._status_label.setText(text)
+        self._summary.setPlainText(text)
+        self._refresh()
+
     # --- 공통 ---------------------------------------------------------------------
     def _start(self, task: str, status: str, fn: Callable) -> None:
         self._task = task
@@ -481,12 +602,15 @@ class ProofTab(QWidget):
         task = self._finish()
         if task == "build":
             self._on_build_done(value)
-        elif task == "match":
-            self._progress_bar.setMaximum(1)  # 맞추기는 진행률을 따로 알리지 않는다
+        if task in ("match", "label"):
+            self._progress_bar.setMaximum(1)  # 맞추기·라벨 쓰기는 진행률을 따로 알리지 않는다
             self._progress_bar.setValue(1)
+        if task == "match":
             self._on_match_done(value)
         elif task == "copy":
             self._on_copy_done(value)
+        elif task == "label":
+            self._on_label_done(value)
         self._refresh()
 
     def _on_progress(self, done: int, total: int) -> None:
@@ -534,6 +658,10 @@ class ProofTab(QWidget):
         self._copy_button.setText(f"복사 ({count}장)" if count else "복사")
         fit_text(self._copy_button)
         self._copy_button.setEnabled(bool(count) and not busy and self._copy_dir is not None)
+        self._label_button.setText(f"라벨 쓰기 ({len(self._matched)}장)" if self._matched else "라벨 쓰기")
+        self._label_button.setEnabled(bool(self._matched) and not busy)
+        self._undo_label_button.setVisible(bool(self._last_label))
+        self._undo_label_button.setEnabled(not busy)
         self._open_output_button.setEnabled(self._output_dir is not None)
         self._open_copy_button.setEnabled(self._copy_dir is not None)
         has_table = self._task != "match" and self._table.rowCount() > 0

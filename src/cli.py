@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import app_log
 from badcut import BadCutThresholds, build_badcut_rows
 from clock_sync import parse_offset, shift_photos, summarize
 from file_ops import apply_selection
@@ -27,6 +28,7 @@ from resize import ACTION_ERROR, ACTION_LABELS, apply_resize_plan, build_resize_
 from scanner import scan_and_extract
 from scoring import score_photos
 from selector import select_best
+from xmp_rating import ACTION_SKIPPED, default_run_dir, plan_xmp, write_xmp
 
 
 def _percent_arg(value: str) -> int:
@@ -267,6 +269,11 @@ def cmd_proof_import(args: argparse.Namespace) -> None:
         return
     results, report = copy_selection(matched, Path(args.output), folder)
     print(f"복사 완료: {len(results)}장 → {args.output} (목록: {report})")
+    if args.label:
+        run_dir = default_run_dir(app_log.app_data_dir())
+        written = write_xmp(plan_xmp([], [], [pick.source for pick in matched]), 0, run_dir, label=args.label)
+        done = sum(1 for r in written if r.action != ACTION_SKIPPED)
+        print(f"라이트룸 색 라벨 \"{args.label}\": {done}개 .xmp (RAW 없는 사진 건너뜀, 백업·기록: {run_dir})")
 
 
 def main() -> None:
@@ -520,6 +527,10 @@ def main() -> None:
     p_import.add_argument("--result", required=True, help="고객이 보낸 결과 파일(.json) 또는 이름 목록(.txt)")
     p_import.add_argument("--output", required=True, help="고른 사진을 복사할 폴더")
     p_import.add_argument("--recursive", action="store_true", help="하위 폴더까지")
+    p_import.add_argument(
+        "--label", default="",
+        help="--apply와 함께: 고객이 고른 사진의 RAW 옆 .xmp에 라이트룸 색 라벨(예: Green)도 씀",
+    )
     p_import.add_argument("--apply", action="store_true", help="실제로 복사. 없으면 dry-run(맞춘 결과만 출력)")
     p_import.set_defaults(func=cmd_proof_import)
 

@@ -8,6 +8,10 @@
 - 베스트컷 = 사용자가 정한 별점(xmp:Rating 1~5). 예전에 거부 표시(xmpDM:pick = -1)가
   있었으면 0(표시 없음)으로 되돌린다. C컷 = 거부: Lightroom Classic 13.2부터 쓰는
   xmpDM:pick = -1과, Bridge 등이 거부로 쓰는 xmp:Rating = -1을 함께 쓴다.
+- 고객 셀렉(사용자 결정): 고객이 고른 사진은 색 라벨(xmp:Label, 예: "Green")만 쓴다 — 별점과
+  겹치지 않아 "내가 고른 컷(별점)"과 "고객이 고른 컷(라벨)"을 따로 볼 수 있다. 라이트룸은 라벨
+  글자가 지금 쓰는 색상 레이블 세트 이름과 같아야 색으로 보여준다(한국어 라이트룸은 이름이
+  다를 수 있어 글자를 사용자가 정함).
 
 기존 .xmp는 XML로 다시 써서 모양을 바꾸지 않도록 글자 그대로 고친다(필요한 칸만 바꾸거나
 첫 rdf:Description에 넣음). 고친 결과가 XML로 읽히고 원하는 값이 들어갔는지 확인한 뒤에만
@@ -20,6 +24,7 @@ from __future__ import annotations
 import datetime
 import glob
 import hashlib
+import html
 import json
 import os
 import re
@@ -37,6 +42,8 @@ log = app_log.get("xmp")
 RATING_MIN, RATING_MAX = 1, 5
 MARK_BEST = "best"
 MARK_REJECT = "reject"
+MARK_LABEL = "label"
+LABEL_PRESETS = ("Green", "Red", "Yellow", "Blue", "Purple")  # 라이트룸 기본(영문) 색상 레이블
 
 ACTION_CREATED = "created"
 ACTION_UPDATED = "updated"
@@ -57,7 +64,7 @@ class XmpPlanRow:
     photo: Path  # 베스트컷 화면의 사진(JPG 또는 RAW만 있는 사진의 RAW)
     raw: Path | None  # 별점을 붙일 RAW(없으면 건너뜀)
     xmp: Path | None  # 쓸 .xmp 경로
-    mark: str  # MARK_BEST | MARK_REJECT
+    mark: str  # MARK_BEST | MARK_REJECT | MARK_LABEL
     existing: bool  # 이미 .xmp가 있음(고침)
 
 
@@ -78,10 +85,10 @@ def _existing_sidecar(raw: Path) -> Path | None:
     return None
 
 
-def plan_xmp(best: list[Path], rejects: list[Path]) -> list[XmpPlanRow]:
-    """베스트컷·C컷 사진마다 별점을 붙일 RAW와 .xmp 경로를 정한다(아직 쓰지 않음)."""
+def plan_xmp(best: list[Path], rejects: list[Path], labels: list[Path] = ()) -> list[XmpPlanRow]:
+    """베스트컷·C컷(·고객 선택 라벨) 사진마다 표시를 붙일 RAW와 .xmp 경로를 정한다(아직 쓰지 않음)."""
     rows = []
-    for mark, photos in ((MARK_BEST, best), (MARK_REJECT, rejects)):
+    for mark, photos in ((MARK_BEST, best), (MARK_REJECT, rejects), (MARK_LABEL, labels)):
         for photo in photos:
             raw = photo if is_raw(photo) else find_matching_raw(photo)
             if raw is None:
@@ -93,17 +100,23 @@ def plan_xmp(best: list[Path], rejects: list[Path]) -> list[XmpPlanRow]:
     return rows
 
 
-def _marks(mark: str, rating: int, current_pick: int | None) -> dict[tuple[str, str], int | None]:
+def _marks(
+    mark: str, rating: int, current_pick: int | None, label: str = ""
+) -> dict[tuple[str, str], int | str | None]:
     """(접두어, 이름) → 넣을 값. None이면 손대지 않는다."""
+    if mark == MARK_LABEL:
+        return {("xmp", "Label"): label}
     if mark == MARK_REJECT:
         return {("xmp", "Rating"): -1, ("xmpDM", "pick"): -1}
     # 베스트컷: 별점. 예전에 거부였으면 거부 표시를 지운다(0 = 표시 없음)
     return {("xmp", "Rating"): rating, ("xmpDM", "pick"): 0 if current_pick == -1 else None}
 
 
-def new_sidecar(values: dict[tuple[str, str], int | None]) -> str:
+def new_sidecar(values: dict[tuple[str, str], int | str | None]) -> str:
     attributes = "".join(
-        f'\n    {prefix}:{name}="{value}"' for (prefix, name), value in values.items() if value is not None
+        f'\n    {prefix}:{name}="{html.escape(str(value), quote=True)}"'
+        for (prefix, name), value in values.items()
+        if value is not None
     )
     return (
         '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="PixThrough">\n'
@@ -122,7 +135,7 @@ def _read_values(text: str) -> dict[tuple[str, str], str]:
     values: dict[tuple[str, str], str] = {}
     for description in root.iter(f"{{{NS_RDF}}}Description"):
         for prefix, namespace in _PREFIXES.items():
-            for name in ("Rating", "pick"):
+            for name in ("Rating", "pick", "Label"):
                 tag = f"{{{namespace}}}{name}"
                 if tag in description.attrib:
                     values[(prefix, name)] = description.attrib[tag]
@@ -140,7 +153,7 @@ def current_pick(text: str) -> int | None:
         return None
 
 
-def set_values(text: str, values: dict[tuple[str, str], int | None]) -> str:
+def set_values(text: str, values: dict[tuple[str, str], int | str | None]) -> str:
     """기존 .xmp 글자에서 해당 칸만 바꾸거나 첫 rdf:Description에 넣는다. 결과를 XML로 다시
     읽어 값이 맞는지 확인하고, 안전하게 고칠 수 없으면 UnsupportedXmp."""
     try:
@@ -156,15 +169,16 @@ def set_values(text: str, values: dict[tuple[str, str], int | None]) -> str:
             raise UnsupportedXmp(f"{prefix} 접두어가 다른 뜻({declared.group(2)})으로 쓰임")
         attribute = re.compile(rf'(\b{prefix}:{name}\s*=\s*)(["\'])(.*?)\2')
         element = re.compile(rf"(<{prefix}:{name}>)(.*?)(</{prefix}:{name}>)", re.DOTALL)
+        escaped = html.escape(str(value), quote=True)
         if attribute.search(text):
-            text = attribute.sub(lambda m: f'{m.group(1)}{m.group(2)}{value}{m.group(2)}', text)
+            text = attribute.sub(lambda m: f'{m.group(1)}{m.group(2)}{escaped}{m.group(2)}', text)
         elif element.search(text):
-            text = element.sub(lambda m: f"{m.group(1)}{value}{m.group(3)}", text)
+            text = element.sub(lambda m: f"{m.group(1)}{escaped}{m.group(3)}", text)
         else:
             start = re.search(r"<rdf:Description\b", text)
             if start is None:
                 raise UnsupportedXmp("rdf:Description이 없음")
-            insert = f' {prefix}:{name}="{value}"'
+            insert = f' {prefix}:{name}="{escaped}"'
             if declared is None:
                 insert = f' xmlns:{prefix}="{namespace}"' + insert
             text = text[: start.end()] + insert + text[start.end():]
@@ -188,18 +202,22 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path) -> list[XmpResult]:
+def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path, label: str = "") -> list[XmpResult]:
     """계획대로 .xmp를 만들거나 고친다. 고치기 전 파일은 run_dir/backup/에, 처리 기록은
     run_dir/xmp_log.jsonl에. 한 장이 실패해도 나머지는 계속한다."""
-    if not RATING_MIN <= rating <= RATING_MAX:
+    label_only = bool(rows) and all(row.mark == MARK_LABEL for row in rows)
+    if not label_only and not RATING_MIN <= rating <= RATING_MAX:
         raise ValueError(f"별점은 {RATING_MIN}~{RATING_MAX} 사이여야 합니다.")
+    label = label.strip()
+    if any(row.mark == MARK_LABEL for row in rows) and not label:
+        raise ValueError("색 라벨 이름을 정해 주세요.")
     run_dir = Path(run_dir)
     backup_dir = run_dir / "backup"
     backup_dir.mkdir(parents=True, exist_ok=True)
     results: list[XmpResult] = []
     with open(run_dir / "xmp_log.jsonl", "w", encoding="utf-8") as log_file:
         for index, row in enumerate(rows, start=1):
-            result = _write_one(row, rating, backup_dir, index)
+            result = _write_one(row, rating, backup_dir, index, label)
             results.append(result)
             log_file.write(
                 json.dumps(
@@ -208,7 +226,8 @@ def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path) -> list[XmpRes
                         "photo": str(row.photo),
                         "xmp": str(row.xmp) if row.xmp else None,
                         "mark": row.mark,
-                        "rating": rating if row.mark == MARK_BEST else -1,
+                        "rating": rating if row.mark == MARK_BEST else -1 if row.mark == MARK_REJECT else None,
+                        "label": label if row.mark == MARK_LABEL else None,
                         "action": result.action,
                         "reason": result.reason,
                         "backup": str(result.backup) if result.backup else None,
@@ -218,19 +237,20 @@ def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path) -> list[XmpRes
                 + "\n"
             )
     counts = {action: sum(1 for r in results if r.action == action) for action in (ACTION_CREATED, ACTION_UPDATED, ACTION_SKIPPED)}
-    log.info("라이트룸 별점 %d★: 만듦 %d · 고침 %d · 건너뜀 %d (백업·기록 %s)", rating,
+    what = f"라벨 {label}" if label_only else f"별점 {rating}★"
+    log.info("라이트룸 %s: 만듦 %d · 고침 %d · 건너뜀 %d (백업·기록 %s)", what,
              counts[ACTION_CREATED], counts[ACTION_UPDATED], counts[ACTION_SKIPPED], run_dir)
     return results
 
 
-def _write_one(row: XmpPlanRow, rating: int, backup_dir: Path, index: int) -> XmpResult:
+def _write_one(row: XmpPlanRow, rating: int, backup_dir: Path, index: int, label: str = "") -> XmpResult:
     if row.raw is None or row.xmp is None:
         return XmpResult(row, ACTION_SKIPPED, "RAW 없음(라이트룸은 JPG 옆 .xmp를 읽지 않음)")
     try:
         if row.xmp.exists():
             original = row.xmp.read_bytes()
             text = original.decode("utf-8")
-            new_text = set_values(text, _marks(row.mark, rating, current_pick(text)))
+            new_text = set_values(text, _marks(row.mark, rating, current_pick(text), label))
             data = new_text.encode("utf-8")
             if data == original:
                 return XmpResult(row, ACTION_UPDATED, "이미 같은 값", written_hash=_hash(data))
@@ -238,7 +258,7 @@ def _write_one(row: XmpPlanRow, rating: int, backup_dir: Path, index: int) -> Xm
             shutil.copy2(row.xmp, backup)
             _write_atomic(row.xmp, data)
             return XmpResult(row, ACTION_UPDATED, backup=backup, written_hash=_hash(data))
-        data = new_sidecar(_marks(row.mark, rating, None)).encode("utf-8")
+        data = new_sidecar(_marks(row.mark, rating, None, label)).encode("utf-8")
         _write_atomic(row.xmp, data)
         return XmpResult(row, ACTION_CREATED, written_hash=_hash(data))
     except UnsupportedXmp as e:
