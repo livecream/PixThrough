@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -31,8 +31,10 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_file_organize_tab import FileOrganizeTab
+from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
+from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
-from gui_settings import make_settings
+from gui_settings import clear_recent, make_settings, recent_folders
 from gui_update import UpdateController
 from version import __version__
 
@@ -155,16 +157,61 @@ class MainWindow(QMainWindow):
         central.setLayout(body)
         self.setCentralWidget(central)
 
+        self._current_page = "rename"
         self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
+        navigator().requested.connect(self._navigate)
+
         self.updates = UpdateController(self, is_busy=self.is_busy)
+        file_menu = self.menuBar().addMenu("파일")
+        self._recent_menu = file_menu.addMenu("최근 폴더")
+        self._recent_menu.setToolTipsVisible(True)
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
         help_menu = self.menuBar().addMenu("도움말")
+        welcome = QAction("처음 사용 안내…", self)
+        welcome.triggered.connect(self.show_welcome)
+        help_menu.addAction(welcome)
+        shortcuts = QAction("단축키…", self)
+        shortcuts.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        shortcuts.triggered.connect(self.show_shortcuts)
+        help_menu.addAction(shortcuts)
+        # ?는 글자 칸에서는 그대로 입력되고(칸이 단축키보다 먼저 받음) 나머지 자리에서 단축키 모음
+        QShortcut(QKeySequence("?"), self, activated=self.show_shortcuts)
+        help_menu.addSeparator()
         self.updates.build_menu(help_menu)
         help_menu.addSeparator()
         open_logs = QAction("로그 폴더 열기", self)
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def _fill_recent_menu(self) -> None:
+        """최근 폴더를 고르면 지금 화면의 입력 폴더로 넣는다."""
+        menu = self._recent_menu
+        menu.clear()
+        folders = recent_folders(self._settings)
+        if not folders:
+            empty = menu.addAction("(아직 없음)")
+            empty.setEnabled(False)
+            return
+        page = self._current_page
+        heading = menu.addAction(f"지금 화면({self._title.text()})에 넣기:")
+        heading.setEnabled(False)
+        for folder in folders:
+            action = menu.addAction(folder.name or str(folder))
+            action.setToolTip(str(folder))
+            action.triggered.connect(lambda _=False, f=folder: self._navigate(page, [f], replace=False))
+        menu.addSeparator()
+        menu.addAction("목록 지우기").triggered.connect(lambda: clear_recent(self._settings))
+
+    def show_shortcuts(self) -> None:
+        ShortcutsDialog(self).exec()
+
+    def show_welcome(self) -> None:
+        dialog = WelcomeDialog(self)
+        dialog.page_requested.connect(self._select_page)
+        dialog.exec()
+        remember_welcome(dialog.show_again.isChecked())
 
     def open_log_folder(self) -> None:
         folder = app_log.app_data_dir()
@@ -203,6 +250,19 @@ class MainWindow(QMainWindow):
                 return
         self._menu.setCurrentRow(first)
 
+    def _navigate(self, page: str, folders: list, replace: bool = True) -> None:
+        """다음 단계 버튼·최근 폴더: page 화면에 folders를 넣고 그 화면으로 간다(replace가 아니면
+        여러 폴더를 받는 화면에서는 기존 목록에 더한다)."""
+        if page in FileOrganizeTab.PAGES:
+            target = self._file_organize_tab.page_widget(page)
+        else:
+            target = self._photo_selection_tab
+        if target.is_busy:
+            QMessageBox.warning(self, "작업 진행 중", "넘어갈 화면에서 작업이 진행 중입니다. 끝난 뒤 다시 눌러 주세요.")
+            return
+        target.receive_folders(folders, replace=replace)
+        self._select_page(page)
+
     def _on_menu_changed(self, item: QListWidgetItem | None, _previous) -> None:
         data = item.data(_PAGE_ROLE) if item is not None else None
         if data is None:
@@ -213,6 +273,7 @@ class MainWindow(QMainWindow):
         self._title.setText(page.title)
         self._subtitle.setText(page.description)
         self._settings.setValue(PAGE_SETTINGS_KEY, page.key)
+        self._current_page = page.key
 
     def is_busy(self) -> bool:
         return self._file_organize_tab.is_busy or self._photo_selection_tab.is_busy
@@ -245,6 +306,8 @@ def main() -> None:
     window = MainWindow()
     app_log.install_excepthooks(on_error=window.show_unexpected_error)
     window.show()
+    if should_show_welcome():
+        window.show_welcome()
     window.updates.check_on_startup()
     sys.exit(app.exec())
 

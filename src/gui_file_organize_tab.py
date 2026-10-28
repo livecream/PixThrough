@@ -27,6 +27,9 @@ class FileOrganizeTab(QStackedWidget):
         self.addWidget(self._resize_tab)
         self.addWidget(self._proof_tab)
 
+    def page_widget(self, name: str):
+        return self.widget(self.PAGES.index(name))
+
     def show_page(self, name: str) -> None:
         self.setCurrentIndex(self.PAGES.index(name))
 

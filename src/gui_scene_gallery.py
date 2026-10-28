@@ -9,7 +9,7 @@
 기존 버튼(크게 보기·넣기/빼기)이 그대로 동작한다.
 
 조작: 클릭 = 고르기, 더블클릭/Enter = 크게 보기, Space = 넣기/빼기, P = 넣기,
-X = 빼기, ←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면.
+X = 빼기, ←/→ = 앞뒤 사진, ↑/↓ = 앞뒤 장면, Ctrl(⌘)+휠·Ctrl(⌘)+/− = 썸네일 크기(THUMB_MIN~THUMB_MAX).
 """
 
 from __future__ import annotations
@@ -23,9 +23,8 @@ from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QAbstractItemView, QListView, QStyledItemDelegate
 
-THUMB = 150  # 썸네일 칸 한 변
-CELL_W = THUMB + 16
-CELL_H = THUMB + 40  # 썸네일 + 파일 이름·점수 두 줄
+THUMB = 150  # 썸네일 칸 한 변(처음 값)
+THUMB_MIN, THUMB_MAX, THUMB_STEP = 100, 240, 20
 HEADER_H = 30
 MARGIN = 8
 _SCENE_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -51,18 +50,23 @@ class GalleryScene:
     edited: bool = False  # 사용자가 직접 나누거나 합친 장면
 
 
-def _per_row(width: int) -> int:
-    return max(1, (width - 2 * MARGIN) // CELL_W)
+def _cell_size(thumb: int) -> tuple[int, int]:
+    return thumb + 16, thumb + 40  # 썸네일 + 파일 이름·점수 두 줄
 
 
-def _cell_rects(rect: QRect, count: int) -> list[QRect]:
-    per_row = _per_row(rect.width())
+def _per_row(width: int, thumb: int) -> int:
+    return max(1, (width - 2 * MARGIN) // _cell_size(thumb)[0])
+
+
+def _cell_rects(rect: QRect, count: int, thumb: int) -> list[QRect]:
+    per_row = _per_row(rect.width(), thumb)
+    cell_w, cell_h = _cell_size(thumb)
     return [
         QRect(
-            rect.x() + MARGIN + (i % per_row) * CELL_W,
-            rect.y() + HEADER_H + (i // per_row) * CELL_H,
-            CELL_W,
-            CELL_H,
+            rect.x() + MARGIN + (i % per_row) * cell_w,
+            rect.y() + HEADER_H + (i // per_row) * cell_h,
+            cell_w,
+            cell_h,
         )
         for i in range(count)
     ]
@@ -75,9 +79,11 @@ class _SceneDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802 - Qt override signature
         scene: GalleryScene = index.data(_SCENE_ROLE)
-        width = max(CELL_W + 2 * MARGIN, self._view.viewport().width() - 2)
-        rows = math.ceil(len(scene.photos) / _per_row(width))
-        return QSize(width, HEADER_H + rows * CELL_H + MARGIN)
+        thumb = self._view.thumb
+        cell_w, cell_h = _cell_size(thumb)
+        width = max(cell_w + 2 * MARGIN, self._view.viewport().width() - 2)
+        rows = math.ceil(len(scene.photos) / _per_row(width, thumb))
+        return QSize(width, HEADER_H + rows * cell_h + MARGIN)
 
     def paint(self, painter: QPainter, option, index) -> None:
         scene: GalleryScene = index.data(_SCENE_ROLE)
@@ -105,14 +111,15 @@ class _SceneDelegate(QStyledItemDelegate):
         small = QFont(painter.font())
         small.setBold(False)
         small.setPointSizeF(max(8.0, small.pointSizeF() - 1))
-        for photo, cell in zip(scene.photos, _cell_rects(rect, len(scene.photos))):
+        for photo, cell in zip(scene.photos, _cell_rects(rect, len(scene.photos), self._view.thumb)):
             self._paint_photo(painter, photo, cell, small, palette)
         painter.restore()
 
     def _paint_photo(self, painter: QPainter, photo: GalleryPhoto, cell: QRect, font, palette) -> None:
-        box = QRect(cell.x() + 4, cell.y() + 4, THUMB, THUMB)
+        thumb = self._view.thumb
+        box = QRect(cell.x() + 4, cell.y() + 4, thumb, thumb)
         current = photo.row_index == self._view.current_row()
-        pixmap = self._view.pixmap_for(photo.path, THUMB)
+        pixmap = self._view.pixmap_for(photo.path, thumb)
 
         painter.setOpacity(1.0 if photo.selected else 0.55)
         if pixmap is not None and not pixmap.isNull():
@@ -158,11 +165,11 @@ class _SceneDelegate(QStyledItemDelegate):
         painter.setFont(font)
         painter.setPen(palette.text().color())
         metrics = painter.fontMetrics()
-        name_rect = QRect(cell.x() + 4, box.bottom() + 4, THUMB, metrics.height())
+        name_rect = QRect(cell.x() + 4, box.bottom() + 4, thumb, metrics.height())
         painter.drawText(
             name_rect,
             Qt.AlignmentFlag.AlignHCenter,
-            metrics.elidedText(photo.path.name, Qt.TextElideMode.ElideMiddle, THUMB),
+            metrics.elidedText(photo.path.name, Qt.TextElideMode.ElideMiddle, thumb),
         )
         detail = f"종합 {photo.total:.2f}" + ("  · 직접" if photo.manual else "")
         painter.setPen(palette.placeholderText().color())
@@ -177,6 +184,7 @@ class SceneGallery(QListView):
     compare_requested = Signal(int)  # C = 나란히 비교
     scene_edit_requested = Signal(int, str)  # S = 여기서 나누기("split"), M = 앞 장면과 합치기("join")
     context_requested = Signal(int, object)  # 오른쪽 클릭(사진 줄 번호, 화면 좌표)
+    thumb_changed = Signal(int)  # 썸네일 크기를 바꿈(Ctrl+휠·Ctrl +/−)
 
     def __init__(self, pixmap_for: Callable[[Path, int], QPixmap | None]) -> None:
         super().__init__()
@@ -194,6 +202,28 @@ class SceneGallery(QListView):
         self._scenes: list[GalleryScene] = []
         self._order: list[int] = []  # 화면 순서대로의 row_index
         self._current: int | None = None
+        self.thumb = THUMB
+
+    def set_thumb(self, size: int) -> None:
+        """썸네일 한 변(THUMB_MIN~THUMB_MAX). 고른 사진이 화면에 남도록 다시 배치한다."""
+        size = min(max(int(size), THUMB_MIN), THUMB_MAX)
+        if size == self.thumb:
+            return
+        self.thumb = size
+        self.doItemsLayout()
+        self.viewport().update()
+        if self._current is not None:
+            self._scroll_to_photo(self._current)
+        self.thumb_changed.emit(size)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self.set_thumb(self.thumb + (THUMB_STEP if delta > 0 else -THUMB_STEP))
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     # --- 데이터 ---------------------------------------------------------------
     def set_scenes(self, scenes: list[GalleryScene]) -> None:
@@ -234,7 +264,7 @@ class SceneGallery(QListView):
         if not index.isValid():
             return None
         scene: GalleryScene = index.data(_SCENE_ROLE)
-        for photo, cell in zip(scene.photos, _cell_rects(self.visualRect(index), len(scene.photos))):
+        for photo, cell in zip(scene.photos, _cell_rects(self.visualRect(index), len(scene.photos), self.thumb)):
             if cell.contains(pos):
                 return photo
         return None
@@ -245,7 +275,7 @@ class SceneGallery(QListView):
             return
         index = self._model.index(scene_index, 0)
         scene = self._scenes[scene_index]
-        cells = _cell_rects(self.visualRect(index), len(scene.photos))
+        cells = _cell_rects(self.visualRect(index), len(scene.photos), self.thumb)
         for photo, cell in zip(scene.photos, cells):
             if photo.row_index == row_index:
                 viewport = self.viewport().rect()
@@ -275,6 +305,11 @@ class SceneGallery(QListView):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         key = event.key()
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and key in (
+            Qt.Key.Key_Plus, Qt.Key.Key_Equal, Qt.Key.Key_Minus
+        ):
+            self.set_thumb(self.thumb + (-THUMB_STEP if key == Qt.Key.Key_Minus else THUMB_STEP))
+            return
         if not self._order:
             return super().keyPressEvent(event)
         if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):

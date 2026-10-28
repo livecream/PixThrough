@@ -214,7 +214,13 @@ def apply_selection(
     for source, error in errors:
         log.warning("%s 실패: %s — %s", "이동" if move else "복사", source, error)
     if errors:
-        raise ApplyError(f"{len(errors)}개 파일 처리 실패 (누락 감지): {errors}", results)
+        verb = "옮기지" if move else "복사하지"
+        details = "\n".join(f"{source.name}: {error}" for source, error in errors)
+        raise ApplyError(
+            f"{len(errors)}개 파일을 {verb} 못했습니다 (나머지 {len(results)}개는 완료, 기록: {log_path.name}).\n"
+            + details,
+            results,
+        )
 
     return results
 

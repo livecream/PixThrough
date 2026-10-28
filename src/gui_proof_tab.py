@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -34,21 +33,33 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import app_log
 from gui_dnd import extract_dropped_folders
-from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
+from gui_errors import overlap_warning, show_error
+from gui_navigation import NextStep, NextStepBar
+from gui_settings import (
+    load_bool,
+    load_float,
+    load_folder,
+    make_settings,
+    pick_directory,
+    save_bool,
+    save_float,
+    save_folder,
+)
 from gui_widgets import (
+    EtaProgressBar,
     FLAGGED_ROW,
     GuidePanel,
     PathLabel,
     SummaryLabel,
+    WarningLabel,
     compact,
     fit_text,
     make_primary,
     paint_row,
     status_row,
 )
-from gui_worker import CancellableWorker, PreviewCancelled
+from gui_worker import FunctionWorker
 from proof_gallery import (
     LONG_EDGE_START,
     ClientSelection,
@@ -70,32 +81,6 @@ WATERMARK_KEY = "proof/watermark"
 
 _COLUMNS = ("고객이 고른 사진", "원본", "메모")
 
-log = app_log.get("proof")
-
-
-class TaskWorker(CancellableWorker):
-    """fn(on_progress)를 작업 스레드에서 돌린다. 진행률 콜백에서 취소를 확인한다."""
-
-    progress = Signal(int, int)
-    finished_ok = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, fn: Callable[[Callable[[int, int], None]], object]) -> None:
-        super().__init__()
-        self._fn = fn
-
-    def run(self) -> None:
-        def on_progress(done: int, total: int) -> None:
-            self.progress.emit(done, total)
-            self.check_cancel()
-
-        try:
-            self.finished_ok.emit(self._fn(on_progress))
-        except PreviewCancelled:
-            self.cancelled.emit()
-        except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
-            log.exception("고객 셀렉 작업 실패")
-            self.failed.emit(str(e))
 
 
 def _folder_row(label: PathLabel, *buttons: QPushButton) -> QHBoxLayout:
@@ -113,7 +98,7 @@ class ProofTab(QWidget):
         self._input_dir: Path | None = load_folder(self._settings, INPUT_KEY)
         self._output_dir: Path | None = load_folder(self._settings, OUTPUT_KEY)
         self._copy_dir: Path | None = load_folder(self._settings, COPY_KEY)
-        self._worker: TaskWorker | None = None
+        self._worker: FunctionWorker | None = None
         self._task = ""  # 지금 도는 작업: "build" | "match" | "copy"
         self._made: ProofResult | None = None
         self._selection: ClientSelection | None = None
@@ -174,6 +159,8 @@ class ProofTab(QWidget):
 
         make_form = QFormLayout()
         make_form.addRow("저장 폴더:", _folder_row(self._output_label, output_button, self._open_output_button))
+        self._output_warning = WarningLabel()
+        make_form.addRow(self._output_warning)
         make_form.addRow("제목:", self._title_edit)
         size_row = QHBoxLayout()
         size_row.addWidget(self._long_edge_spin)
@@ -215,6 +202,8 @@ class ProofTab(QWidget):
         result_row.addStretch(1)
         import_form.addRow("고객 선택:", result_row)
         import_form.addRow("복사할 폴더:", _folder_row(self._copy_label, copy_dir_button, self._open_copy_button))
+        self._copy_warning = WarningLabel()
+        import_form.addRow(self._copy_warning)
         copy_row = QHBoxLayout()
         copy_note = QLabel("원본(+같은 이름 RAW)을 복사 · 원본은 그대로")
         copy_note.setEnabled(False)
@@ -228,9 +217,10 @@ class ProofTab(QWidget):
         self._cancel_button = compact(QPushButton("취소"))
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self._cancel)
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
+        self._next_steps = NextStepBar()
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -266,6 +256,7 @@ class ProofTab(QWidget):
         layout.addLayout(middle)
         layout.addLayout(progress_row)
         layout.addWidget(self._summary)
+        layout.addWidget(self._next_steps)
         layout.addWidget(self._results, stretch=1)
         self.setLayout(layout)
         self._refresh()
@@ -285,8 +276,13 @@ class ProofTab(QWidget):
             self._set_input_dir(folders[0])
         event.acceptProposedAction()
 
+    def receive_folders(self, folders: list[Path], replace: bool = True) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때(첫 폴더를 사진 폴더로)."""
+        if folders and not self.is_busy:
+            self._set_input_dir(folders[0])
+
     def _choose_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "사진 폴더 선택")
+        directory = pick_directory(self, "사진 폴더 선택")
         if directory:
             self._set_input_dir(Path(directory))
 
@@ -301,7 +297,7 @@ class ProofTab(QWidget):
         self._clear_import()
 
     def _choose_output_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "페이지를 만들 폴더 선택")
+        directory = pick_directory(self, "페이지를 만들 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
             self._output_label.set_path(self._output_dir)
@@ -309,7 +305,7 @@ class ProofTab(QWidget):
             self._refresh()
 
     def _choose_copy_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "고객이 고른 사진을 복사할 폴더 선택")
+        directory = pick_directory(self, "고객이 고른 사진을 복사할 폴더 선택")
         if directory:
             self._copy_dir = Path(directory)
             self._copy_label.set_path(self._copy_dir)
@@ -325,6 +321,7 @@ class ProofTab(QWidget):
         self._selection = None
         self._matched, self._missing = [], []
         self._copied = False
+        self._next_steps.clear()
         self._table.setRowCount(0)
         self._summary.setPlainText("")
         self._refresh()
@@ -458,11 +455,14 @@ class ProofTab(QWidget):
             + (f"\n고객 메모: {self._selection.memo}" if self._selection and self._selection.memo else "")
         )
         self._status_label.setText("복사 완료")
+        if self._copy_dir is not None:
+            folders = (self._copy_dir,)
+            self._next_steps.set_steps([NextStep("resize", folders), NextStep("rename", folders)])
 
     # --- 공통 ---------------------------------------------------------------------
     def _start(self, task: str, status: str, fn: Callable) -> None:
         self._task = task
-        self._worker = TaskWorker(fn)
+        self._worker = FunctionWorker(fn, "고객 셀렉 작업")
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(self._on_error)
@@ -518,10 +518,13 @@ class ProofTab(QWidget):
         self._status_label.setText("")
         if task == "copy":
             message = "복사하지 못한 파일이 있습니다. 복사된 것은 복사할 폴더에 남아 있습니다.\n\n" + message
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)
         self._refresh()
 
     def _refresh(self) -> None:
+        sources = [self._input_dir] if self._input_dir else []
+        self._output_warning.set_warning(overlap_warning(sources, self._output_dir, "저장 폴더"))
+        self._copy_warning.set_warning(overlap_warning(sources, self._copy_dir, "복사할 폴더"))
         busy = self.is_busy
         self._cancel_button.setEnabled(busy and self._task != "match")
         self._build_button.setEnabled(not busy)
