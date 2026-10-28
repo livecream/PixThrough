@@ -1,5 +1,5 @@
 """CLI 진입점. `scan`(M1) + `group`(M2) + `score`(M3) + `select`(M4) + `report`(M5) +
-`apply`(M6) + `rename`(M9) + `badcut`(M10) + `resize`(사진 축소).
+`apply`(M6) + `rename`(M9) + `badcut`(M10) + `resize`(사진 축소) + `proof`(고객 셀렉).
 
 group/select/report/apply/rename은 `--clock-offset "바디 이름=시차"`(여러 번)로 바디별 시계를
 맞출 수 있다(clock_sync). 바디 이름은 `scan` 결과처럼 "Canon EOS R5 #시리얼"."""
@@ -13,6 +13,7 @@ from badcut import BadCutThresholds, build_badcut_rows
 from clock_sync import parse_offset, shift_photos, summarize
 from file_ops import apply_selection
 from grouping import DEFAULT_SCENE_GAP_SECONDS, group_scenes
+from proof_gallery import LONG_EDGE_START, build_proof, copy_selection, list_photos, match_selection, parse_selection
 from rename_by_time import (
     DEFAULT_DIGITS,
     apply_merge_plan,
@@ -225,6 +226,47 @@ def cmd_resize(args: argparse.Namespace) -> None:
     results = apply_resize_plan(plan.rows, output, args.long_edge, args.quality)
     failed = [r for r in results if r.error]
     print(f"완료: {len(results) - len(failed)}장 저장 → {output}" + (f", 실패 {len(failed)}장" if failed else ""))
+
+
+def cmd_proof_make(args: argparse.Namespace) -> None:
+    folder, output = Path(args.input), Path(args.output)
+    title = args.title or folder.name
+    if not args.apply:
+        items = list_photos(folder, args.recursive)
+        for photo_id, _ in items:
+            print(photo_id)
+        print(
+            f"[dry-run] {len(items)}장으로 고객 셀렉 페이지를 만들 예정 → {output / title} (+ zip)\n"
+            "실제로 만들려면 --apply를 추가하세요."
+        )
+        return
+    result = build_proof(
+        folder, output, title, long_edge=args.long_edge, watermark=args.watermark,
+        max_picks=args.limit, recursive=args.recursive,
+    )
+    for path, error in result.failed:
+        print(f"건너뜀: {path} — {error}")
+    print(f"완료: {len(result.photos)}장 → {result.package_dir} (zip: {result.zip_path})")
+
+
+def cmd_proof_import(args: argparse.Namespace) -> None:
+    folder = Path(args.input)
+    selection = parse_selection(Path(args.result).read_text(encoding="utf-8-sig"))
+    matched, missing = match_selection(selection, folder, args.recursive)
+    for pick in matched:
+        print(f"{pick.source}" + (f" — {pick.note}" if pick.note else ""))
+    for name in missing:
+        print(f"못 찾음: {name}")
+    if selection.memo:
+        print(f"고객 메모: {selection.memo}")
+    if not args.apply:
+        print(
+            f"[dry-run] {len(matched)}장 복사 예정 → {args.output} (못 찾음 {len(missing)}개)\n"
+            "실제로 복사하려면 --apply를 추가하세요."
+        )
+        return
+    results, report = copy_selection(matched, Path(args.output), folder)
+    print(f"복사 완료: {len(results)}장 → {args.output} (목록: {report})")
 
 
 def main() -> None:
@@ -457,6 +499,29 @@ def main() -> None:
         "--apply", action="store_true", help="실제로 저장. 없으면 dry-run(계획만 출력)으로 끝남"
     )
     p_resize.set_defaults(func=cmd_resize)
+
+    p_proof = sub.add_parser("proof", help="고객 셀렉: 고를 수 있는 페이지 만들기 / 고객 선택 가져오기")
+    proof_sub = p_proof.add_subparsers(dest="proof_command", required=True)
+    p_make = proof_sub.add_parser("make", help="사진 폴더로 고객 셀렉 페이지(폴더+zip) 만들기")
+    p_make.add_argument("--input", required=True, help="고객에게 보여줄 사진 폴더")
+    p_make.add_argument("--output", required=True, help="페이지를 만들 폴더(사진 폴더와 겹치면 안 됨)")
+    p_make.add_argument("--title", default="", help="페이지 제목(폴더·zip 이름). 기본값은 사진 폴더 이름")
+    p_make.add_argument(
+        "--long-edge", type=int, default=LONG_EDGE_START, dest="long_edge",
+        help=f"페이지 사진 긴 변 픽셀, 기본값 {LONG_EDGE_START}",
+    )
+    p_make.add_argument("--watermark", default="", help="사진 가운데 넣을 글자(없으면 넣지 않음)")
+    p_make.add_argument("--limit", type=int, default=0, help="고를 수 있는 최대 장 수 안내(0 = 제한 없음)")
+    p_make.add_argument("--recursive", action="store_true", help="하위 폴더까지")
+    p_make.add_argument("--apply", action="store_true", help="실제로 만들기. 없으면 dry-run(대상 사진만 출력)")
+    p_make.set_defaults(func=cmd_proof_make)
+    p_import = proof_sub.add_parser("import", help="고객 선택 결과(JSON 또는 이름 목록)로 원본을 따로 복사")
+    p_import.add_argument("--input", required=True, help="원본 사진 폴더(페이지를 만든 폴더)")
+    p_import.add_argument("--result", required=True, help="고객이 보낸 결과 파일(.json) 또는 이름 목록(.txt)")
+    p_import.add_argument("--output", required=True, help="고른 사진을 복사할 폴더")
+    p_import.add_argument("--recursive", action="store_true", help="하위 폴더까지")
+    p_import.add_argument("--apply", action="store_true", help="실제로 복사. 없으면 dry-run(맞춘 결과만 출력)")
+    p_import.set_defaults(func=cmd_proof_import)
 
     args = parser.parse_args()
     args.func(args)

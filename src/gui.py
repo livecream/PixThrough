@@ -64,6 +64,8 @@ MENU = (
                  QStyle.StandardPixmap.SP_DirOpenIcon),
             Page("resize", "사진 축소", "사진의 긴 변을 정한 픽셀로 줄여 JPG로 새 폴더에 저장합니다. 원본은 그대로 둡니다.",
                  QStyle.StandardPixmap.SP_FileDialogContentsView),
+            Page("proof", "고객 셀렉", "고객이 브라우저로 사진을 고르는 페이지(zip)를 만들고, 고른 결과대로 원본을 따로 복사합니다.",
+                 QStyle.StandardPixmap.SP_DialogYesButton),
         ),
     ),
     (
