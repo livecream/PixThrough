@@ -69,6 +69,7 @@ import app_log
 from clock_sync import shift_photos
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
+from gui_errors import overlap_warning, show_error
 from gui_format import (
     bestcut_grouping_help,
     bestcut_scoring_help,
@@ -128,15 +129,16 @@ from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
 from gui_reveal import add_file_actions
 from gui_widgets import (
-    EtaProgressBar,
     BAR_ROLE,
-    FLAGGED_ROW,
-    KEPT_ROW,
-    SCENE_BAND,
     BarDelegate,
+    EtaProgressBar,
+    FLAGGED_ROW,
     GuidePanel,
+    KEPT_ROW,
     PathLabel,
+    SCENE_BAND,
     SummaryLabel,
+    WarningLabel,
     compact,
     fit_text,
     make_danger,
@@ -994,6 +996,8 @@ class BestCutTab(QWidget):
         xmp_label = QLabel("라이트룸 ⓘ:")
         xmp_label.setToolTip(_XMP_TOOLTIP)
         output_form.addRow(xmp_label, xmp_row)
+        self._folder_warning = WarningLabel()
+        output_form.addRow(self._folder_warning)
         output_group = QGroupBox("출력")
         output_group.setLayout(output_form)
 
@@ -1302,6 +1306,12 @@ class BestCutTab(QWidget):
                 return
 
     def _update_apply_buttons(self) -> None:
+        if hasattr(self, "_folder_warning"):
+            warnings = (
+                overlap_warning(self._input_dirs, self._output_dir, "베스트컷 폴더"),
+                overlap_warning(self._input_dirs, self._badcut_dir, "C컷 폴더"),
+            )
+            self._folder_warning.set_warning("\n".join(w for w in warnings if w))
         rows = self._rows or []
         kept = sum(1 for r in rows if r.selected)
         bad = sum(1 for r in rows if _is_badcut(r))
@@ -2247,4 +2257,4 @@ class BestCutTab(QWidget):
         self._preview_button.setEnabled(True)
         self._update_apply_buttons()
         self._update_undo_button()
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)

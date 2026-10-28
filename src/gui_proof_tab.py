@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui_dnd import extract_dropped_folders
+from gui_errors import overlap_warning, show_error
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import (
     load_bool,
@@ -51,6 +52,7 @@ from gui_widgets import (
     GuidePanel,
     PathLabel,
     SummaryLabel,
+    WarningLabel,
     compact,
     fit_text,
     make_primary,
@@ -157,6 +159,8 @@ class ProofTab(QWidget):
 
         make_form = QFormLayout()
         make_form.addRow("저장 폴더:", _folder_row(self._output_label, output_button, self._open_output_button))
+        self._output_warning = WarningLabel()
+        make_form.addRow(self._output_warning)
         make_form.addRow("제목:", self._title_edit)
         size_row = QHBoxLayout()
         size_row.addWidget(self._long_edge_spin)
@@ -198,6 +202,8 @@ class ProofTab(QWidget):
         result_row.addStretch(1)
         import_form.addRow("고객 선택:", result_row)
         import_form.addRow("복사할 폴더:", _folder_row(self._copy_label, copy_dir_button, self._open_copy_button))
+        self._copy_warning = WarningLabel()
+        import_form.addRow(self._copy_warning)
         copy_row = QHBoxLayout()
         copy_note = QLabel("원본(+같은 이름 RAW)을 복사 · 원본은 그대로")
         copy_note.setEnabled(False)
@@ -512,10 +518,13 @@ class ProofTab(QWidget):
         self._status_label.setText("")
         if task == "copy":
             message = "복사하지 못한 파일이 있습니다. 복사된 것은 복사할 폴더에 남아 있습니다.\n\n" + message
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)
         self._refresh()
 
     def _refresh(self) -> None:
+        sources = [self._input_dir] if self._input_dir else []
+        self._output_warning.set_warning(overlap_warning(sources, self._output_dir, "저장 폴더"))
+        self._copy_warning.set_warning(overlap_warning(sources, self._copy_dir, "복사할 폴더"))
         busy = self.is_busy
         self._cancel_button.setEnabled(busy and self._task != "match")
         self._build_button.setEnabled(not busy)

@@ -334,6 +334,21 @@ class BarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class WarningLabel(QLabel):
+    """설정 칸 아래 빨간 경고 한두 줄(비면 숨음). 폴더가 겹치는 것처럼 실행 전에 알 수 있는 문제용."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWordWrap(True)
+        self.setStyleSheet("color: rgb(200, 40, 40);")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.set_warning("")
+
+    def set_warning(self, text: str) -> None:
+        self.setText(text)
+        self.setVisible(bool(text))
+
+
 class GuidePanel(QFrame):
     """결과가 아직 없을 때 결과 자리에 보여주는 순서 안내. 끝난 단계는 ✓로 바뀐다."""
 

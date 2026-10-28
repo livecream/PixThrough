@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_dnd import extract_dropped_folders
+from gui_errors import overlap_warning, show_error
 from gui_format import format_resize_plan_summary, format_resize_result
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import (
@@ -47,6 +48,7 @@ from gui_widgets import (
     GuidePanel,
     PathLabel,
     SummaryLabel,
+    WarningLabel,
     compact,
     fit_text,
     make_primary,
@@ -232,6 +234,8 @@ class ResizeTab(QWidget):
         folder_form.addRow("사진 폴더:", input_row)
         folder_form.addRow("", self._recursive_checkbox)
         folder_form.addRow("저장 폴더:", output_row)
+        self._folder_warning = WarningLabel()
+        folder_form.addRow(self._folder_warning)
         folder_group = QGroupBox("폴더")
         folder_group.setLayout(folder_form)
 
@@ -480,7 +484,7 @@ class ResizeTab(QWidget):
             self._saved = True  # 일부는 이미 저장됐을 수 있어 다시 미리보기부터
         self._set_busy(False)
         self._status_label.setText("")
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -490,6 +494,9 @@ class ResizeTab(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
+        self._folder_warning.set_warning(
+            overlap_warning([self._input_dir] if self._input_dir else [], self._output_dir, "저장 폴더")
+        )
         count = len(self._saveable_rows())
         self._preview_button.setEnabled(not self._busy)
         self._save_button.setText(f"축소해서 저장 ({count}장)" if count else "축소해서 저장")

@@ -30,15 +30,17 @@ import app_log
 from clock_sync import format_offset
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
+from gui_errors import overlap_warning, show_error
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_reveal import add_file_actions
 from gui_widgets import (
     EtaProgressBar,
-    GuidePanel,
     FolderList,
+    GuidePanel,
     PathLabel,
     SummaryLabel,
+    WarningLabel,
     compact,
     fit_text,
     make_primary,
@@ -307,6 +309,8 @@ class RenameTab(QWidget):
         merge_form = QFormLayout()
         merge_form.addRow(self._merge_checkbox)
         merge_form.addRow("합칠 폴더:", merge_output_row)
+        self._folder_warning = WarningLabel()
+        merge_form.addRow(self._folder_warning)
         merge_group = QGroupBox("출력")
         merge_group.setLayout(merge_form)
 
@@ -422,7 +426,7 @@ class RenameTab(QWidget):
         try:
             new_dir.mkdir(parents=True)
         except OSError as e:
-            QMessageBox.critical(self, "폴더 생성 실패", str(e))
+            show_error(self, "폴더 생성 실패", str(e))
             return
 
         self._merge_output_dir = new_dir
@@ -655,7 +659,7 @@ class RenameTab(QWidget):
 
     def _on_error(self, message: str) -> None:
         self._set_busy(False)
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -664,6 +668,8 @@ class RenameTab(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
+        merge_output = self._merge_output_dir if self._merge_checkbox.isChecked() else None
+        self._folder_warning.set_warning(overlap_warning(self._input_dirs, merge_output, "합칠 폴더"))
         busy = self._busy
         plan_running = busy and self._plan_worker is not None and self._plan_worker.isRunning()
         self._preview_button.setEnabled(not busy)

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui_dnd import extract_dropped_folders
+from gui_errors import show_error
 from gui_format import format_bytes, format_folder_summary
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
@@ -578,7 +579,7 @@ class OrganizeTab(QWidget):
         if task == "run_move":
             message = "옮기다 멈췄습니다. 그때까지 옮긴 것은 organize_log_*.jsonl에 남아 있습니다.\n\n" + message
         self._show_nothing()
-        QMessageBox.critical(self, "오류", message)
+        show_error(self, "오류", message)
 
     def _confirm(self, title: str, message: str) -> bool:
         return QMessageBox.question(self, title, message) == QMessageBox.StandardButton.Yes
