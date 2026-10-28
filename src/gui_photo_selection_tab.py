@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 import score_store
@@ -55,6 +57,11 @@ class PhotoSelectionTab(QWidget):
 
     def show_page(self, name: str) -> None:
         self.pages.setCurrentIndex(0)
+
+    def receive_folders(self, folders: list[Path]) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때: 입력 폴더를 이 폴더들로 바꾼다."""
+        if not self.is_busy:
+            self.inputs.set_folders(folders)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         if event.mimeData().hasUrls():

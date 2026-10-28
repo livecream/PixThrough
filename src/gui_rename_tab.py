@@ -31,6 +31,7 @@ import app_log
 from clock_sync import format_offset
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
+from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_widgets import (
     GuidePanel,
@@ -224,6 +225,7 @@ class RenameTab(QWidget):
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
+        self._next_steps = NextStepBar()
 
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText("이름으로 찾기")
@@ -318,6 +320,7 @@ class RenameTab(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(button_row)
         layout.addLayout(summary_row)
+        layout.addWidget(self._next_steps)
         layout.addWidget(self._results, stretch=1)
 
         for folder in load_folder_list(self._settings, "rename/input_dirs"):
@@ -431,9 +434,18 @@ class RenameTab(QWidget):
                     f"병합 출력 폴더를 열지 못했습니다: {self._merge_output_dir}",
                 )
 
+    def receive_folders(self, folders: list[Path]) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때: 입력 폴더를 이 폴더들로 바꾼다."""
+        self._input_dirs = []
+        self._folder_list.clear()
+        self._add_folders(folders)
+        if self._merge_checkbox.isChecked():
+            self._merge_checkbox.setChecked(False)
+
     def _invalidate_preview(self) -> None:
         self._rows = None
         self._applied = False
+        self._next_steps.clear()
         self._table.setRowCount(0)
         self._summary.setPlainText("")
         self._preview_pane.set_path(None)
@@ -594,6 +606,12 @@ class RenameTab(QWidget):
         )
         self._status_label.setText("적용 완료")
         self._on_row_selected()
+        merged = self._merge_output_dir if self._merge_checkbox.isChecked() else None
+        folders = (merged,) if merged is not None else tuple(self._input_dirs)
+        steps = [NextStep("selection", folders)]
+        if len(folders) == 1:
+            steps += [NextStep("proof", folders), NextStep("organize", folders)]
+        self._next_steps.set_steps(steps)
         self._refresh()
 
     # --- 공통 ---------------------------------------------------------------------

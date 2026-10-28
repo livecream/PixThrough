@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_file_organize_tab import FileOrganizeTab
+from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
 from gui_settings import make_settings
 from gui_update import UpdateController
@@ -157,6 +158,8 @@ class MainWindow(QMainWindow):
 
         self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
+        navigator().requested.connect(self._navigate)
+
         self.updates = UpdateController(self, is_busy=self.is_busy)
         help_menu = self.menuBar().addMenu("도움말")
         self.updates.build_menu(help_menu)
@@ -202,6 +205,18 @@ class MainWindow(QMainWindow):
                 self._menu.setCurrentRow(row)
                 return
         self._menu.setCurrentRow(first)
+
+    def _navigate(self, page: str, folders: list) -> None:
+        """다음 단계 버튼: page 화면에 folders를 넣고 그 화면으로 간다."""
+        if page in FileOrganizeTab.PAGES:
+            target = self._file_organize_tab.page_widget(page)
+        else:
+            target = self._photo_selection_tab
+        if target.is_busy:
+            QMessageBox.warning(self, "작업 진행 중", "넘어갈 화면에서 작업이 진행 중입니다. 끝난 뒤 다시 눌러 주세요.")
+            return
+        target.receive_folders(folders)
+        self._select_page(page)
 
     def _on_menu_changed(self, item: QListWidgetItem | None, _previous) -> None:
         data = item.data(_PAGE_ROLE) if item is not None else None

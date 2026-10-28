@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from gui_dnd import extract_dropped_folders
 from gui_format import format_bytes, format_folder_summary
+from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_settings import load_folder, make_settings, save_folder
 from gui_widgets import (
@@ -148,6 +149,7 @@ class OrganizeTab(QWidget):
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
+        self._next_steps = NextStepBar()
 
         self._table = QTableWidget(0, 0)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -229,6 +231,7 @@ class OrganizeTab(QWidget):
         layout.addLayout(sections)
         layout.addLayout(progress_row)
         layout.addLayout(action_row)
+        layout.addWidget(self._next_steps)
         layout.addWidget(self._results, stretch=1)
 
         restored_folder = load_folder(self._settings, "organize/folder")
@@ -266,6 +269,16 @@ class OrganizeTab(QWidget):
         self._show_nothing()
         save_folder(self._settings, "organize/folder", folder)
 
+    def receive_folders(self, folders: list[Path]) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때(폴더 하나만 정리하므로 첫 폴더)."""
+        if folders:
+            self._set_folder(folders[0])
+
+    def _offer_next_steps(self) -> None:
+        if self._folder is not None:
+            folders = (self._folder,)
+            self._next_steps.set_steps([NextStep("rename", folders), NextStep("selection", folders)])
+
     def _require_folder(self) -> Path | None:
         if self.is_busy:
             return None
@@ -283,6 +296,7 @@ class OrganizeTab(QWidget):
     # --- 결과 표 ------------------------------------------------------------------
     def _show_nothing(self, summary: str = "") -> None:
         self._pending = None
+        self._next_steps.clear()
         self._table.setRowCount(0)
         self._summary.setPlainText(summary)
         self._preview_pane.set_path(None)
@@ -450,6 +464,7 @@ class OrganizeTab(QWidget):
             remove_empty_folders(folders, log_folder=folder)
             self._last_operation = {"kind": "empty_folders", "folders": folders}
             self._show_nothing(f"빈 폴더 {len(folders)}개 삭제 완료")
+            self._offer_next_steps()
         elif kind == "dup":
             groups = self._pending[1]
             candidates = [dup for group in groups for dup in group.duplicates]
@@ -464,6 +479,7 @@ class OrganizeTab(QWidget):
                 return
             deleted_count = delete_duplicate_files(groups, log_folder=folder)
             self._show_nothing(f"중복 파일 {deleted_count}개 삭제 완료")
+            self._offer_next_steps()
 
     def _on_moved(self, move_kind: str, moved: list[MovePlanRow], planned: int) -> None:
         if moved:
@@ -473,6 +489,7 @@ class OrganizeTab(QWidget):
         if skipped:
             text += f" · {skipped}개는 같은 이름이 있어 건너뜀"
         self._show_nothing(text)
+        self._offer_next_steps()
 
     def _undo_last_operation(self) -> None:
         if self._last_operation is None or self.is_busy:

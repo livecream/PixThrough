@@ -117,6 +117,7 @@ from xmp_rating import (
 )
 from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
 from gui_input_folders import InputFolderPanel
+from gui_navigation import NextStep, NextStepBar
 from gui_widgets import (
     BAR_ROLE,
     FLAGGED_ROW,
@@ -777,6 +778,7 @@ class BestCutTab(QWidget):
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
         self._summary_text = SummaryLabel()
+        self._next_steps = NextStepBar()
 
         self._table = QTableWidget(0, 10)
         self._table.setHorizontalHeaderLabels(
@@ -1034,6 +1036,7 @@ class BestCutTab(QWidget):
         layout.addWidget(self._settings_box)
         layout.addLayout(button_row)
         layout.addWidget(self._summary_text)
+        layout.addWidget(self._next_steps)
         layout.addLayout(choice_button_row)
         layout.addWidget(self._results, stretch=1)
 
@@ -1105,6 +1108,7 @@ class BestCutTab(QWidget):
             self._last_move.photos_before = None
 
     def _invalidate_preview(self) -> None:
+        self._next_steps.clear()
         self._forget_move_snapshot()
         self._rows = None
         self._auto_rows = None
@@ -2153,6 +2157,12 @@ class BestCutTab(QWidget):
         self._summary_text.setPlainText(
             format_apply_summary(results, self._output_dir, report_path)
         )
+        if self._output_dir is not None and results:
+            folders = (self._output_dir,)
+            self._next_steps.set_steps(
+                [NextStep("proof", folders), NextStep("resize", folders), NextStep("rename", folders)],
+                label="복사한 베스트컷으로:" if not self._move_radio.isChecked() else "옮긴 베스트컷으로:",
+            )
 
     def _open_output_folder(self) -> None:
         if self._output_dir is not None:

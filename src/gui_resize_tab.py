@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 import app_log
 from gui_dnd import extract_dropped_folders
 from gui_format import format_resize_plan_summary, format_resize_result
+from gui_navigation import NextStep, NextStepBar
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
 from gui_widgets import GuidePanel, PathLabel, SummaryLabel, compact, fit_text, make_primary, status_row
 from gui_worker import CancellableWorker, PreviewCancelled
@@ -179,6 +180,7 @@ class ResizeTab(QWidget):
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
+        self._next_steps = NextStepBar()
 
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -242,6 +244,7 @@ class ResizeTab(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(button_row)
         layout.addWidget(self._summary)
+        layout.addWidget(self._next_steps)
         layout.addWidget(self._results, stretch=1)
         self.setLayout(layout)
         self._refresh()
@@ -260,6 +263,11 @@ class ResizeTab(QWidget):
         if folders:
             self._set_input_dir(folders[0])
         event.acceptProposedAction()
+
+    def receive_folders(self, folders: list[Path]) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때(첫 폴더를 줄일 사진 폴더로)."""
+        if folders:
+            self._set_input_dir(folders[0])
 
     def _choose_input_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "줄일 사진 폴더 선택")
@@ -303,6 +311,7 @@ class ResizeTab(QWidget):
 
     def _invalidate(self) -> None:
         self._plan = None
+        self._next_steps.clear()
         self._summary.setPlainText("")
         self._table.setRowCount(0)
         self._refresh()
@@ -419,6 +428,8 @@ class ResizeTab(QWidget):
         )
         failed = sum(1 for r in results if r.error is not None)
         self._status_label.setText(f"저장 완료 ({len(results) - failed}장) · 다시 저장하려면 미리보기부터")
+        if self._output_dir is not None:
+            self._next_steps.set_steps([NextStep("proof", (self._output_dir,))])
         self._refresh()
 
     # --- 공통 ---------------------------------------------------------------------

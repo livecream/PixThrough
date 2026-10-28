@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui_dnd import extract_dropped_folders
+from gui_navigation import NextStep, NextStepBar
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
 from gui_widgets import (
     FLAGGED_ROW,
@@ -204,6 +205,7 @@ class ProofTab(QWidget):
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
+        self._next_steps = NextStepBar()
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -239,6 +241,7 @@ class ProofTab(QWidget):
         layout.addLayout(middle)
         layout.addLayout(progress_row)
         layout.addWidget(self._summary)
+        layout.addWidget(self._next_steps)
         layout.addWidget(self._results, stretch=1)
         self.setLayout(layout)
         self._refresh()
@@ -257,6 +260,11 @@ class ProofTab(QWidget):
         if folders and not self.is_busy:
             self._set_input_dir(folders[0])
         event.acceptProposedAction()
+
+    def receive_folders(self, folders: list[Path]) -> None:
+        """다른 화면의 "다음 단계"로 넘어올 때(첫 폴더를 사진 폴더로)."""
+        if folders and not self.is_busy:
+            self._set_input_dir(folders[0])
 
     def _choose_input_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "사진 폴더 선택")
@@ -298,6 +306,7 @@ class ProofTab(QWidget):
         self._selection = None
         self._matched, self._missing = [], []
         self._copied = False
+        self._next_steps.clear()
         self._table.setRowCount(0)
         self._summary.setPlainText("")
         self._refresh()
@@ -431,6 +440,9 @@ class ProofTab(QWidget):
             + (f"\n고객 메모: {self._selection.memo}" if self._selection and self._selection.memo else "")
         )
         self._status_label.setText("복사 완료")
+        if self._copy_dir is not None:
+            folders = (self._copy_dir,)
+            self._next_steps.set_steps([NextStep("resize", folders), NextStep("rename", folders)])
 
     # --- 공통 ---------------------------------------------------------------------
     def _start(self, task: str, status: str, fn: Callable) -> None:
