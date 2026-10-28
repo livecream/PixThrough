@@ -35,7 +35,16 @@ from PySide6.QtWidgets import (
 
 from gui_dnd import extract_dropped_folders
 from gui_navigation import NextStep, NextStepBar
-from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
+from gui_settings import (
+    load_bool,
+    load_float,
+    load_folder,
+    make_settings,
+    pick_directory,
+    save_bool,
+    save_float,
+    save_folder,
+)
 from gui_widgets import (
     EtaProgressBar,
     FLAGGED_ROW,
@@ -261,13 +270,13 @@ class ProofTab(QWidget):
             self._set_input_dir(folders[0])
         event.acceptProposedAction()
 
-    def receive_folders(self, folders: list[Path]) -> None:
+    def receive_folders(self, folders: list[Path], replace: bool = True) -> None:
         """다른 화면의 "다음 단계"로 넘어올 때(첫 폴더를 사진 폴더로)."""
         if folders and not self.is_busy:
             self._set_input_dir(folders[0])
 
     def _choose_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "사진 폴더 선택")
+        directory = pick_directory(self, "사진 폴더 선택")
         if directory:
             self._set_input_dir(Path(directory))
 
@@ -282,7 +291,7 @@ class ProofTab(QWidget):
         self._clear_import()
 
     def _choose_output_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "페이지를 만들 폴더 선택")
+        directory = pick_directory(self, "페이지를 만들 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
             self._output_label.set_path(self._output_dir)
@@ -290,7 +299,7 @@ class ProofTab(QWidget):
             self._refresh()
 
     def _choose_copy_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "고객이 고른 사진을 복사할 폴더 선택")
+        directory = pick_directory(self, "고객이 고른 사진을 복사할 폴더 선택")
         if directory:
             self._copy_dir = Path(directory)
             self._copy_label.set_path(self._copy_dir)

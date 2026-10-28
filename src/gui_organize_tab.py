@@ -17,7 +17,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -35,7 +34,7 @@ from gui_dnd import extract_dropped_folders
 from gui_format import format_bytes, format_folder_summary
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
-from gui_settings import load_folder, make_settings, save_folder
+from gui_settings import load_folder, make_settings, pick_directory, save_folder
 from gui_widgets import (
     EtaProgressBar,
     FLAGGED_ROW,
@@ -258,7 +257,7 @@ class OrganizeTab(QWidget):
         event.acceptProposedAction()
 
     def _choose_folder(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "정리할 폴더 선택")
+        directory = pick_directory(self, "정리할 폴더 선택")
         if directory:
             self._set_folder(Path(directory))
 
@@ -269,7 +268,7 @@ class OrganizeTab(QWidget):
         self._show_nothing()
         save_folder(self._settings, "organize/folder", folder)
 
-    def receive_folders(self, folders: list[Path]) -> None:
+    def receive_folders(self, folders: list[Path], replace: bool = True) -> None:
         """다른 화면의 "다음 단계"로 넘어올 때(폴더 하나만 정리하므로 첫 폴더)."""
         if folders:
             self._set_folder(folders[0])

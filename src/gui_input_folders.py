@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QGroupBox, QHBoxLayout, QVBoxLayout
 
-from gui_settings import load_bool, load_folder_list, make_settings, save_folder_list
+from gui_settings import load_bool, load_folder_list, make_settings, pick_directory, save_folder_list
 from gui_widgets import FolderList, small_button
 
 FOLDERS_KEY = "selection/input_dirs"
@@ -89,7 +89,7 @@ class InputFolderPanel(QGroupBox):
             self.changed.emit()
 
     def _choose_folder(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "입력 폴더 추가")
+        directory = pick_directory(self, "입력 폴더 추가")
         if directory:
             self.add_folders([Path(directory)])
 

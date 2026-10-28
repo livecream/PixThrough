@@ -125,3 +125,30 @@ def test_save_and_load_bool_round_trip_through_ini_file(tmp_path):
 
     assert load_bool(_settings(tmp_path), "test/flag", False) is True
     assert load_bool(_settings(tmp_path), "test/unset", False) is False
+
+
+def test_saving_folders_records_recent_folders_newest_first(tmp_path):
+    from gui_settings import MAX_RECENT, add_recent, clear_recent, recent_folders, save_folder
+
+    settings = _settings(tmp_path)
+    folders = []
+    for i in range(MAX_RECENT + 2):
+        folder = tmp_path / f"f{i}"
+        folder.mkdir()
+        folders.append(folder)
+    save_folder(settings, "a/out", folders[0])
+    save_folder_list(settings, "a/in", [folders[1], folders[2]])
+    assert recent_folders(settings)[:3] == [folders[1], folders[2], folders[0]]
+
+    add_recent(settings, folders[0])  # 다시 쓰면 맨 앞으로(중복 없음)
+    assert recent_folders(settings)[:3] == [folders[0], folders[1], folders[2]]
+
+    for folder in folders:
+        add_recent(settings, folder)
+    assert len(recent_folders(settings)) == MAX_RECENT
+    folders[-1].rmdir()  # 없어진 폴더는 빠짐
+    assert folders[-1] not in recent_folders(settings)
+
+    save_folder(settings, "a/out", None)  # 지운 설정은 최근 폴더에 안 남김
+    clear_recent(settings)
+    assert recent_folders(settings) == []

@@ -9,7 +9,6 @@ from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -46,7 +45,14 @@ from gui_widgets import (
     status_row,
 )
 from gui_format import format_rename_apply_summary, format_rename_preview_header
-from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
+from gui_settings import (
+    load_folder,
+    load_folder_list,
+    make_settings,
+    pick_directory,
+    save_folder,
+    save_folder_list,
+)
 from gui_worker import CancellableWorker, PreviewCancelled
 from rename_by_time import (
     RenamePlanRow,
@@ -350,7 +356,7 @@ class RenameTab(QWidget):
         event.acceptProposedAction()
 
     def _add_folder(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "입력 폴더 추가")
+        directory = pick_directory(self, "입력 폴더 추가")
         if directory:
             self._add_folders([Path(directory)])
 
@@ -387,7 +393,7 @@ class RenameTab(QWidget):
         self._invalidate_preview()
 
     def _choose_merge_output_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "병합 출력 폴더 선택")
+        directory = pick_directory(self, "병합 출력 폴더 선택")
         if directory:
             self._merge_output_dir = Path(directory)
             self._merge_output_label.set_path(Path(directory))
@@ -396,7 +402,7 @@ class RenameTab(QWidget):
             save_folder(self._settings, "rename/merge_output_dir", self._merge_output_dir)
 
     def _create_merge_output_dir(self) -> None:
-        parent = QFileDialog.getExistingDirectory(self, "새 폴더를 만들 위치 선택")
+        parent = pick_directory(self, "새 폴더를 만들 위치 선택")
         if not parent:
             return
 
@@ -434,13 +440,17 @@ class RenameTab(QWidget):
                     f"병합 출력 폴더를 열지 못했습니다: {self._merge_output_dir}",
                 )
 
-    def receive_folders(self, folders: list[Path]) -> None:
-        """다른 화면의 "다음 단계"로 넘어올 때: 입력 폴더를 이 폴더들로 바꾼다."""
-        self._input_dirs = []
-        self._folder_list.clear()
+    def receive_folders(self, folders: list[Path], replace: bool = True) -> None:
+        """다른 화면의 "다음 단계"(replace)나 최근 폴더(더하기)로 입력 폴더를 받는다."""
+        if self._busy:
+            return
+        if replace:
+            self._input_dirs = []
+            self._folder_list.clear()
+            if self._merge_checkbox.isChecked():
+                self._merge_checkbox.setChecked(False)
         self._add_folders(folders)
-        if self._merge_checkbox.isChecked():
-            self._merge_checkbox.setChecked(False)
+        save_folder_list(self._settings, "rename/input_dirs", self._input_dirs)
 
     def _invalidate_preview(self) -> None:
         self._rows = None

@@ -13,7 +13,6 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -33,7 +32,16 @@ import app_log
 from gui_dnd import extract_dropped_folders
 from gui_format import format_resize_plan_summary, format_resize_result
 from gui_navigation import NextStep, NextStepBar
-from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
+from gui_settings import (
+    load_bool,
+    load_float,
+    load_folder,
+    make_settings,
+    pick_directory,
+    save_bool,
+    save_float,
+    save_folder,
+)
 from gui_widgets import (
     EtaProgressBar,
     GuidePanel,
@@ -272,13 +280,13 @@ class ResizeTab(QWidget):
             self._set_input_dir(folders[0])
         event.acceptProposedAction()
 
-    def receive_folders(self, folders: list[Path]) -> None:
+    def receive_folders(self, folders: list[Path], replace: bool = True) -> None:
         """다른 화면의 "다음 단계"로 넘어올 때(첫 폴더를 줄일 사진 폴더로)."""
         if folders:
             self._set_input_dir(folders[0])
 
     def _choose_input_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "줄일 사진 폴더 선택")
+        directory = pick_directory(self, "줄일 사진 폴더 선택")
         if directory:
             self._set_input_dir(Path(directory))
 
@@ -289,7 +297,7 @@ class ResizeTab(QWidget):
         self._invalidate()
 
     def _choose_output_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "축소본을 저장할 폴더 선택")
+        directory = pick_directory(self, "축소본을 저장할 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
             self._output_label.set_path(self._output_dir)

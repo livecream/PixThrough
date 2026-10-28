@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -85,6 +84,7 @@ from gui_settings import (
     load_float,
     load_folder,
     make_settings,
+    pick_directory,
     save_bool,
     save_float,
     save_folder,
@@ -1083,7 +1083,7 @@ class BestCutTab(QWidget):
         self._inputs.add_folders(folders)
 
     def _choose_output_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "출력 폴더 선택")
+        directory = pick_directory(self, "출력 폴더 선택")
         if directory:
             self._output_dir = Path(directory)
             self._output_label.set_path(Path(directory))
@@ -1096,7 +1096,7 @@ class BestCutTab(QWidget):
             self._update_guide()
 
     def _choose_badcut_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "C컷을 옮길 폴더 선택")
+        directory = pick_directory(self, "C컷을 옮길 폴더 선택")
         if directory:
             self._badcut_dir = Path(directory)
             self._badcut_label.set_path(self._badcut_dir)

@@ -83,6 +83,8 @@
 
 진행률(1.5.0 사용성 4): 모든 화면의 진행률 막대는 `gui_widgets.EtaProgressBar` — 막대 옆에 "약 2분 남음"(지금까지 속도로, 3초·5%가 지난 뒤부터, macOS 기본 모양은 막대 안 글자를 안 그려서 옆 글자로), 15초 넘게 걸린 작업이 끝났을 때 앱을 보고 있지 않으면 `QApplication.alert`(macOS Dock 튀기기, Windows 작업 표시줄 깜빡임). 단계가 이어지는 작업(스캔 → 채점)은 setValue(0)/setMaximum이 1.5초 안에 다시 오면 같은 작업으로 보고 한 번만 알림.
 
+최근 폴더(1.5.0 사용성 5): 폴더를 저장할 때마다(`gui_settings.save_folder`/`save_folder_list`) 화면과 상관없이 `recent/folders`에 최근 것부터 10개(없는 폴더는 뺌). 폴더 고르기 창은 모두 `pick_directory`로 가장 최근 폴더에서 열고, 메뉴 "파일 › 최근 폴더"에서 고르면 지금 화면에 넣음(여러 폴더 화면은 더하기, 하나 받는 화면은 바꾸기 — `_navigate(replace=False)`), "목록 지우기".
+
 화면은 왼쪽 메뉴로 고른다(사용자 요청 13, 예전 2단 탭 대체): "사진 파일 정리" 묶음(시간순 정렬 M9, 폴더 정리 M11, 사진 축소 M13, 고객 셀렉 M16)과 "사진 선별" 묶음(베스트컷·C컷 선별 — M8+M10 한 화면, 예전 메뉴 이름 bestcut/badcut은 이 화면으로). 묶음마다 화면을 담는 컨테이너(`gui_file_organize_tab.py`/`gui_photo_selection_tab.py`, `show_page`)를 두고, 메뉴 항목·제목·한 줄 설명은 `gui.MENU`. 마지막 화면 기억(QSettings `window/page`). "저장된 점수 지우기"는 사진 선별 입력 폴더 칸 오른쪽.
 
 각 마일스톤은 별도 커밋/PR 단위로 나누고, 완료 시 이 체크박스를 갱신한다.
