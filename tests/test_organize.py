@@ -321,3 +321,31 @@ def test_delete_duplicate_files_writes_log_when_log_folder_given(tmp_path):
 def test_delete_duplicate_files_no_op_when_no_groups(tmp_path):
     assert delete_duplicate_files([]) == 0
     assert list(tmp_path.glob("organize_log_*.jsonl")) == []
+
+
+def test_apply_move_plan_never_overwrites_existing_destination(tmp_path):
+    (tmp_path / "a.CR2").write_bytes(b"new")
+    (tmp_path / "b.CR2").write_bytes(b"b")
+    (tmp_path / "RAW").mkdir()
+    (tmp_path / "RAW" / "a.CR2").write_bytes(b"old")
+    rows = build_move_by_extension_plan(tmp_path, {".cr2"}, "RAW")
+    progress = []
+
+    moved = apply_move_plan(rows, log_folder=tmp_path, on_progress=lambda d, t: progress.append((d, t)))
+
+    assert [r.old_path.name for r in moved] == ["b.CR2"]
+    assert (tmp_path / "RAW" / "a.CR2").read_bytes() == b"old"  # 덮어쓰지 않음
+    assert (tmp_path / "a.CR2").read_bytes() == b"new"  # 원래 자리에 그대로
+    assert progress == [(1, 2), (2, 2)]
+    log_lines = next(tmp_path.glob("organize_log_*.jsonl")).read_text(encoding="utf-8").splitlines()
+    assert len(log_lines) == 1  # 실제로 옮긴 것만 기록
+
+
+def test_find_duplicate_files_reports_progress(tmp_path):
+    (tmp_path / "a.jpg").write_bytes(b"same")
+    (tmp_path / "b.jpg").write_bytes(b"same")
+    (tmp_path / "c.jpg").write_bytes(b"diff")
+    progress = []
+    groups = find_duplicate_files(tmp_path, on_progress=lambda d, t: progress.append((d, t)))
+    assert len(groups) == 1
+    assert progress[-1] == (3, 3)

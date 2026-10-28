@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -34,7 +34,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import app_log
 from gui_dnd import extract_dropped_folders
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
 from gui_widgets import (
@@ -48,7 +47,7 @@ from gui_widgets import (
     paint_row,
     status_row,
 )
-from gui_worker import CancellableWorker, PreviewCancelled
+from gui_worker import FunctionWorker
 from proof_gallery import (
     LONG_EDGE_START,
     ClientSelection,
@@ -70,32 +69,6 @@ WATERMARK_KEY = "proof/watermark"
 
 _COLUMNS = ("고객이 고른 사진", "원본", "메모")
 
-log = app_log.get("proof")
-
-
-class TaskWorker(CancellableWorker):
-    """fn(on_progress)를 작업 스레드에서 돌린다. 진행률 콜백에서 취소를 확인한다."""
-
-    progress = Signal(int, int)
-    finished_ok = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, fn: Callable[[Callable[[int, int], None]], object]) -> None:
-        super().__init__()
-        self._fn = fn
-
-    def run(self) -> None:
-        def on_progress(done: int, total: int) -> None:
-            self.progress.emit(done, total)
-            self.check_cancel()
-
-        try:
-            self.finished_ok.emit(self._fn(on_progress))
-        except PreviewCancelled:
-            self.cancelled.emit()
-        except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
-            log.exception("고객 셀렉 작업 실패")
-            self.failed.emit(str(e))
 
 
 def _folder_row(label: PathLabel, *buttons: QPushButton) -> QHBoxLayout:
@@ -113,7 +86,7 @@ class ProofTab(QWidget):
         self._input_dir: Path | None = load_folder(self._settings, INPUT_KEY)
         self._output_dir: Path | None = load_folder(self._settings, OUTPUT_KEY)
         self._copy_dir: Path | None = load_folder(self._settings, COPY_KEY)
-        self._worker: TaskWorker | None = None
+        self._worker: FunctionWorker | None = None
         self._task = ""  # 지금 도는 작업: "build" | "match" | "copy"
         self._made: ProofResult | None = None
         self._selection: ClientSelection | None = None
@@ -462,7 +435,7 @@ class ProofTab(QWidget):
     # --- 공통 ---------------------------------------------------------------------
     def _start(self, task: str, status: str, fn: Callable) -> None:
         self._task = task
-        self._worker = TaskWorker(fn)
+        self._worker = FunctionWorker(fn, "고객 셀렉 작업")
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(self._on_error)

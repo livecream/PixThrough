@@ -21,6 +21,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from scanner import RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, extract_metadata
 import app_log
@@ -128,16 +129,31 @@ def build_move_by_extension_plan(
 
 
 def apply_move_plan(
-    rows: list[MovePlanRow], log_folder: Path | None = None, action: str = "move"
-) -> None:
-    """계획된 이동을 실제로 수행한다. 대상 폴더는 필요하면 만든다.
+    rows: list[MovePlanRow],
+    log_folder: Path | None = None,
+    action: str = "move",
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[MovePlanRow]:
+    """계획된 이동을 실제로 수행하고 실제로 옮긴 것만 돌려준다. 대상 폴더는 필요하면 만든다.
 
-    log_folder가 주어지면 이동 후 write_operation_log로 기록을 남긴다."""
-    for row in rows:
-        row.new_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(row.old_path), str(row.new_path))
-    if log_folder is not None and rows:
-        write_operation_log(rows, log_folder, action)
+    옮길 자리에 이미 같은 이름의 파일이 있으면 덮어쓰지 않고 건너뛴다(shutil.move는
+    덮어쓰므로 미리 확인 — 원본 보호). 옮기다 실패해도 그때까지 옮긴 것은 기록한 뒤
+    예외를 다시 던진다. log_folder가 주어지면 write_operation_log로 기록을 남긴다."""
+    moved: list[MovePlanRow] = []
+    try:
+        for index, row in enumerate(rows, start=1):
+            if row.new_path.exists():
+                log.warning("이미 있어 건너뜀: %s → %s", row.old_path, row.new_path)
+            else:
+                row.new_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(row.old_path), str(row.new_path))
+                moved.append(row)
+            if on_progress is not None:
+                on_progress(index, len(rows))
+    finally:
+        if log_folder is not None and moved:
+            write_operation_log(moved, log_folder, action)
+    return moved
 
 
 def find_raw_jpg_mismatches(folder: Path) -> list[str]:
@@ -161,7 +177,11 @@ def find_raw_jpg_mismatches(folder: Path) -> list[str]:
     return messages
 
 
-def build_capture_date_plan(folder: Path, video_extensions: set[str]) -> list[MovePlanRow]:
+def build_capture_date_plan(
+    folder: Path,
+    video_extensions: set[str],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[MovePlanRow]:
     """최상위 파일(사진+영상)을 촬영 날짜(YYYY-MM-DD) 하위 폴더로 옮기는 계획을 만든다.
 
     사진은 EXIF 촬영 시각, 영상은 파일 수정 시각을 쓴다 (rename_by_time.py와
@@ -169,7 +189,10 @@ def build_capture_date_plan(folder: Path, video_extensions: set[str]) -> list[Mo
     folder = Path(folder)
     video_exts_lower = {ext.lower() for ext in video_extensions}
     rows = []
-    for path in _top_level_files(folder):
+    files = _top_level_files(folder)
+    for index, path in enumerate(files, start=1):
+        if on_progress is not None:
+            on_progress(index, len(files))
         suffix = path.suffix.lower()
         if suffix in video_exts_lower:
             dt = datetime.datetime.fromtimestamp(path.stat().st_mtime)
@@ -217,7 +240,9 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def find_duplicate_files(root: Path) -> list[DuplicateGroup]:
+def find_duplicate_files(
+    root: Path, on_progress: Callable[[int, int], None] | None = None
+) -> list[DuplicateGroup]:
     """root 아래(하위 포함) 바이트 단위로 완전히 동일한 파일을 찾는다.
 
     같은 크기끼리 먼저 묶은 뒤 해시로 확인해 불필요한 해시 계산을 줄인다.
@@ -231,12 +256,17 @@ def find_duplicate_files(root: Path) -> list[DuplicateGroup]:
             by_size.setdefault(path.stat().st_size, []).append(path)
 
     groups: list[DuplicateGroup] = []
+    to_hash = sum(len(c) for c in by_size.values() if len(c) >= 2)
+    hashed = 0
     for candidates in by_size.values():
         if len(candidates) < 2:
             continue
         by_hash: dict[str, list[Path]] = {}
         for path in candidates:
             by_hash.setdefault(_file_hash(path), []).append(path)
+            hashed += 1
+            if on_progress is not None:
+                on_progress(hashed, to_hash)
         for paths in by_hash.values():
             if len(paths) < 2:
                 continue

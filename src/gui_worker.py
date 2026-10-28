@@ -9,7 +9,13 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import QThread, Signal
+
+import app_log
+
+log = app_log.get("worker")
 
 
 class PreviewCancelled(Exception):
@@ -31,3 +37,30 @@ class CancellableWorker(QThread):
         """작업 스레드의 진행률 콜백·반복문 안에서 부른다."""
         if self._cancel_requested:
             raise PreviewCancelled
+
+
+class FunctionWorker(CancellableWorker):
+    """fn(on_progress)를 작업 스레드에서 돌려 결과를 finished_ok로 넘긴다. 진행률 콜백이
+    불릴 때마다 취소를 확인한다(진행률을 알리지 않는 작업은 끝까지 돈다)."""
+
+    progress = Signal(int, int)
+    finished_ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn: Callable[[Callable[[int, int], None]], object], name: str = "작업") -> None:
+        super().__init__()
+        self._fn = fn
+        self._name = name
+
+    def run(self) -> None:
+        def on_progress(done: int, total: int) -> None:
+            self.progress.emit(done, total)
+            self.check_cancel()
+
+        try:
+            self.finished_ok.emit(self._fn(on_progress))
+        except PreviewCancelled:
+            self.cancelled.emit()
+        except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
+            log.exception("%s 실패", self._name)
+            self.failed.emit(str(e))

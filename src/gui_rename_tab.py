@@ -5,29 +5,48 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 import app_log
+from clock_sync import format_offset
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
-from gui_widgets import FolderList, PathLabel, compact, make_primary, small_button, status_row
-from gui_format import format_rename_apply_summary, format_rename_preview
+from gui_preview_pane import PreviewPane
+from gui_widgets import (
+    GuidePanel,
+    FolderList,
+    PathLabel,
+    SummaryLabel,
+    compact,
+    fit_text,
+    make_primary,
+    paint_row,
+    small_button,
+    status_row,
+)
+from gui_format import format_rename_apply_summary, format_rename_preview_header
 from gui_settings import load_folder, load_folder_list, make_settings, save_folder, save_folder_list
+from gui_worker import CancellableWorker, PreviewCancelled
 from rename_by_time import (
     RenamePlanRow,
     RenameResult,
@@ -40,11 +59,24 @@ from rename_by_time import (
 log = app_log.get("rename")
 
 
+_COLUMNS = ("#", "촬영 시각", "지금 이름", "새 이름", "폴더", "RAW 짝", "바디 시차")
+_FOLDER_COLUMN = 4
+# 폴더(바디)마다 줄 색을 달리해 여러 바디가 시간순으로 어떻게 섞이는지 보이게(반투명)
+_FOLDER_COLORS = (
+    QColor(66, 133, 244, 40),
+    QColor(251, 188, 4, 50),
+    QColor(52, 168, 83, 40),
+    QColor(171, 71, 188, 40),
+    QColor(255, 112, 67, 40),
+    QColor(0, 172, 193, 40),
+)
+
+
 def _percent(done: int, total: int) -> int:
     return int(done / total * 100) if total else 0
 
 
-class PlanWorker(QThread):
+class PlanWorker(CancellableWorker):
     progress = Signal(int, int)
     status = Signal(str)
     finished_ok = Signal(list)  # list[RenamePlanRow]
@@ -68,6 +100,7 @@ class PlanWorker(QThread):
     def run(self) -> None:
         try:
             def on_scan_progress(done: int, total: int, path: Path) -> None:
+                self.check_cancel()
                 self.progress.emit(done, total)
                 self.status.emit(f"스캔 중: {path.name} ({done}/{total}, {_percent(done, total)}%)")
 
@@ -89,6 +122,8 @@ class PlanWorker(QThread):
                     offsets=self._offsets,
                 )
             self.finished_ok.emit(rows)
+        except PreviewCancelled:
+            self.cancelled.emit()
         except Exception as e:  # noqa: BLE001 - surfaced to the user, not swallowed
             log.exception("%s 실패", type(self).__name__)
             self.failed.emit(str(e))
@@ -133,6 +168,7 @@ class RenameTab(QWidget):
         self._plan_worker: PlanWorker | None = None
         self._apply_worker: ApplyWorker | None = None
         self._busy = False
+        self._applied = False
         # 같은 세션(앱 종료 전까지) 동안 이미 스캔한 파일은 EXIF를 다시 읽지
         # 않도록 재사용하는 인메모리 캐시. (mtime, size)가 바뀐 파일만 다시 읽음.
         self._scan_cache: dict = {}
@@ -175,7 +211,11 @@ class RenameTab(QWidget):
         self._open_merge_output_button.clicked.connect(self._open_merge_output_folder)
 
         self._preview_button = make_primary(QPushButton("미리보기"))
+        self._preview_button.setToolTip("<p>바뀔 이름을 표로 보여줍니다. 파일은 아직 그대로입니다.</p>")
         self._preview_button.clicked.connect(self._run_preview)
+        self._cancel_button = compact(QPushButton("취소"))
+        self._cancel_button.setEnabled(False)
+        self._cancel_button.clicked.connect(self._cancel)
 
         self._apply_button = make_primary(QPushButton("적용"))
         self._apply_button.setEnabled(False)
@@ -183,10 +223,45 @@ class RenameTab(QWidget):
 
         self._progress_bar = QProgressBar()
         self._status_label = QLabel("")
-        self._summary_text = QPlainTextEdit()
-        self._summary_text.setReadOnly(True)
-        self._summary_text.setAcceptDrops(False)
-        self._summary_text.setPlaceholderText("미리보기를 누르면 바뀔 파일 이름 목록이 여기에 나옵니다.")
+        self._summary = SummaryLabel()
+
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("이름으로 찾기")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.setMaximumWidth(220)
+        self._filter_edit.textChanged.connect(self._apply_filter)
+
+        self._table = QTableWidget(0, len(_COLUMNS))
+        self._table.setHorizontalHeaderLabels(_COLUMNS)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.verticalHeader().setVisible(False)
+        header = self._table.horizontalHeader()
+        for column in range(len(_COLUMNS)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(_FOLDER_COLUMN, QHeaderView.ResizeMode.Stretch)
+        self._table.itemSelectionChanged.connect(self._on_row_selected)
+        self._preview_pane = PreviewPane()
+        table_box = QHBoxLayout()
+        table_box.setContentsMargins(0, 0, 0, 0)
+        table_box.addWidget(self._table, stretch=1)
+        table_box.addWidget(self._preview_pane)
+        table_widget = QWidget()
+        table_widget.setLayout(table_box)
+
+        self._guide = GuidePanel(
+            "시간순 정렬 순서",
+            [
+                "바디별 사진 폴더를 입력 폴더에 넣기 (여러 개, 끌어다 놓아도 됩니다)",
+                "카메라 시계가 서로 어긋났으면 \"바디 시계 맞추기\"로 시차 넣기 (필요할 때만)",
+                "미리보기 — 바뀔 이름을 표로 확인 (파일은 아직 그대로)",
+                "적용 — 00001부터 새 이름으로 바뀝니다 (원래 이름으로 되돌릴 수 없음)",
+            ],
+        )
+        self._results = QStackedWidget()
+        self._results.addWidget(self._guide)
+        self._results.addWidget(table_widget)
 
         description_label = QLabel(
             "같은 초에 촬영된 파일이 "
@@ -229,15 +304,21 @@ class RenameTab(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
+        button_row.addWidget(self._cancel_button)
         button_row.addSpacing(12)
         button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
         button_row.addWidget(self._apply_button)
+
+        summary_row = QHBoxLayout()
+        summary_row.addWidget(self._summary, stretch=1)
+        summary_row.addWidget(self._filter_edit)
 
         layout = QVBoxLayout()
         layout.addWidget(description_label)
         layout.addLayout(top_row)
         layout.addLayout(button_row)
-        layout.addWidget(self._summary_text, stretch=1)
+        layout.addLayout(summary_row)
+        layout.addWidget(self._results, stretch=1)
 
         for folder in load_folder_list(self._settings, "rename/input_dirs"):
             self._input_dirs.append(folder)
@@ -249,6 +330,7 @@ class RenameTab(QWidget):
             self._open_merge_output_button.setEnabled(self._merge_checkbox.isChecked())
 
         self.setLayout(layout)
+        self._refresh()
 
     @property
     def is_busy(self) -> bool:
@@ -351,7 +433,11 @@ class RenameTab(QWidget):
 
     def _invalidate_preview(self) -> None:
         self._rows = None
-        self._apply_button.setEnabled(False)
+        self._applied = False
+        self._table.setRowCount(0)
+        self._summary.setPlainText("")
+        self._preview_pane.set_path(None)
+        self._refresh()
 
     def _open_clock_sync(self) -> None:
         if not self._input_dirs:
@@ -370,8 +456,9 @@ class RenameTab(QWidget):
         self._update_clock_label()
         if self._rows is not None:
             self._invalidate_preview()
-            self._summary_text.setPlainText("바디 시차가 바뀌었습니다. 미리보기를 다시 눌러 주세요.")
+            self._summary.setPlainText("바디 시차가 바뀌었습니다. 미리보기를 다시 눌러 주세요.")
 
+    # --- 미리보기 -----------------------------------------------------------------
     def _run_preview(self) -> None:
         if self._busy:
             QMessageBox.warning(
@@ -387,11 +474,8 @@ class RenameTab(QWidget):
             QMessageBox.warning(self, "병합 출력 폴더 없음", "병합할 출력 폴더를 먼저 선택하세요.")
             return
 
-        self._busy = True
-        self._preview_button.setEnabled(False)
-        self._progress_bar.setValue(0)
+        self._set_busy(True)
         self._status_label.setText("스캔 중...")
-        self._summary_text.setPlainText("스캔 중...")
 
         merge_output_dir = self._merge_output_dir if self._merge_checkbox.isChecked() else None
         self._plan_worker = PlanWorker(
@@ -405,16 +489,67 @@ class RenameTab(QWidget):
         self._plan_worker.status.connect(self._status_label.setText)
         self._plan_worker.finished_ok.connect(self._on_preview_done)
         self._plan_worker.failed.connect(self._on_error)
+        self._plan_worker.cancelled.connect(self._on_cancelled)
         self._plan_worker.start()
+        self._refresh()
 
     def _on_preview_done(self, rows: list[RenamePlanRow]) -> None:
-        self._busy = False
-        self._status_label.setText("완료")
+        self._set_busy(False)
+        self._status_label.setText("완료 — 표를 확인하고 적용하세요" if rows else "완료")
         self._rows = rows
-        self._preview_button.setEnabled(True)
-        self._apply_button.setEnabled(bool(rows))
-        self._summary_text.setPlainText(format_rename_preview(rows))
+        self._applied = False
+        self._summary.setPlainText(format_rename_preview_header(rows) if rows else "바꿀 파일이 없습니다.")
+        self._populate(rows)
+        self._refresh()
 
+    def _populate(self, rows: list[RenamePlanRow]) -> None:
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(len(rows))
+        folders: dict[Path, int] = {}
+        merge = self._merge_checkbox.isChecked()
+        for i, row in enumerate(rows):
+            folder = row.old_path.parent
+            color_index = folders.setdefault(folder, len(folders))
+            raw = f"{row.raw_old_path.name} → {row.raw_new_path.name}" if row.raw_old_path else ""
+            where = f"{folder} → {row.new_path.parent}" if merge else str(folder)
+            values = (
+                str(row.seq),
+                row.datetime_original.strftime("%Y-%m-%d %H:%M:%S"),
+                row.old_path.name,
+                row.new_path.name,
+                where,
+                raw,
+                format_offset(row.clock_offset) if row.clock_offset else "",
+            )
+            for column, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if column == _FOLDER_COLUMN:
+                    item.setToolTip(where)
+                self._table.setItem(i, column, item)
+            paint_row(self._table, i, _FOLDER_COLORS[color_index % len(_FOLDER_COLORS)], bold_column=3)
+        self._apply_filter(self._filter_edit.text())
+        if rows:
+            self._table.selectRow(0)
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.strip().lower()
+        for i in range(self._table.rowCount()):
+            hit = not needle or any(
+                needle in (self._table.item(i, c).text().lower()) for c in (2, 3, 5)
+            )
+            self._table.setRowHidden(i, not hit)
+
+    def _on_row_selected(self) -> None:
+        rows = self._table.selectionModel().selectedRows()
+        if not rows or self._rows is None:
+            self._preview_pane.set_path(None)
+            return
+        plan = self._rows[rows[0].row()]
+        # 적용한 뒤에는 파일이 새 이름에 있다
+        path = plan.new_path if self._applied else plan.old_path
+        self._preview_pane.set_path(path, f"{plan.old_path.name}\n→ {plan.new_path.name}")
+
+    # --- 적용 ---------------------------------------------------------------------
     def _run_apply(self) -> None:
         if self._busy:
             QMessageBox.warning(
@@ -422,7 +557,7 @@ class RenameTab(QWidget):
             )
             return
 
-        if not self._rows:
+        if not self._rows or self._applied:
             QMessageBox.warning(self, "미리보기 필요", "먼저 미리보기를 실행하세요.")
             return
 
@@ -441,10 +576,8 @@ class RenameTab(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        self._busy = True
-        self._apply_button.setEnabled(False)
-        self._progress_bar.setValue(0)
-
+        self._set_busy(True)
+        self._status_label.setText("이름 바꾸는 중...")
         log_dir = self._input_dirs[0]
         self._apply_worker = ApplyWorker(self._rows, log_dir, merge_output_dir)
         self._apply_worker.progress.connect(self._on_progress)
@@ -453,19 +586,53 @@ class RenameTab(QWidget):
         self._apply_worker.start()
 
     def _on_apply_done(self, results: list[RenameResult]) -> None:
-        self._busy = False
-        self._apply_button.setEnabled(True)
-        self._summary_text.setPlainText(format_rename_apply_summary(results))
-        # 적용 후엔 파일명이 이미 바뀌었으므로 이전 계획으로 다시 적용하면 안 됨.
-        self._rows = None
-        self._apply_button.setEnabled(False)
+        self._set_busy(False)
+        # 적용 후엔 파일명이 이미 바뀌었으므로 이전 계획으로 다시 적용하면 안 됨(표는 남겨 둠).
+        self._applied = True
+        self._summary.setPlainText(
+            format_rename_apply_summary(results) + " · 다시 하려면 미리보기부터"
+        )
+        self._status_label.setText("적용 완료")
+        self._on_row_selected()
+        self._refresh()
+
+    # --- 공통 ---------------------------------------------------------------------
+    def _cancel(self) -> None:
+        if self._plan_worker is not None and self._plan_worker.isRunning():
+            self._plan_worker.request_cancel()
+            self._cancel_button.setEnabled(False)
+            self._status_label.setText("멈추는 중...")
+
+    def _on_cancelled(self) -> None:
+        self._set_busy(False)
+        self._status_label.setText("취소했습니다")
 
     def _on_progress(self, done: int, total: int) -> None:
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(done)
 
     def _on_error(self, message: str) -> None:
-        self._busy = False
-        self._preview_button.setEnabled(True)
-        self._apply_button.setEnabled(bool(self._rows))
+        self._set_busy(False)
         QMessageBox.critical(self, "오류", message)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        if busy:
+            self._progress_bar.setValue(0)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        busy = self._busy
+        plan_running = busy and self._plan_worker is not None and self._plan_worker.isRunning()
+        self._preview_button.setEnabled(not busy)
+        self._cancel_button.setEnabled(plan_running)
+        count = len(self._rows) if self._rows and not self._applied else 0
+        self._apply_button.setText(f"적용 ({count}개)" if count else "적용")
+        fit_text(self._apply_button)
+        self._apply_button.setEnabled(bool(count) and not busy)
+        has_rows = self._table.rowCount() > 0
+        self._results.setCurrentIndex(1 if has_rows else 0)
+        self._filter_edit.setVisible(has_rows)
+        self._guide.set_done(
+            [bool(self._input_dirs), bool(offset_store().get()), self._rows is not None, self._applied]
+        )

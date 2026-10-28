@@ -188,6 +188,21 @@ def format_rename_preview(rows: list[RenamePlanRow]) -> str:
     return "\n".join(lines)
 
 
+def format_rename_preview_header(rows: list[RenamePlanRow]) -> str:
+    """시간순 정렬 미리보기 요약 몇 줄(파일 목록은 GUI가 표로 그린다)."""
+    folders = {row.old_path.parent for row in rows}
+    raws = sum(1 for row in rows if row.raw_old_path is not None)
+    line = f"{len(rows)}개 파일 이름 바꿀 예정 · 폴더 {len(folders)}개"
+    if raws:
+        line += f" · RAW 짝 {raws}개 같은 번호로"
+    lines = [line]
+    shifted = [row for row in rows if row.clock_offset]
+    if shifted:
+        lines.append(f"바디 시계 보정 적용: {len(shifted)}개 파일 (시차를 더한 시각 순서)")
+    lines.append("줄 색은 폴더(바디)마다 다릅니다 — 여러 바디가 시간순으로 섞이는 모습을 확인하세요.")
+    return "\n".join(lines)
+
+
 def format_rename_apply_summary(results: list[RenameResult]) -> str:
     """M9 리네임 적용 결과를 사람이 읽을 요약 텍스트로 만든다."""
     return f"리네임 완료: {len(results)}개 파일"
@@ -278,7 +293,7 @@ def format_badcut_preview(rows: list[ReportRow]) -> str:
     return "\n".join(lines)
 
 
-def _format_bytes(num_bytes: int) -> str:
+def format_bytes(num_bytes: int) -> str:
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024:
@@ -290,7 +305,7 @@ def _format_bytes(num_bytes: int) -> str:
 def format_folder_summary(summary: FolderSummary) -> str:
     """M11 폴더 요약 정보를 사람이 읽을 텍스트로 만든다."""
     return (
-        f"총 파일 {summary.total_files}개 ({_format_bytes(summary.total_size_bytes)})\n"
+        f"총 파일 {summary.total_files}개 ({format_bytes(summary.total_size_bytes)})\n"
         f"사진 {summary.photo_count}개 / RAW {summary.raw_count}개 / "
         f"영상 {summary.video_count}개 / 기타 {summary.other_count}개"
     )
@@ -332,7 +347,7 @@ def format_resize_result(
     failed = [r for r in results if r.error is not None]
     lines = [
         f"{len(ok)}장 저장 → {output_dir}",
-        f"용량 {_format_bytes(source_bytes)} → {_format_bytes(saved_bytes)} · 처리 기록: resize_log_*.jsonl",
+        f"용량 {format_bytes(source_bytes)} → {format_bytes(saved_bytes)} · 처리 기록: resize_log_*.jsonl",
     ]
     if failed:
         lines.append(f"실패 {len(failed)}장: " + ", ".join(r.source.name for r in failed[:5])
