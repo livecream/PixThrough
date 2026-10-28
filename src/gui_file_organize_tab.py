@@ -1,4 +1,4 @@
-"""사진 파일 정리 묶음: 시간순 정렬(M9), 폴더 정리(M11), 사진 축소. 어느 쪽을 보일지는 왼쪽 메뉴가
+"""사진 파일 정리 묶음: 시간순 정렬(M9), 폴더 정리(M11), 사진 축소, 고객 셀렉. 어느 쪽을 보일지는 왼쪽 메뉴가
 정한다(show_page)."""
 
 from __future__ import annotations
@@ -6,12 +6,13 @@ from __future__ import annotations
 from PySide6.QtWidgets import QStackedWidget
 
 from gui_organize_tab import OrganizeTab
+from gui_proof_tab import ProofTab
 from gui_rename_tab import RenameTab
 from gui_resize_tab import ResizeTab
 
 
 class FileOrganizeTab(QStackedWidget):
-    PAGES = ("rename", "organize", "resize")
+    PAGES = ("rename", "organize", "resize", "proof")
 
     def __init__(self) -> None:
         super().__init__()
@@ -19,14 +20,21 @@ class FileOrganizeTab(QStackedWidget):
         self._rename_tab = RenameTab()
         self._organize_tab = OrganizeTab()
         self._resize_tab = ResizeTab()
+        self._proof_tab = ProofTab()
 
         self.addWidget(self._rename_tab)
         self.addWidget(self._organize_tab)
         self.addWidget(self._resize_tab)
+        self.addWidget(self._proof_tab)
 
     def show_page(self, name: str) -> None:
         self.setCurrentIndex(self.PAGES.index(name))
 
     @property
     def is_busy(self) -> bool:
-        return self._rename_tab.is_busy or self._organize_tab.is_busy or self._resize_tab.is_busy
+        return (
+            self._rename_tab.is_busy
+            or self._organize_tab.is_busy
+            or self._resize_tab.is_busy
+            or self._proof_tab.is_busy
+        )
