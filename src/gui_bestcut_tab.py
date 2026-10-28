@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QButtonGroup,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -114,7 +115,15 @@ from xmp_rating import (
     undo_xmp,
     write_xmp,
 )
-from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
+from gui_scene_gallery import (
+    THUMB as GALLERY_THUMB,
+    THUMB_MAX as GALLERY_THUMB_MAX,
+    THUMB_MIN as GALLERY_THUMB_MIN,
+    THUMB_STEP as GALLERY_THUMB_STEP,
+    GalleryPhoto,
+    GalleryScene,
+    SceneGallery,
+)
 from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
 from gui_reveal import add_file_actions
@@ -445,11 +454,13 @@ def _sharpness_ranks(rows: list[ReportRow]) -> list[tuple[int, int, float]]:
     return result
 
 
-THUMBNAIL_SIZE = (GALLERY_THUMB, GALLERY_THUMB)
+# 갤러리 크기를 키워도 흐려지지 않게 가장 큰 크기로 만들어 두고 줄여 쓴다(표 아이콘도)
+THUMBNAIL_SIZE = (GALLERY_THUMB_MAX, GALLERY_THUMB_MAX)
 TABLE_ICON = 64
 # 파일명 칸에 넣어 두는 결과 번호(self._rows 안 위치) — 표를 정렬해도 사진을 찾을 수 있게
 _INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
 VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
+THUMB_SETTINGS_KEY = "bestcut/gallery_thumb"
 
 
 class ApplyWorker(QThread):
@@ -867,6 +878,10 @@ class BestCutTab(QWidget):
         self._reset_choices_button.clicked.connect(self._reset_choices)
         # 결과 보기: 장면별 갤러리(큰 썸네일) / 표(숫자 비교). 고른 사진은 둘이 함께 쓴다
         self._gallery = SceneGallery(self._thumbnail_pixmap)
+        self._gallery.set_thumb(
+            int(load_float(self._settings, THUMB_SETTINGS_KEY, GALLERY_THUMB, GALLERY_THUMB_MIN, GALLERY_THUMB_MAX))
+        )
+        self._gallery.thumb_changed.connect(self._on_thumb_changed)
         self._gallery.photo_clicked.connect(self._select_index)
         self._gallery.photo_activated.connect(self._open_viewer)
         self._gallery.toggle_requested.connect(self._toggle_row)
@@ -923,7 +938,15 @@ class BestCutTab(QWidget):
         else:
             self._gallery_button.setChecked(True)
 
-        self._shortcut_hint = QLabel("Space·P·X 고르기 · Enter 크게 · C 비교")
+        self._thumb_slider = QSlider(Qt.Orientation.Horizontal)
+        self._thumb_slider.setRange(GALLERY_THUMB_MIN, GALLERY_THUMB_MAX)
+        self._thumb_slider.setSingleStep(GALLERY_THUMB_STEP)
+        self._thumb_slider.setPageStep(GALLERY_THUMB_STEP)
+        self._thumb_slider.setValue(self._gallery.thumb)
+        self._thumb_slider.setFixedWidth(72)
+        self._thumb_slider.setToolTip("<p>갤러리 썸네일 크기 — 갤러리에서 Ctrl(⌘)+휠이나 Ctrl(⌘) +/−로도 바꿉니다.</p>")
+        self._thumb_slider.valueChanged.connect(self._gallery.set_thumb)
+        self._shortcut_hint = QLabel("Space·P·X 고르기 · ? 도움말")
         self._shortcut_hint.setToolTip(
             "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교 · "
             "S 여기서 나누기 · M 앞 장면과 합치기 · 오른쪽 클릭 메뉴</p>"
@@ -941,6 +964,9 @@ class BestCutTab(QWidget):
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._only_kept_checkbox)
         choice_button_row.addStretch()
+        choice_button_row.addWidget(self._thumb_slider)
+        self._thumb_slider.setVisible(self._gallery_button.isChecked())
+        choice_button_row.addSpacing(8)
         choice_button_row.addWidget(self._shortcut_hint)
 
         # 위: 출력(왼쪽) · 기준(오른쪽)을 나란히 두어 결과 표에 세로 공간을 몰아준다
@@ -2022,6 +2048,15 @@ class BestCutTab(QWidget):
             return f"{distance} ✂"
         return str(distance)
 
+    def _on_thumb_changed(self, size: int) -> None:
+        self._thumb_slider.blockSignals(True)
+        self._thumb_slider.setValue(size)
+        self._thumb_slider.blockSignals(False)
+        save_float(self._settings, THUMB_SETTINGS_KEY, size)
+        # 예전 크기로 줄여 둔 그림은 버린다(크기마다 수천 장을 들고 있지 않게)
+        for key in [k for k in self._pixmap_cache if k[1] not in (TABLE_ICON, size)]:
+            del self._pixmap_cache[key]
+
     def _thumbnail_pixmap(self, path: Path, size: int = TABLE_ICON) -> QPixmap | None:
         cached = self._thumbnail_cache.get(path)
         if cached is None or cached[2] is None:
@@ -2068,6 +2103,8 @@ class BestCutTab(QWidget):
 
     def _on_view_toggled(self, gallery: bool) -> None:
         self._settings.setValue(VIEW_SETTINGS_KEY, "gallery" if gallery else "table")
+        if hasattr(self, "_thumb_slider"):
+            self._thumb_slider.setVisible(gallery)
         self._show_results()
 
     def _show_results(self) -> None:

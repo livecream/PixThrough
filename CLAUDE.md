@@ -87,6 +87,8 @@
 
 파일 바로 열기(1.5.0 사용성 6): 베스트컷(표·갤러리)·시간순 정렬·폴더 정리 표의 오른쪽 클릭에 "Finder/탐색기에서 보기"(macOS `open -R`, Windows `explorer /select,`, 그 밖은 폴더 열기), "기본 앱으로 열기", 짝 RAW가 있으면 "RAW 열기 (CR3)" — `gui_reveal.add_file_actions`. 파일은 바꾸지 않음.
 
+갤러리 썸네일 크기(1.5.0 사용성 7): 100~240px(20px 단위) — 갤러리 위 슬라이더(갤러리 보기일 때만), 갤러리에서 Ctrl(⌘)+휠·Ctrl(⌘) +/−, 마지막 크기 기억(`bestcut/gallery_thumb`). 키워도 흐려지지 않게 썸네일 JPEG는 240px로 만들어 줄여 씀(`THUMBNAIL_SIZE`), 크기를 바꾸면 다른 크기로 줄여 둔 QPixmap은 버림(표 아이콘 64px은 유지).
+
 화면은 왼쪽 메뉴로 고른다(사용자 요청 13, 예전 2단 탭 대체): "사진 파일 정리" 묶음(시간순 정렬 M9, 폴더 정리 M11, 사진 축소 M13, 고객 셀렉 M16)과 "사진 선별" 묶음(베스트컷·C컷 선별 — M8+M10 한 화면, 예전 메뉴 이름 bestcut/badcut은 이 화면으로). 묶음마다 화면을 담는 컨테이너(`gui_file_organize_tab.py`/`gui_photo_selection_tab.py`, `show_page`)를 두고, 메뉴 항목·제목·한 줄 설명은 `gui.MENU`. 마지막 화면 기억(QSettings `window/page`). "저장된 점수 지우기"는 사진 선별 입력 폴더 칸 오른쪽.
 
 각 마일스톤은 별도 커밋/PR 단위로 나누고, 완료 시 이 체크박스를 갱신한다.
