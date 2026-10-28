@@ -6,13 +6,15 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QMenu, QMessageBox, QWidget
 
 from file_ops import find_matching_raw
 from raw_preview import is_raw
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QMenu, QWidget
 
 FILE_MANAGER = "Finder" if sys.platform == "darwin" else "탐색기" if sys.platform == "win32" else "파일 관리자"
 
@@ -26,6 +28,13 @@ def reveal_command(path: Path) -> list[str] | None:
     return None
 
 
+def _desktop():
+    # QtGui는 쓸 때 읽는다 — 화면 없는 테스트 환경(libEGL 없음)에서도 reveal_command를 시험하게
+    from PySide6.QtGui import QDesktopServices
+
+    return QDesktopServices
+
+
 def reveal_in_file_manager(path: Path) -> bool:
     command = reveal_command(path)
     if command is not None:
@@ -34,15 +43,17 @@ def reveal_in_file_manager(path: Path) -> bool:
             return True
         except OSError:
             pass
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+    return _desktop().openUrl(QUrl.fromLocalFile(str(path.parent)))
 
 
 def open_with_default_app(path: Path) -> bool:
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    return _desktop().openUrl(QUrl.fromLocalFile(str(path)))
 
 
 def add_file_actions(menu: QMenu, parent: QWidget, path: Path) -> None:
     """메뉴 끝에 "Finder에서 보기", "기본 앱으로 열기"(+ 짝 RAW 열기)를 붙인다."""
+    from PySide6.QtWidgets import QMessageBox
+
     def fail(what: str) -> None:
         QMessageBox.warning(parent, "열기 실패", f"{what}을(를) 열지 못했습니다:\n{path}")
 

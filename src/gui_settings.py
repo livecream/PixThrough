@@ -12,8 +12,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QFileDialog, QWidget
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
 
 ORG_NAME = "PixThrough"
 APP_NAME = "PixThrough"
@@ -75,6 +79,8 @@ def clear_recent(settings: QSettings) -> None:
 def pick_directory(parent: QWidget, title: str) -> str:
     """폴더 고르기 창을 가장 최근 폴더에서 연다(QFileDialog.getExistingDirectory와 같이 글자 반환,
     취소하면 빈 글자)."""
+    from PySide6.QtWidgets import QFileDialog  # 화면 없는 테스트 환경(libEGL 없음)에서도 이 모듈을 읽게
+
     recent = recent_folders(make_settings())
     return QFileDialog.getExistingDirectory(parent, title, str(recent[0]) if recent else "")
 

@@ -353,3 +353,13 @@ def format_resize_result(
         lines.append(f"실패 {len(failed)}장: " + ", ".join(r.source.name for r in failed[:5])
                      + (" …" if len(failed) > 5 else ""))
     return "\n".join(lines)
+
+
+def format_remaining(seconds: float) -> str:
+    """남은 시간을 대략적으로: "약 10초", "약 2분", "약 1시간 5분"."""
+    if seconds < 60:
+        return f"약 {max(5, int(round(seconds / 5)) * 5)}초"
+    minutes = int(round(seconds / 60))
+    if minutes < 60:
+        return f"약 {minutes}분"
+    return f"약 {minutes // 60}시간 {minutes % 60}분" if minutes % 60 else f"약 {minutes // 60}시간"

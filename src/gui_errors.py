@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PySide6.QtWidgets import QMessageBox, QWidget
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
 
 # (글자 안에 이 중 하나가 있으면, 설명)
 _HINTS: list[tuple[tuple[str, ...], str]] = [
@@ -82,6 +84,8 @@ def overlap_warning(sources: list[Path], target: Path | None, what: str) -> str:
 
 
 def show_error(parent: QWidget | None, title: str, message: str) -> None:
+    from PySide6.QtWidgets import QMessageBox  # 화면 없는 테스트 환경에서도 이 모듈을 읽게
+
     head, hint, details = split_message(message)
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Critical)

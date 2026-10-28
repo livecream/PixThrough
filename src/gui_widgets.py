@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gui_format import format_remaining
+
 FOLDER_LIST_ROWS = 3
 PROGRESS_WIDTH = 160
 
@@ -198,16 +200,6 @@ class SummaryLabel(QLabel):
 ETA_MIN_SECONDS = 3.0  # 이만큼 지나야 남은 시간을 보여준다(처음 몇 장은 들쭉날쭉)
 NOTIFY_AFTER_SECONDS = 15.0  # 이보다 오래 걸린 작업이 끝나면 알린다
 _NOTIFY_SETTLE_MS = 1500  # 단계가 이어지는 작업(스캔 → 채점)은 다음 단계가 시작되면 알리지 않는다
-
-
-def format_remaining(seconds: float) -> str:
-    """남은 시간을 대략적으로: "약 10초", "약 2분", "약 1시간 5분"."""
-    if seconds < 60:
-        return f"약 {max(5, int(round(seconds / 5)) * 5)}초"
-    minutes = int(round(seconds / 60))
-    if minutes < 60:
-        return f"약 {minutes}분"
-    return f"약 {minutes // 60}시간 {minutes % 60}분" if minutes % 60 else f"약 {minutes // 60}시간"
 
 
 class EtaProgressBar(QProgressBar):

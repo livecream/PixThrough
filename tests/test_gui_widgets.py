@@ -1,4 +1,4 @@
-from gui_widgets import format_remaining
+from gui_format import format_remaining
 
 
 def test_format_remaining_rounds_to_friendly_units():
