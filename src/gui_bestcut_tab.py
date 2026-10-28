@@ -926,6 +926,7 @@ class BestCutTab(QWidget):
         self._shortcut_hint.setToolTip(
             "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교 · "
             "S 여기서 나누기 · M 앞 장면과 합치기 · 오른쪽 클릭 메뉴</p>"
+            "<p>전체 단축키는 ? 키(또는 F1)나 도움말 › 단축키에서 볼 수 있습니다.</p>"
         )
         choice_button_row = QHBoxLayout()
         choice_button_row.addWidget(self._gallery_button)

@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_file_organize_tab import FileOrganizeTab
+from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
 from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
 from gui_settings import make_settings
@@ -162,12 +163,31 @@ class MainWindow(QMainWindow):
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         help_menu = self.menuBar().addMenu("도움말")
+        welcome = QAction("처음 사용 안내…", self)
+        welcome.triggered.connect(self.show_welcome)
+        help_menu.addAction(welcome)
+        shortcuts = QAction("단축키…", self)
+        shortcuts.setShortcut(QKeySequence(Qt.Key.Key_F1))
+        shortcuts.triggered.connect(self.show_shortcuts)
+        help_menu.addAction(shortcuts)
+        # ?는 글자 칸에서는 그대로 입력되고(칸이 단축키보다 먼저 받음) 나머지 자리에서 단축키 모음
+        QShortcut(QKeySequence("?"), self, activated=self.show_shortcuts)
+        help_menu.addSeparator()
         self.updates.build_menu(help_menu)
         help_menu.addSeparator()
         open_logs = QAction("로그 폴더 열기", self)
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def show_shortcuts(self) -> None:
+        ShortcutsDialog(self).exec()
+
+    def show_welcome(self) -> None:
+        dialog = WelcomeDialog(self)
+        dialog.page_requested.connect(self._select_page)
+        dialog.exec()
+        remember_welcome(dialog.show_again.isChecked())
 
     def open_log_folder(self) -> None:
         folder = app_log.app_data_dir()
@@ -260,6 +280,8 @@ def main() -> None:
     window = MainWindow()
     app_log.install_excepthooks(on_error=window.show_unexpected_error)
     window.show()
+    if should_show_welcome():
+        window.show_welcome()
     window.updates.check_on_startup()
     sys.exit(app.exec())
 
