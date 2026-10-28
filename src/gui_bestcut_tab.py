@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QRadioButton,
     QButtonGroup,
@@ -119,6 +118,7 @@ from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene
 from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
 from gui_widgets import (
+    EtaProgressBar,
     BAR_ROLE,
     FLAGGED_ROW,
     KEPT_ROW,
@@ -775,7 +775,7 @@ class BestCutTab(QWidget):
         self._open_output_button.setEnabled(False)
         self._open_output_button.clicked.connect(self._open_output_folder)
 
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary_text = SummaryLabel()
         self._next_steps = NextStepBar()

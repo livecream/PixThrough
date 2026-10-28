@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -38,6 +37,7 @@ from gui_dnd import extract_dropped_folders
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
 from gui_widgets import (
+    EtaProgressBar,
     FLAGGED_ROW,
     GuidePanel,
     PathLabel,
@@ -202,7 +202,7 @@ class ProofTab(QWidget):
         self._cancel_button = compact(QPushButton("취소"))
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self._cancel)
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
         self._next_steps = NextStepBar()

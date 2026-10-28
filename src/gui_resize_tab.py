@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -35,7 +34,16 @@ from gui_dnd import extract_dropped_folders
 from gui_format import format_resize_plan_summary, format_resize_result
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import load_bool, load_float, load_folder, make_settings, save_bool, save_float, save_folder
-from gui_widgets import GuidePanel, PathLabel, SummaryLabel, compact, fit_text, make_primary, status_row
+from gui_widgets import (
+    EtaProgressBar,
+    GuidePanel,
+    PathLabel,
+    SummaryLabel,
+    compact,
+    fit_text,
+    make_primary,
+    status_row,
+)
 from gui_worker import CancellableWorker, PreviewCancelled
 from resize import (
     ACTION_ERROR,
@@ -177,7 +185,7 @@ class ResizeTab(QWidget):
         self._cancel_button.clicked.connect(self._cancel)
         self._save_button = make_primary(QPushButton("축소해서 저장"))
         self._save_button.clicked.connect(self._run_save)
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
         self._next_steps = NextStepBar()

@@ -6,15 +6,19 @@
 - PathLabel: 긴 경로는 가운데를 …로 줄여 폴더 이름(끝부분)이 보이게 한다. 전체는 툴팁.
 - SummaryLabel: 결과 요약 몇 줄. 예전 큰 텍스트 칸(setPlainText)을 그대로 대신한다.
 - status_row: 진행률 막대와 상태 글자를 한 줄로.
+- EtaProgressBar: 진행률 막대에 남은 시간을 함께 쓰고, 오래 걸린 작업이 끝나면(앱을 보고
+  있지 않을 때) Dock 아이콘을 튀기거나 작업 표시줄을 깜빡여 알린다.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -191,6 +195,85 @@ class SummaryLabel(QLabel):
         return self.text()
 
 
+ETA_MIN_SECONDS = 3.0  # 이만큼 지나야 남은 시간을 보여준다(처음 몇 장은 들쭉날쭉)
+NOTIFY_AFTER_SECONDS = 15.0  # 이보다 오래 걸린 작업이 끝나면 알린다
+_NOTIFY_SETTLE_MS = 1500  # 단계가 이어지는 작업(스캔 → 채점)은 다음 단계가 시작되면 알리지 않는다
+
+
+def format_remaining(seconds: float) -> str:
+    """남은 시간을 대략적으로: "약 10초", "약 2분", "약 1시간 5분"."""
+    if seconds < 60:
+        return f"약 {max(5, int(round(seconds / 5)) * 5)}초"
+    minutes = int(round(seconds / 60))
+    if minutes < 60:
+        return f"약 {minutes}분"
+    return f"약 {minutes // 60}시간 {minutes % 60}분" if minutes % 60 else f"약 {minutes // 60}시간"
+
+
+class EtaProgressBar(QProgressBar):
+    """setValue(0)이나 setMaximum(다른 값)으로 새 작업(단계)이 시작된 것으로 보고 시간을 잰다.
+
+    지금까지의 속도로 남은 시간을 막대 옆 글자(eta_label, status_row가 붙임 — macOS 기본 모양은
+    막대 안에 글자를 그리지 않아서)에 "약 2분 남음"으로 보여주고, 끝(값 = 최대)에
+    닿은 뒤 잠시 다음 단계가 없고 전체가 NOTIFY_AFTER_SECONDS보다 오래 걸렸으면 창이 활성이
+    아닐 때 QApplication.alert로 알린다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stage_start = time.monotonic()
+        self._task_start: float | None = None  # 여러 단계를 합친 작업 시작(알림 판단용)
+        self._notify_timer = QTimer(self)
+        self._notify_timer.setSingleShot(True)
+        self._notify_timer.setInterval(_NOTIFY_SETTLE_MS)
+        self._notify_timer.timeout.connect(self._notify_if_done)
+        self.notified = 0  # 테스트용: 알린 횟수
+        self.eta_label = QLabel()
+
+    def _restart_stage(self) -> None:
+        now = time.monotonic()
+        # 앞 단계가 막 끝났거나(알림 대기 중) 방금 시작한 단계면 같은 작업의 다음 단계로 본다.
+        # 그 밖에는 새 작업(앞 작업이 취소·실패로 끝에 닿지 않았어도 여기서 새로 잰다).
+        continuing = self._notify_timer.isActive() or now - self._stage_start < 0.2
+        if not continuing or self._task_start is None:
+            self._task_start = now
+        self._notify_timer.stop()
+        self._stage_start = now
+
+    def setMaximum(self, maximum: int) -> None:  # noqa: N802 - Qt override signature
+        if maximum != self.maximum():
+            self._restart_stage()
+        super().setMaximum(maximum)
+        self._update_format()
+
+    def setValue(self, value: int) -> None:  # noqa: N802 - Qt override signature
+        if value == 0:
+            self._restart_stage()
+        super().setValue(value)
+        self._update_format()
+        if self.maximum() > 0 and value >= self.maximum():
+            self._notify_timer.start()
+
+    def _update_format(self) -> None:
+        value, maximum = self.value(), self.maximum()
+        elapsed = time.monotonic() - self._stage_start
+        # 처음 몇 장(모델 불러오기·여러 장 동시 처리 시작)은 속도가 들쭉날쭉해 5%는 지난 뒤부터
+        if 0 < value < maximum and elapsed >= ETA_MIN_SECONDS and value >= max(3, maximum * 0.05):
+            remaining = elapsed / value * (maximum - value)
+            self.eta_label.setText(f"{format_remaining(remaining)} 남음")
+        else:
+            self.eta_label.setText("")
+        self.setToolTip(f"{value} / {maximum}" if maximum > 0 and value < maximum else "")
+
+    def _notify_if_done(self) -> None:
+        start, self._task_start = self._task_start, None
+        if start is None or time.monotonic() - start < NOTIFY_AFTER_SECONDS:
+            return
+        window = self.window()
+        if not window.isActiveWindow():
+            QApplication.alert(window, 0)  # macOS Dock 튀기기 / Windows 작업 표시줄 깜빡임
+            self.notified += 1
+
+
 def status_row(progress_bar: QProgressBar, status_label: QLabel) -> QHBoxLayout:
     progress_bar.setFixedWidth(PROGRESS_WIDTH)
     progress_bar.setMaximumHeight(16)
@@ -199,6 +282,8 @@ def status_row(progress_bar: QProgressBar, status_label: QLabel) -> QHBoxLayout:
     status_label.setMinimumWidth(40)
     row = QHBoxLayout()
     row.addWidget(progress_bar)
+    if isinstance(progress_bar, EtaProgressBar):
+        row.addWidget(progress_bar.eta_label)
     row.addWidget(status_label, stretch=1)
     return row
 

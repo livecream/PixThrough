@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -38,6 +37,7 @@ from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_settings import load_folder, make_settings, save_folder
 from gui_widgets import (
+    EtaProgressBar,
     FLAGGED_ROW,
     KEPT_ROW,
     GuidePanel,
@@ -146,7 +146,7 @@ class OrganizeTab(QWidget):
         self._undo_button.clicked.connect(self._undo_last_operation)
         self._cancel_button = compact(QPushButton("취소"))
         self._cancel_button.clicked.connect(self._cancel)
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
         self._next_steps = NextStepBar()

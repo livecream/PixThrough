@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -34,6 +33,7 @@ from gui_dnd import extract_dropped_folders
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_widgets import (
+    EtaProgressBar,
     GuidePanel,
     FolderList,
     PathLabel,
@@ -222,7 +222,7 @@ class RenameTab(QWidget):
         self._apply_button.setEnabled(False)
         self._apply_button.clicked.connect(self._run_apply)
 
-        self._progress_bar = QProgressBar()
+        self._progress_bar = EtaProgressBar()
         self._status_label = QLabel("")
         self._summary = SummaryLabel()
         self._next_steps = NextStepBar()
