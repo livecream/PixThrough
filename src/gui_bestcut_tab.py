@@ -117,6 +117,7 @@ from xmp_rating import (
 from gui_scene_gallery import THUMB as GALLERY_THUMB, GalleryPhoto, GalleryScene, SceneGallery
 from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
+from gui_reveal import add_file_actions
 from gui_widgets import (
     EtaProgressBar,
     BAR_ROLE,
@@ -1483,6 +1484,7 @@ class BestCutTab(QWidget):
         menu.addSeparator()
         menu.addAction("여기서 나누기 (S)", lambda: self._edit_scene(index, SPLIT))
         menu.addAction("앞 장면과 합치기 (M)", lambda: self._edit_scene(index, JOIN))
+        add_file_actions(menu, self, row.path)
         menu.exec(global_pos)
 
     # --- 나란히 비교 ---------------------------------------------------------------

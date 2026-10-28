@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -31,6 +32,7 @@ from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
+from gui_reveal import add_file_actions
 from gui_widgets import (
     EtaProgressBar,
     GuidePanel,
@@ -250,6 +252,8 @@ class RenameTab(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_FOLDER_COLUMN, QHeaderView.ResizeMode.Stretch)
         self._table.itemSelectionChanged.connect(self._on_row_selected)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
         self._preview_pane = PreviewPane()
         table_box = QHBoxLayout()
         table_box.setContentsMargins(0, 0, 0, 0)
@@ -570,6 +574,16 @@ class RenameTab(QWidget):
         # 적용한 뒤에는 파일이 새 이름에 있다
         path = plan.new_path if self._applied else plan.old_path
         self._preview_pane.set_path(path, f"{plan.old_path.name}\n→ {plan.new_path.name}")
+
+    def _show_context_menu(self, pos) -> None:
+        row = self._table.rowAt(pos.y())
+        if row < 0 or self._rows is None:
+            return
+        plan = self._rows[row]
+        path = plan.new_path if self._applied else plan.old_path
+        menu = QMenu(self)
+        add_file_actions(menu, self, path)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
 
     # --- 적용 ---------------------------------------------------------------------
     def _run_apply(self) -> None:

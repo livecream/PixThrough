@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -34,6 +35,7 @@ from gui_dnd import extract_dropped_folders
 from gui_format import format_bytes, format_folder_summary
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
+from gui_reveal import add_file_actions
 from gui_settings import load_folder, make_settings, pick_directory, save_folder
 from gui_widgets import (
     EtaProgressBar,
@@ -156,6 +158,8 @@ class OrganizeTab(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.verticalHeader().setVisible(False)
         self._table.itemSelectionChanged.connect(self._on_row_selected)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_context_menu)
         self._preview_pane = PreviewPane()
         table_box = QHBoxLayout()
         table_box.setContentsMargins(0, 0, 0, 0)
@@ -330,6 +334,15 @@ class OrganizeTab(QWidget):
         items = self._table.selectedItems()
         path = items[0].data(_PATH_ROLE) if items else None
         self._preview_pane.set_path(path if isinstance(path, Path) and path.is_file() else None)
+
+    def _show_context_menu(self, pos) -> None:
+        item = self._table.itemAt(pos)
+        path = item.data(_PATH_ROLE) if item is not None else None
+        if not isinstance(path, Path) or not path.exists():
+            return
+        menu = QMenu(self)
+        add_file_actions(menu, self, path)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
 
     # --- 살펴보기 -------------------------------------------------------------------
     def _show_folder_summary(self) -> None:
