@@ -33,6 +33,7 @@ from scanner import PhotoMetadata
 from scoring import PhotoScore, score_photos
 
 DEFAULT_WEIGHTS = {"sharpness": 0.5, "exposure": 0.3, "face": 0.2}
+WEIGHT_KEYS = ("sharpness", "exposure", "face")
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,15 @@ class SceneSelection:
     kept_indices: list[int]
     # 후보에서 뺀 사진의 장면 내 위치 → 사유(C컷 판정 등)
     excluded: dict[int, str] = field(default_factory=dict)
+
+
+WEIGHT_LABELS = {"sharpness": "선명도", "exposure": "노출", "face": "눈뜸"}
+
+
+def format_weights(weights: dict[str, float]) -> str:
+    """"선명도 50·노출 30·눈뜸 20"(합이 1이 아니어도 비율로)."""
+    total = sum(weights[k] for k in WEIGHT_KEYS) or 1.0
+    return "·".join(f"{WEIGHT_LABELS[k]} {round(weights[k] / total * 100)}" for k in WEIGHT_KEYS)
 
 
 def keep_count(scene_size: int, keep_percent: int) -> int:
@@ -64,13 +74,20 @@ def _normalize(values: list[float]) -> list[float]:
     return [(v - lo) / (hi - lo) for v in values]
 
 
-def _combined_score(norm_sharpness: float, exposure: float, face: float | None) -> float:
+def combined_score(
+    norm_sharpness: float, exposure: float, face: float | None, weights: dict[str, float] | None = None
+) -> float:
+    """가중 평균(얼굴이 없으면 그 항목을 빼고 나머지 가중치로). weights가 없으면 DEFAULT_WEIGHTS —
+    사용자가 "내 선택에 맞춰보기"(weight_tuning)로 고른 가중치를 GUI가 넘길 수 있다."""
+    weights = weights or DEFAULT_WEIGHTS
     parts = {"sharpness": norm_sharpness, "exposure": exposure}
     if face is not None:
         parts["face"] = face
 
-    weight_sum = sum(DEFAULT_WEIGHTS[k] for k in parts)
-    return sum(DEFAULT_WEIGHTS[k] * v for k, v in parts.items()) / weight_sum
+    weight_sum = sum(weights[k] for k in parts)
+    if weight_sum <= 0:
+        return 0.0
+    return sum(weights[k] * v for k, v in parts.items()) / weight_sum
 
 
 def select_best(
@@ -79,6 +96,7 @@ def select_best(
     cache: dict | None = None,
     keep_percent: int = 0,
     exclude: Callable[[PhotoScore], str | None] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> SceneSelection:
     """장면 그룹에서 종합 점수가 높은 사진을 고른다 (기본 1장, keep_percent로 더 남김).
     exclude가 주어지면 사유(문자열)를 돌려준 사진은 후보에서 뺀다(C컷 등)."""
@@ -91,7 +109,7 @@ def select_best(
     if valid:
         norm_sharpness = _normalize([scores[i].sharpness for i in valid])
         for i, ns in zip(valid, norm_sharpness):
-            combined_scores[i] = _combined_score(ns, scores[i].exposure, scores[i].face)
+            combined_scores[i] = combined_score(ns, scores[i].exposure, scores[i].face, weights)
 
     excluded: dict[int, str] = {}
     if exclude is not None:

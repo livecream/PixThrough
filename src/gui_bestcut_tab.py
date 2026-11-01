@@ -86,11 +86,13 @@ from gui_settings import (
     load_bool,
     load_float,
     load_folder,
+    load_weights,
     make_settings,
     pick_directory,
     save_bool,
     save_float,
     save_folder,
+    save_weights,
 )
 from gui_compare_view import STATE_FLAGGED, STATE_KEPT, STATE_NONE, CompareDialog
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
@@ -103,6 +105,7 @@ from report import ReportRow, apply_manual_choices, build_report, write_apply_re
 from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
 from scoring import score_photos
+from selector import DEFAULT_WEIGHTS, format_weights
 from thumbnails import make_thumbnail_jpeg
 from xmp_rating import (
     ACTION_CREATED,
@@ -128,6 +131,7 @@ from gui_scene_gallery import (
 )
 from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
+from gui_weight_tuning import WeightTuningDialog, weights_differ
 from gui_reveal import add_file_actions
 from gui_widgets import (
     BAR_ROLE,
@@ -228,6 +232,7 @@ class _SelectionSettings(NamedTuple):
     thresholds: BadCutThresholds = NO_BADCUT  # C컷 기준, 둘 다 0이면 C컷 판정 안 함
     clock_offsets: tuple[tuple[str, float], ...] = ()  # 바디별 시차(clock_sync), 장면 묶기에 씀
     scene_edits: tuple[tuple[Path, str], ...] = ()  # 직접 나누기/합치기(grouping.apply_scene_edits)
+    weights: tuple[tuple[str, float], ...] = ()  # 종합점수 가중치(비면 기본값, 가중치 맞추기로 바꿈)
 
 
 def _scene_key(settings: _SelectionSettings) -> tuple:
@@ -375,6 +380,7 @@ class PreviewWorker(CancellableWorker):
                 cache=self._score_cache,
                 keep_percent=settings.keep_percent,
                 exclude=_exclude_for(settings.thresholds),
+                weights=dict(settings.weights) or None,
             )
             self._generate_thumbnails(rows)
             self.finished_ok.emit(photos, rows, settings, hashes)
@@ -771,6 +777,12 @@ class BestCutTab(QWidget):
 
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
         self._scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
+        # 종합점수 가중치(앱 설정, 기본 50·30·20) — "가중치…"로 내 선택에 맞춰보고 바꾼다
+        self._weights: dict[str, float] = load_weights(self._settings)
+        self._weights_button = QToolButton()  # 가운데 칸이 좁아 작은 버튼으로
+        self._weights_button.setText("가중치…")
+        self._weights_button.clicked.connect(self._open_weight_tuning)
+        self._update_weights_button()
         help_row = QHBoxLayout()
         help_row.addWidget(self._gap_spin)
         help_row.addStretch()
@@ -1021,7 +1033,11 @@ class BestCutTab(QWidget):
         settings_form.addRow(clock_label, clock_row)
         settings_form.addRow(split_row)
         settings_form.addRow(self._grouping_help_label)
-        settings_form.addRow(self._scoring_help_label)
+        scoring_row = QHBoxLayout()
+        scoring_row.addWidget(self._scoring_help_label)
+        scoring_row.addStretch(1)
+        scoring_row.addWidget(self._weights_button)
+        settings_form.addRow(scoring_row)
         settings_group = QGroupBox("장면·베스트컷 기준")
         settings_group.setLayout(settings_form)
 
@@ -1252,6 +1268,7 @@ class BestCutTab(QWidget):
         return _SelectionSettings(
             self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key(),
             tuple(sorted(self._scene_edits.items(), key=lambda item: str(item[0]))),
+            tuple(self._weights.items()) if weights_differ(self._weights, DEFAULT_WEIGHTS) else (),
         )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
@@ -1931,6 +1948,7 @@ class BestCutTab(QWidget):
                 cache=self._score_cache,
                 keep_percent=grouping.keep_percent,
                 exclude=_exclude_for(grouping.thresholds),
+                weights=dict(grouping.weights) or None,
             )
         except OSError as e:
             # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
@@ -1945,9 +1963,41 @@ class BestCutTab(QWidget):
         self._show_rows(rows, grouping)
         self._status_label.setText("바뀐 기준으로 다시 묶고 다시 골랐습니다")
 
+    def _open_weight_tuning(self) -> None:
+        if not self._rows:
+            QMessageBox.information(
+                self, "가중치 맞추기",
+                "먼저 미리보기를 하세요. 미리보기 결과에서 마음에 들지 않는 장면의 컷을 직접 넣고 빼 보면, "
+                "그 선택에 더 잘 맞는 가중치를 추천해 드립니다.",
+            )
+            return
+        dialog = WeightTuningDialog(self._rows, self._weights, parent=self)
+        if dialog.exec() and dialog.chosen is not None:
+            self._set_weights(dialog.chosen)
+
+    def _set_weights(self, weights: dict[str, float]) -> None:
+        self._weights = dict(weights)
+        save_weights(self._settings, self._weights)
+        log.info("베스트컷 가중치: %s", format_weights(self._weights))
+        self._update_weights_button()
+        self._update_grouping_help()
+        if self._photos is not None:
+            self._regroup()  # 저장된 점수로 바로 다시 고른다(직접 고른 컷은 그대로)
+
+    def _update_weights_button(self) -> None:
+        custom = weights_differ(self._weights, DEFAULT_WEIGHTS)
+        self._weights_button.setText("가중치 ✎" if custom else "가중치…")
+        self._weights_button.setToolTip(
+            f"<p>종합점수 가중치: {format_weights(self._weights)}" + (" (직접 맞춤)" if custom else " (기본값)")
+            + "</p><p>지금 결과에서 직접 넣고 뺀 컷과 자동 선택을 비교해, 더 잘 맞는 가중치를 추천하고 "
+            "바꿀 수 있습니다.</p>"
+        )
+
     def _update_grouping_help(self) -> None:
         settings = self._current_grouping()
-        scoring_help = bestcut_scoring_help(keep_percent=settings.keep_percent)
+        scoring_help = bestcut_scoring_help(
+            weights=dict(settings.weights) or DEFAULT_WEIGHTS, keep_percent=settings.keep_percent
+        )
         self._scoring_help_label.setToolTip(scoring_help)
         self._table.horizontalHeaderItem(4).setToolTip(scoring_help)
         self._table.horizontalHeaderItem(9).setToolTip(scoring_help)

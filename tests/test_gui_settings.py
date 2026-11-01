@@ -152,3 +152,17 @@ def test_saving_folders_records_recent_folders_newest_first(tmp_path):
     save_folder(settings, "a/out", None)  # 지운 설정은 최근 폴더에 안 남김
     clear_recent(settings)
     assert recent_folders(settings) == []
+
+
+def test_weights_round_trip_and_fall_back_to_defaults(tmp_path):
+    from gui_settings import WEIGHTS_KEY, load_weights, save_weights
+    from selector import DEFAULT_WEIGHTS
+
+    settings = _settings(tmp_path)
+    assert load_weights(settings) == DEFAULT_WEIGHTS
+    save_weights(settings, {"sharpness": 0.6, "exposure": 0.25, "face": 0.15})
+    loaded = load_weights(settings)
+    assert abs(loaded["sharpness"] - 0.6) < 1e-6 and abs(sum(loaded.values()) - 1) < 1e-9
+    for broken in ("x,1,2", "1,2", "0,0,1", "-1,1,1"):
+        settings.setValue(WEIGHTS_KEY, broken)
+        assert load_weights(settings) == DEFAULT_WEIGHTS
