@@ -385,14 +385,17 @@ def test_eyes_open_in_crop_is_none_when_landmarks_fail(monkeypatch):
 
 def test_detect_faces_keeps_faces_without_eye_analysis(monkeypatch):
     boxes = [(0.1, 0.1, 0.3, 0.3), (0.6, 0.6, 0.9, 0.9)]
-    eye_results = iter([0.8, None])  # 두 번째 얼굴은 옆모습이라 눈 분석 실패
+    results = iter([(0.8, 0.6), None])  # 두 번째 얼굴은 옆모습이라 얼굴 분석 실패
     monkeypatch.setattr(scoring, "_locate_faces", lambda rgb: boxes)
-    monkeypatch.setattr(scoring, "_eyes_open_in_crop", lambda crop: next(eye_results))
+    monkeypatch.setattr(scoring, "_expression_in_crop", lambda crop: next(results))
 
     faces = scoring._detect_faces(np.zeros((100, 100, 3), dtype="uint8"))
 
     assert [f.bbox for f in faces] == boxes
     assert [f.eyes_open for f in faces] == [0.8, None]
+    assert [f.smile for f in faces] == [0.6, None]
+    assert scoring._smile_of(faces) == 0.6
+    assert scoring._smile_of(faces[1:]) is None
 
 
 def test_eyes_open_of_averages_only_analysed_faces():

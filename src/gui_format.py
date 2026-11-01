@@ -126,6 +126,7 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS, keep_perce
     sharpness = round(weights["sharpness"] * 100)
     exposure = round(weights["exposure"] * 100)
     face = round(weights["face"] * 100)
+    smile = round(weights.get("smile", 0.0) * 100)
     if keep_percent:
         selection = (
             f"<p><b>베스트컷 선정</b>: 장면마다 사진 수의 <b>{keep_percent}%</b>(올림, 최소 "
@@ -134,7 +135,8 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS, keep_perce
     else:
         selection = "<p><b>베스트컷 선정</b>: 장면마다 종합점수가 가장 높은 1장을 고릅니다.</p>"
     return selection + (
-        f"<p><b>종합점수(0~1)</b> = 선명도 {sharpness}% + 노출 {exposure}% + 눈뜸 {face}%</p>"
+        f"<p><b>종합점수(0~1)</b> = 선명도 {sharpness}% + 노출 {exposure}% + 눈뜸 {face}%"
+        + (f" + 미소 {smile}%" if smile else "") + "</p>"
         "<ul>"
         "<li><b>선명도</b>: 초점이 맞은 부분(얼굴, 없으면 가장 선명한 부분)이 얼마나 "
         "또렷한지. 같은 장면 안에서 가장 흐린 컷 0 ~ 가장 선명한 컷 1로 바꿔서 "
@@ -144,6 +146,8 @@ def bestcut_scoring_help(weights: dict[str, float] = DEFAULT_WEIGHTS, keep_perce
         "<li><b>눈뜸</b>: 얼굴이 검출된 사진에서 눈을 뜬 정도(0~1). 얼굴이 없거나 눈을 "
         "분석하지 못한(옆모습 등) 사진은 이 항목을 빼고 선명도·노출 비율만으로 다시 "
         "계산합니다.</li>"
+        "<li><b>미소</b>: 같은 얼굴 분석으로 잰 웃는 정도(0~1). 처음엔 0%라 결과에 영향이 없고, "
+        "\"가중치…\"에서 직접 고른 결과와 맞춰 보며 정할 수 있습니다.</li>"
         "</ul>"
         "<p>종합점수가 같으면 먼저 찍은 컷을 고릅니다. 점수를 계산하지 못한 파일"
         "(손상 등)은 모든 점수가 0으로 처리돼 정상 사진에 밀립니다.</p>"

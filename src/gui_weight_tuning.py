@@ -167,5 +167,5 @@ class WeightTuningDialog(QDialog):
 
 
 def weights_differ(a: dict[str, float], b: dict[str, float]) -> bool:
-    return any(abs(a[k] - b[k]) > 1e-6 for k in WEIGHT_KEYS)
+    return any(abs(a.get(k, 0.0) - b.get(k, 0.0)) > 1e-6 for k in WEIGHT_KEYS)
 

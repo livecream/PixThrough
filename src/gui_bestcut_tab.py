@@ -1699,6 +1699,8 @@ class BestCutTab(QWidget):
             return "점수 계산 실패"
         rank, count = self._ranks_by_path.get(row.path, (0, 0))
         eyes = "눈뜸 없음" if row.face is None else f"눈뜸 {row.face:.2f}"
+        if row.smile is not None:
+            eyes += f" · 미소 {row.smile:.2f}"
         sharpness = f"선명도 장면 안 {rank}위/{count}" if rank else "선명도 —"
         return f"종합 {row.total:.2f} · {sharpness} · {eyes}"
 
@@ -2210,9 +2212,10 @@ class BestCutTab(QWidget):
         sharpness_item.setToolTip(f"선명도 원래 값 {row.sharpness:.1f}" + (f" ({region})" if region else ""))
         self._table.setItem(table_row, 6, sharpness_item)
         self._table.setItem(table_row, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
-        self._table.setItem(
-            table_row, 8, _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
-        )
+        eyes_item = _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+        if row.smile is not None:
+            eyes_item.setToolTip(f"미소 {row.smile:.2f}")
+        self._table.setItem(table_row, 8, eyes_item)
         self._table.setItem(table_row, 9, QTableWidgetItem(row.reason))
         # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
         if row.selected:

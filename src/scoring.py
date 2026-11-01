@@ -66,7 +66,8 @@ _MODEL_URL = (
 # 점수 계산 방식(선명도·노출·눈뜸을 재는 방법)을 바꾸면 올린다. 앱 데이터 폴더에 저장해 둔
 # 예전 방식의 점수(score_store)를 버리고 다시 계산하게 하기 위함이다.
 # 2: 얼굴 검출을 YuNet + 얼굴별 눈 분석으로 바꿈(눈뜸·얼굴 영역 선명도가 달라짐)
-SCORING_VERSION = 2
+# 3: 미소(smile) 점수 추가 — 같은 얼굴 분석의 mouthSmile 블렌드셰이프
+SCORING_VERSION = 3
 
 # 얼굴 위치 검출 모델 (OpenCV Zoo YuNet). 랜드마크 모델과 마찬가지로 최초 사용 시
 # 다운로드한다.
@@ -110,6 +111,7 @@ class PhotoScore:
     error: str | None = None
     sharpness_global: float | None = None  # 예전 방식(원본 해상도·사진 전체), 비교용
     sharpness_region: str | None = None  # SHARPNESS_REGION_FACE / _TILES
+    smile: float | None = None  # 미소(0~1, 얼굴 분석에 성공한 얼굴 평균), 얼굴이 없으면 None
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,7 @@ class _DetectedFace:
     eyes_open: float | None  # 눈 분석에 실패한 얼굴(옆모습 등)은 None
     # 정규화 좌표(0~1) 경계 상자: (x0, y0, x1, y1)
     bbox: tuple[float, float, float, float]
+    smile: float | None = None  # mouthSmileLeft/Right 평균(눈 분석과 같이 실패하면 None)
 
 
 def _decode(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -310,12 +313,12 @@ def _square_crop(rgb: np.ndarray, bbox: tuple[float, float, float, float]) -> np
     return cv2.resize(crop, (FACE_CROP_SIZE, FACE_CROP_SIZE), interpolation=cv2.INTER_AREA)
 
 
-def _eyes_open_in_crop(crop: np.ndarray) -> float | None:
-    """잘라낸 얼굴 사진에서 눈 뜬 정도를 잰다. 옆 사람 얼굴이 함께 잡히면 가운데에
+def _expression_in_crop(crop: np.ndarray) -> tuple[float, float] | None:
+    """잘라낸 얼굴 사진에서 (눈 뜬 정도, 미소)를 잰다. 옆 사람 얼굴이 함께 잡히면 가운데에
     가장 가까운 얼굴을 쓴다. 분석에 실패하면(옆모습 등) None."""
     image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(crop))
     result = _get_landmarker().detect(image)
-    best: tuple[float, float] | None = None  # (중심까지 거리, 눈 뜬 정도)
+    best: tuple[float, float, float] | None = None  # (중심까지 거리, 눈 뜬 정도, 미소)
     for blendshapes, landmarks in zip(result.face_blendshapes, result.face_landmarks):
         cx = sum(lm.x for lm in landmarks) / len(landmarks)
         cy = sum(lm.y for lm in landmarks) / len(landmarks)
@@ -324,18 +327,26 @@ def _eyes_open_in_crop(crop: np.ndarray) -> float | None:
         eyes = _eyes_open_from_scores(
             scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)
         )
+        smile = (scores.get("mouthSmileLeft", 0.0) + scores.get("mouthSmileRight", 0.0)) / 2
         if best is None or distance < best[0]:
-            best = (distance, eyes)
-    return None if best is None else best[1]
+            best = (distance, eyes, smile)
+    return None if best is None else (best[1], best[2])
+
+
+def _eyes_open_in_crop(crop: np.ndarray) -> float | None:
+    result = _expression_in_crop(crop)
+    return None if result is None else result[0]
 
 
 def _detect_faces(rgb: np.ndarray) -> list[_DetectedFace]:
     """얼굴마다 경계 상자와 눈 뜬 정도를 구한다. 경계 상자는 선명도를 얼굴 영역에서
     재는 데, 눈 뜬 정도는 눈뜸 점수에 쓴다."""
-    return [
-        _DetectedFace(eyes_open=_eyes_open_in_crop(_square_crop(rgb, bbox)), bbox=bbox)
-        for bbox in _locate_faces(rgb)
-    ]
+    faces = []
+    for bbox in _locate_faces(rgb):
+        expression = _expression_in_crop(_square_crop(rgb, bbox))
+        eyes, smile = expression if expression is not None else (None, None)
+        faces.append(_DetectedFace(eyes_open=eyes, bbox=bbox, smile=smile))
+    return faces
 
 
 def _eyes_open_of(faces: list[_DetectedFace]) -> float | None:
@@ -344,6 +355,12 @@ def _eyes_open_of(faces: list[_DetectedFace]) -> float | None:
     if not values:
         return None
     return sum(values) / len(values)
+
+
+def _smile_of(faces: list[_DetectedFace]) -> float | None:
+    """미소 분석에 성공한 얼굴들의 평균(없으면 None)."""
+    values = [f.smile for f in faces if f.smile is not None]
+    return sum(values) / len(values) if values else None
 
 
 def face_score(path: Path) -> float | None:
@@ -379,6 +396,7 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
         sharpness_global = _sharpness_from_gray(gray)
         exposure = _exposure_from_gray(gray)
         face = _eyes_open_of(faces)
+        smile = _smile_of(faces)
     except Exception as e:
         return PhotoScore(
             path=meta.path,
@@ -397,6 +415,7 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
         total=sharpness,
         sharpness_global=sharpness_global,
         sharpness_region=sharpness_region,
+        smile=smile,
     )
 
 

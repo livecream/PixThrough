@@ -99,3 +99,19 @@ def test_recommend_skips_candidates_that_pick_the_same_cuts():
     outcomes = [c.agreement.matched for c in candidates]
     assert len(candidates) == len(set(map(str, (c.weights for c in candidates))))
     assert outcomes[0] == 2 and len(candidates) <= 2  # 결과가 다른 조합은 두 장면에서 많아야 몇 가지
+
+
+def test_smile_weight_zero_keeps_old_results_and_can_be_recommended():
+    from selector import combined_score
+
+    assert combined_score(0.5, 0.5, 0.5, DEFAULT_WEIGHTS, smile=1.0) == combined_score(0.5, 0.5, 0.5, DEFAULT_WEIGHTS)
+    # 사람이 웃는 컷(b)을 남긴 장면 — 미소 비중이 있어야 b가 1등
+    rows = [
+        _row("a", 1, 100, 0.5, face=0.9, manual=MANUAL_REMOVED),
+        _row("b", 1, 95, 0.5, face=0.9, selected=True, manual=MANUAL_ADDED),
+    ]
+    rows = [r.__class__(**{**r.__dict__, "smile": s}) for r, s in zip(rows, (0.0, 0.9))]
+    now, candidates = recommend(rows)
+    assert now.matched == 0
+    assert candidates and candidates[0].weights["smile"] > 0 and candidates[0].agreement.matched == 1
+    assert "미소" in format_weights(candidates[0].weights)
