@@ -167,6 +167,10 @@ class MainWindow(QMainWindow):
         self._recent_menu = file_menu.addMenu("최근 폴더")
         self._recent_menu.setToolTipsVisible(True)
         self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        client = QAction("고객 선택 결과 가져오기…", self)
+        client.setToolTip("고객 셀렉 결과 파일을 베스트컷 화면의 미리보기 사진과 맞춰 \"고객\" 표시를 붙입니다")
+        client.triggered.connect(self._import_client_result)
+        file_menu.addAction(client)
         help_menu = self.menuBar().addMenu("도움말")
         welcome = QAction("처음 사용 안내…", self)
         welcome.triggered.connect(self.show_welcome)
@@ -203,6 +207,10 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, f=folder: self._navigate(page, [f], replace=False))
         menu.addSeparator()
         menu.addAction("목록 지우기").triggered.connect(lambda: clear_recent(self._settings))
+
+    def _import_client_result(self) -> None:
+        self._select_page("selection")
+        self._photo_selection_tab.import_client_result()
 
     def show_shortcuts(self) -> None:
         ShortcutsDialog(self).exec()

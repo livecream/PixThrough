@@ -213,3 +213,16 @@ def test_second_round_page_has_only_picked_photos_with_original_ids(tmp_path):
     with pytest.raises(ValueError):
         build_proof(src, tmp_path / "out", "x", long_edge=200, only={tmp_path / "nope.jpg"})
     assert next_round_title("김씨 셀렉 2차") == "김씨 셀렉 3차"
+
+
+def test_match_against_several_input_folders_never_guesses_between_same_names(tmp_path):
+    from proof_gallery import photo_ids
+
+    a, b = tmp_path / "A", tmp_path / "B"
+    photos = [a / "IMG_1.jpg", b / "IMG_1.jpg", a / "x.jpg", b / "day1" / "y.jpg"]
+    items = photo_ids(photos, [a, b])
+    assert ("day1/y.jpg", b / "day1" / "y.jpg") in items
+    selection = ClientSelection(ids=["IMG_1.jpg", "x.jpg", "day1/y.jpg", "Y"])
+    matched, missing = match_selection(selection, a, items=items)
+    assert [m.source for m in matched] == [a / "x.jpg", b / "day1" / "y.jpg"]  # Y는 같은 사진이라 한 번만
+    assert missing == ["IMG_1.jpg"]  # A·B에 같은 이름 — 잘못 고르지 않음

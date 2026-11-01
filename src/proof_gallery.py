@@ -313,29 +313,48 @@ def match_selection(
     items: list[tuple[str, Path]] | None = None,
 ) -> tuple[list[MatchedPick], list[str]]:
     """고객이 고른 것을 원본 폴더 사진과 맞춘다. 경로(id)가 같으면 그대로, 아니면 확장자를 뺀
-    파일 이름이 하나뿐일 때만 그 사진(둘 이상이면 못 찾음으로 — 잘못 복사하지 않게)."""
+    파일 이름이 하나뿐일 때만 그 사진(둘 이상이면 못 찾음으로 — 잘못 복사하지 않게).
+    items를 주면 그 (id, 사진) 목록과 맞춘다(여러 입력 폴더 — 같은 id가 다른 사진이면 그 id로는
+    고르지 않음)."""
     if items is None:
         items = list_photos(folder, recursive)
-    by_id = {photo_id: path for photo_id, path in items}
-    by_stem: dict[str, list[tuple[str, Path]]] = {}
+    paths_by_id: dict[str, set[Path]] = {}
+    by_stem: dict[str, dict[Path, str]] = {}
     for photo_id, path in items:
-        by_stem.setdefault(path.stem.lower(), []).append((photo_id, path))
+        paths_by_id.setdefault(photo_id, set()).add(path)
+        by_stem.setdefault(path.stem.lower(), {}).setdefault(path, photo_id)
     matched: list[MatchedPick] = []
     missing: list[str] = []
-    seen: set[str] = set()
+    seen: set[Path] = set()
     for wanted in selection.ids:
         key = wanted.replace("\\", "/")
-        if key in by_id:
-            hit = (key, by_id[key])
+        hit = None
+        if len(paths_by_id.get(key, ())) == 1:
+            hit = (key, next(iter(paths_by_id[key])))
         else:
-            candidates = by_stem.get(Path(key).stem.lower(), [])
-            hit = candidates[0] if len(candidates) == 1 else None
+            candidates = by_stem.get(Path(key).stem.lower(), {})
+            if len(candidates) == 1:
+                path, photo_id = next(iter(candidates.items()))
+                hit = (photo_id, path)
         if hit is None:
             missing.append(wanted)
-        elif hit[0] not in seen:
-            seen.add(hit[0])
+        elif hit[1] not in seen:
+            seen.add(hit[1])
             matched.append(MatchedPick(hit[0], hit[1], selection.notes.get(wanted, "")))
     return matched, missing
+
+
+def photo_ids(photos: list[Path], folders: list[Path]) -> list[tuple[str, Path]]:
+    """사진마다 그 사진을 담은 입력 폴더 기준 상대 경로 id(여러 폴더에 걸치면 각각) — 베스트컷
+    화면처럼 입력 폴더가 여러 개일 때 고객 결과와 맞추는 데 쓴다."""
+    items = []
+    for path in photos:
+        for folder in folders:
+            try:
+                items.append((path.relative_to(folder).as_posix(), path))
+            except ValueError:
+                continue
+    return items
 
 
 def record_client_picks(matched: list[MatchedPick], photos: list[Path]) -> None:

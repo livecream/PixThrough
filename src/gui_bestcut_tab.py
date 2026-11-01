@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -69,7 +70,7 @@ from grouping import (
 import app_log
 from clock_sync import shift_photos
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
-from gui_dnd import extract_dropped_folders
+from gui_dnd import extract_dropped_files, extract_dropped_folders
 from gui_errors import overlap_warning, show_error
 from gui_format import (
     bestcut_grouping_help,
@@ -104,6 +105,7 @@ from badcut import BadCutThresholds, badcut_reason
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
+from proof_gallery import match_selection, parse_selection, photo_ids, record_client_picks
 from scoring import score_photos
 from selector import DEFAULT_WEIGHTS, format_weights
 from thumbnails import make_thumbnail_jpeg
@@ -470,6 +472,7 @@ TABLE_ICON = 64
 _INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
 VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 THUMB_SETTINGS_KEY = "bestcut/gallery_thumb"
+CLIENT_RESULT_SUFFIXES = (".json", ".txt")  # 고객 셀렉 결과 파일(끌어다 놓기)
 
 
 class ApplyWorker(QThread):
@@ -939,7 +942,8 @@ class BestCutTab(QWidget):
         self._view_filter.setToolTip(
             "<p><b>남기는 컷만</b>: 장면마다 남기는(선택된) 컷만. 빠진 컷을 다시 넣으려면 모든 컷 보기로.</p>"
             "<p><b>고객이 고른 것만</b>: 고객 셀렉 화면에서 가져온 고객 선택(파란 \"고객\" 표시)만. "
-            "베스트컷 선택은 바꾸지 않습니다.</p>"
+            "베스트컷 선택은 바꾸지 않습니다. 고객 결과 파일을 이 화면에 끌어다 놓거나 파일 › 고객 선택 결과 "
+            "가져오기로도 가져옵니다.</p>"
         )
         self._view_filter.currentIndexChanged.connect(self._on_only_kept_toggled)
         self._gallery_button = QToolButton()
@@ -1125,7 +1129,53 @@ class BestCutTab(QWidget):
         folders = extract_dropped_folders(event.mimeData())
         if folders:
             self._add_folders(folders)
+        results = extract_dropped_files(event.mimeData(), CLIENT_RESULT_SUFFIXES)
+        if results:
+            self.import_client_result(results[0])  # 고객 셀렉 결과 파일을 끌어다 놓음
         event.acceptProposedAction()
+
+    def import_client_result(self, path: Path | None = None) -> None:
+        """고객 셀렉 결과(.json 또는 이름 목록 .txt)를 지금 미리보기 사진과 맞춰 "고객" 표시를 붙인다
+        (베스트컷 선택은 그대로). 고객 셀렉 화면의 가져오기와 같은 기록(choice_store.client_picks)."""
+        if self._busy:
+            return
+        if not self._photos:
+            QMessageBox.information(
+                self, "고객 결과 가져오기",
+                "먼저 고객에게 보낸 사진 폴더로 미리보기를 하세요. 그 사진들과 고객 결과를 맞춥니다.",
+            )
+            return
+        if path is None:
+            chosen, _ = QFileDialog.getOpenFileName(
+                self, "고객이 보낸 결과 파일 열기", "", "선택 결과 (*.json *.txt);;모든 파일 (*)"
+            )
+            if not chosen:
+                return
+            path = Path(chosen)
+        try:
+            selection = parse_selection(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError) as e:
+            QMessageBox.warning(self, "파일을 읽지 못했습니다", str(e))
+            return
+        if not selection.ids:
+            QMessageBox.warning(self, "고른 사진 없음", "결과 파일에서 고른 사진을 찾지 못했습니다.")
+            return
+        photos = [p.path for p in self._photos]
+        matched, missing = match_selection(selection, photos[0].parent, items=photo_ids(photos, self._input_dirs))
+        record_client_picks(matched, photos)
+        self._refresh_client_picks()
+        log.info("베스트컷 화면에서 고객 결과 가져옴: %d장 (못 찾음 %d) ← %s", len(matched), len(missing), path)
+        lines = [f"고객이 고른 {len(selection.ids)}장 중 {len(matched)}장을 찾아 \"고객\" 표시를 붙였습니다"
+                 "(베스트컷 선택은 그대로)."]
+        if missing:
+            lines.append(f"못 찾음 {len(missing)}개: " + ", ".join(missing[:8]) + (" …" if len(missing) > 8 else ""))
+            lines.append("입력 폴더·하위 폴더 포함 설정이 고객에게 보낸 페이지를 만들 때와 같은지 확인하세요.")
+        if selection.memo:
+            lines.append(f"고객 메모: {selection.memo}")
+        if matched:
+            self._view_filter.setCurrentIndex(2)  # 고객이 고른 것만 보기
+            lines.append("보기를 \"고객이 고른 것만\"으로 바꿨습니다.")
+        QMessageBox.information(self, "고객 결과 가져오기", "\n".join(lines))
 
     @property
     def _input_dirs(self) -> list[Path]:
