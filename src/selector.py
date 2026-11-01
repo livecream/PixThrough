@@ -32,8 +32,9 @@ from typing import Callable
 from scanner import PhotoMetadata
 from scoring import PhotoScore, score_photos
 
-DEFAULT_WEIGHTS = {"sharpness": 0.5, "exposure": 0.3, "face": 0.2}
-WEIGHT_KEYS = ("sharpness", "exposure", "face")
+# 미소(smile)는 처음엔 0 — 사용자가 "가중치 맞추기"로 정한다(임의로 확정하지 않음)
+DEFAULT_WEIGHTS = {"sharpness": 0.5, "exposure": 0.3, "face": 0.2, "smile": 0.0}
+WEIGHT_KEYS = ("sharpness", "exposure", "face", "smile")
 
 
 @dataclass(frozen=True)
@@ -50,13 +51,17 @@ class SceneSelection:
     excluded: dict[int, str] = field(default_factory=dict)
 
 
-WEIGHT_LABELS = {"sharpness": "선명도", "exposure": "노출", "face": "눈뜸"}
+WEIGHT_LABELS = {"sharpness": "선명도", "exposure": "노출", "face": "눈뜸", "smile": "미소"}
 
 
 def format_weights(weights: dict[str, float]) -> str:
-    """"선명도 50·노출 30·눈뜸 20"(합이 1이 아니어도 비율로)."""
-    total = sum(weights[k] for k in WEIGHT_KEYS) or 1.0
-    return "·".join(f"{WEIGHT_LABELS[k]} {round(weights[k] / total * 100)}" for k in WEIGHT_KEYS)
+    """"선명도 50·노출 30·눈뜸 20"(합이 1이 아니어도 비율로, 미소는 0이면 안 씀)."""
+    total = sum(weights.get(k, 0.0) for k in WEIGHT_KEYS) or 1.0
+    return "·".join(
+        f"{WEIGHT_LABELS[k]} {round(weights.get(k, 0.0) / total * 100)}"
+        for k in WEIGHT_KEYS
+        if k != "smile" or weights.get(k, 0.0) > 0
+    )
 
 
 def keep_count(scene_size: int, keep_percent: int) -> int:
@@ -75,7 +80,11 @@ def _normalize(values: list[float]) -> list[float]:
 
 
 def combined_score(
-    norm_sharpness: float, exposure: float, face: float | None, weights: dict[str, float] | None = None
+    norm_sharpness: float,
+    exposure: float,
+    face: float | None,
+    weights: dict[str, float] | None = None,
+    smile: float | None = None,
 ) -> float:
     """가중 평균(얼굴이 없으면 그 항목을 빼고 나머지 가중치로). weights가 없으면 DEFAULT_WEIGHTS —
     사용자가 "내 선택에 맞춰보기"(weight_tuning)로 고른 가중치를 GUI가 넘길 수 있다."""
@@ -83,11 +92,13 @@ def combined_score(
     parts = {"sharpness": norm_sharpness, "exposure": exposure}
     if face is not None:
         parts["face"] = face
+    if smile is not None:
+        parts["smile"] = smile  # 미소 비중이 0이면 결과는 예전과 같다
 
-    weight_sum = sum(weights[k] for k in parts)
+    weight_sum = sum(weights.get(k, 0.0) for k in parts)
     if weight_sum <= 0:
         return 0.0
-    return sum(weights[k] * v for k, v in parts.items()) / weight_sum
+    return sum(weights.get(k, 0.0) * v for k, v in parts.items()) / weight_sum
 
 
 def select_best(
@@ -109,7 +120,7 @@ def select_best(
     if valid:
         norm_sharpness = _normalize([scores[i].sharpness for i in valid])
         for i, ns in zip(valid, norm_sharpness):
-            combined_scores[i] = combined_score(ns, scores[i].exposure, scores[i].face, weights)
+            combined_scores[i] = combined_score(ns, scores[i].exposure, scores[i].face, weights, scores[i].smile)
 
     excluded: dict[int, str] = {}
     if exclude is not None:

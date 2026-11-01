@@ -180,7 +180,7 @@ class PhotoViewerDialog(QDialog):
         sharpness = f"{row.sharpness:.1f}" + (f" ({region})" if region else "")
         self._info_label.setText(
             f"{row.path.name}  |  {self._verdict(row)}  |  선명도 {sharpness}  |  "
-            f"눈뜸 {eyes}  |  {row.reason}"
+            f"눈뜸 {eyes}  |  " + (f"미소 {row.smile:.2f}  |  " if row.smile is not None else "") + row.reason
         )
         for action, button in zip(self._actions, self._action_buttons):
             label = action.label(row)

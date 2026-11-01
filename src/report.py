@@ -36,6 +36,7 @@ class ReportRow:
     # C컷으로 판정된 사유(예: "블러(선명도 낮음)"), C컷이 아니면 None. 사진 선별 화면에서
     # C컷 이동 대상과 빨간 표시에 쓴다(직접 넣은 컷은 옮기지 않음).
     badcut_reason: str | None = None
+    smile: float | None = None  # 미소(0~1), 얼굴이 없으면 None
 
 
 MANUAL_ADDED = "added"
@@ -115,7 +116,7 @@ def build_report(
     rows: list[ReportRow] = []
     total = sum(len(group) for group in groups)
     custom = weights is not None and any(
-        abs(weights[k] - DEFAULT_WEIGHTS[k]) > 1e-9 for k in DEFAULT_WEIGHTS
+        abs(weights.get(k, 0.0) - DEFAULT_WEIGHTS[k]) > 1e-9 for k in DEFAULT_WEIGHTS
     )
     weight_note = f" [가중치 {format_weights(weights)}]" if custom else ""
     done = 0
@@ -149,6 +150,7 @@ def build_report(
                     sharpness_region=score.sharpness_region,
                     sharpness_global=score.sharpness_global,
                     badcut_reason=selection.excluded.get(i),
+                    smile=score.smile,
                 )
             )
     return rows

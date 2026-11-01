@@ -129,6 +129,8 @@ def load_weights(settings: QSettings) -> dict[str, float]:
         values = [float(part) for part in str(raw).split(",")]
     except ValueError:
         return dict(DEFAULT_WEIGHTS)
+    if len(values) == len(WEIGHT_KEYS) - 1:
+        values.append(0.0)  # 미소 칸이 생기기 전에 저장한 가중치
     if len(values) != len(WEIGHT_KEYS) or min(values) < 0 or values[0] + values[1] <= 0:
         return dict(DEFAULT_WEIGHTS)
     total = sum(values)
@@ -138,4 +140,4 @@ def load_weights(settings: QSettings) -> dict[str, float]:
 def save_weights(settings: QSettings, weights: dict[str, float]) -> None:
     from selector import WEIGHT_KEYS
 
-    settings.setValue(WEIGHTS_KEY, ",".join(f"{weights[key]:.4f}" for key in WEIGHT_KEYS))
+    settings.setValue(WEIGHTS_KEY, ",".join(f"{weights.get(key, 0.0):.4f}" for key in WEIGHT_KEYS))

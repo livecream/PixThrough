@@ -27,6 +27,7 @@ class _Photo:
     sharpness_norm: float
     exposure: float
     face: float | None
+    smile: float | None
     candidate: bool  # C컷·점수 실패가 아니어서 자동으로 고를 수 있음
     kept: bool  # 사람이 최종으로 남김
 
@@ -72,7 +73,7 @@ def build_scenes(rows: list[ReportRow]) -> list[_Scene]:
         norms = dict(zip((id(r) for r in scored), _normalize([r.sharpness for r in scored])))
         photos = tuple(
             _Photo(
-                norms[id(r)], r.exposure, r.face,
+                norms[id(r)], r.exposure, r.face, r.smile,
                 candidate=r.badcut_reason is None, kept=r.selected,
             )
             for r in scored
@@ -89,7 +90,7 @@ def _top_index(scene: _Scene, weights: dict[str, float]) -> int | None:
     for i, photo in enumerate(scene.photos):  # 촬영 순서 — 동점이면 먼저 찍은 컷(첫 최대값)
         if not photo.candidate:
             continue
-        score = combined_score(photo.sharpness_norm, photo.exposure, photo.face, weights)
+        score = combined_score(photo.sharpness_norm, photo.exposure, photo.face, weights, photo.smile)
         if best is None or score > best_score:
             best, best_score = i, score
     return best
@@ -111,21 +112,23 @@ def agreement(scenes: list[_Scene], weights: dict[str, float]) -> Agreement:
     return Agreement(matched, len(scenes), touched_matched, touched_total)
 
 
-def weight_grid(step: int = GRID_STEP) -> list[dict[str, float]]:
-    """합이 100%인 (선명도, 노출, 눈뜸) 조합을 step% 단위로. 선명도·노출이 둘 다 0인 것은 뺀다
-    (얼굴이 없는 사진은 점수를 낼 수 없게 됨)."""
+def weight_grid(step: int = GRID_STEP, with_smile: bool = False) -> list[dict[str, float]]:
+    """합이 100%인 (선명도, 노출, 눈뜸[, 미소]) 조합을 step% 단위로. 선명도·노출이 둘 다 0인 것은
+    뺀다(얼굴이 없는 사진은 점수를 낼 수 없게 됨). with_smile이 아니면 미소는 0."""
     grid = []
     for s in range(0, 101, step):
         for e in range(0, 101 - s, step):
-            f = 100 - s - e
             if s == 0 and e == 0:
                 continue
-            grid.append({"sharpness": s / 100, "exposure": e / 100, "face": f / 100})
+            rest = 100 - s - e
+            for m in range(0, rest + 1, step) if with_smile else (0,):
+                f = rest - m
+                grid.append({"sharpness": s / 100, "exposure": e / 100, "face": f / 100, "smile": m / 100})
     return grid
 
 
 def _distance(a: dict[str, float], b: dict[str, float]) -> float:
-    return sum(abs(a[k] - b[k]) for k in WEIGHT_KEYS)
+    return sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in WEIGHT_KEYS)
 
 
 def recommend(
@@ -136,7 +139,10 @@ def recommend(
     current = current or DEFAULT_WEIGHTS
     scenes = build_scenes(rows)
     now = agreement(scenes, current)
-    scored = [Candidate(w, agreement(scenes, w)) for w in weight_grid()]
+    # 미소를 잰 사진이 있으면 미소 비중도 훑는다(칸이 하나 늘어 10% 단위로 — 너무 오래 걸리지 않게)
+    with_smile = any(p.smile is not None for scene in scenes for p in scene.photos)
+    grid = weight_grid(GRID_STEP * 2, with_smile=True) if with_smile else weight_grid()
+    scored = [Candidate(w, agreement(scenes, w)) for w in grid]
     scored.sort(key=lambda c: (-c.agreement.matched, _distance(c.weights, current)))
     picked: list[Candidate] = []
     seen = {tuple(_top_index(scene, current) for scene in scenes)}  # 지금과 같은 결과는 추천하지 않음

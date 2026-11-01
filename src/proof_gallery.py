@@ -108,7 +108,7 @@ _FONT_CANDIDATES = (
 )
 
 
-def _watermark_font(size: int) -> ImageFont.ImageFont:
+def korean_font(size: int) -> ImageFont.ImageFont:
     """한글이 나오는 시스템 글꼴(없으면 기본 글꼴 — 영문만 제대로 나옴)."""
     for candidate in _FONT_CANDIDATES:
         if Path(candidate).exists():
@@ -128,14 +128,14 @@ def add_watermark(image: Image.Image, text: str) -> Image.Image:
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     size = max(12, base.width // 14)
-    font = _watermark_font(size)
+    font = korean_font(size)
     # 사진 너비의 70%를 넘지 않게 줄인다
     while size > 12:
         left, top, right, bottom = draw.textbbox((0, 0), text, font=font, stroke_width=max(1, size // 20))
         if right - left <= base.width * 0.7:
             break
         size = int(size * 0.85)
-        font = _watermark_font(size)
+        font = korean_font(size)
     stroke = max(1, size // 20)
     left, top, right, bottom = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
     x = (base.width - (right - left)) / 2 - left

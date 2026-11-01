@@ -95,13 +95,15 @@ from gui_settings import (
     save_folder,
     save_weights,
 )
+from gui_cull_view import CullDialog
 from gui_compare_view import STATE_FLAGGED, STATE_KEPT, STATE_NONE, CompareDialog
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import choice_store
 import score_store
-from gui_worker import CancellableWorker, PreviewCancelled
+from gui_worker import CancellableWorker, FunctionWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from badcut import BadCutThresholds, badcut_reason
+from contact_sheet import SheetItem, make_contact_sheet
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
@@ -472,6 +474,7 @@ TABLE_ICON = 64
 _INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
 VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 THUMB_SETTINGS_KEY = "bestcut/gallery_thumb"
+CULL_AUTO_KEY = "bestcut/cull_auto_advance"
 CLIENT_RESULT_SUFFIXES = (".json", ".txt")  # 고객 셀렉 결과 파일(끌어다 놓기)
 
 
@@ -589,6 +592,7 @@ class BestCutTab(QWidget):
         self._scene_edits: dict[Path, str] = {}
         self._viewer: PhotoViewerDialog | None = None
         self._compare: CompareDialog | None = None
+        self._cull: CullDialog | None = None
         # 나란히 비교 창 아래 줄에 쓰는 경로 → (장면 안 선명도 순위, 장면 사진 수)
         self._ranks_by_path: dict[Path, tuple[int, int]] = {}
         # 표에 지금 채워진 결과(같은 사진·순서면 바뀐 줄만 다시 채우려고)와 그때의 나누기 기준
@@ -698,6 +702,13 @@ class BestCutTab(QWidget):
         self._xmp_button = compact(QPushButton("별점 쓰기"))
         self._xmp_button.setToolTip(_XMP_TOOLTIP)
         self._xmp_button.clicked.connect(self._run_xmp)
+        self._sheet_button = compact(QPushButton("컨택트 시트 PDF…"))
+        self._sheet_button.setToolTip(
+            "<p>남기는 컷을 장면 순서대로 A4 PDF에 모읍니다(한 쪽에 24장, 칸마다 장면 번호·파일 이름). "
+            "팀·고객에게 고른 결과를 보여주거나 출력해 볼 때 씁니다. 사진 파일은 그대로입니다.</p>"
+        )
+        self._sheet_button.clicked.connect(self._make_contact_sheet)
+        self._sheet_worker: FunctionWorker | None = None
 
         self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
@@ -860,6 +871,13 @@ class BestCutTab(QWidget):
             "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
         )
         self._view_button.clicked.connect(self._open_viewer_for_selected)
+        self._cull_button = QToolButton()  # 칸이 좁아 작은 버튼
+        self._cull_button.setText("⛶")
+        self._cull_button.setToolTip(
+            "<p><b>전체 화면으로 고르기 (F)</b> — 사진 한 장을 화면 가득 띄우고 P 남김·X 뺌(누르면 다음 "
+            "사진으로), ←/→ 사진, ↑/↓ 장면. 지금 보기(거르기)에 보이는 사진만 넘깁니다.</p>"
+        )
+        self._cull_button.clicked.connect(self._open_cull_for_selected)
         self._compare_button = compact(QPushButton("나란히 비교"))
         self._compare_button.setToolTip(
             "<p>고른 사진과 같은 장면의 컷을 2~4장 나란히 놓고 비교합니다. 확대·이동이 모든 "
@@ -908,6 +926,7 @@ class BestCutTab(QWidget):
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
         self._gallery.compare_requested.connect(self._open_compare)
+        self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
         self._gallery.context_requested.connect(self._show_context_menu)
         # 표에서도 크게 보기 창과 같은 단축키로 고른다
@@ -918,6 +937,7 @@ class BestCutTab(QWidget):
             ("Return", self._open_viewer_for_selected),
             ("Enter", self._open_viewer_for_selected),
             ("C", self._open_compare_for_selected),
+            ("F", self._open_cull_for_selected),
             ("S", lambda: self._edit_scene_at_selected(SPLIT)),
             ("M", lambda: self._edit_scene_at_selected(JOIN)),
         ):
@@ -975,10 +995,10 @@ class BestCutTab(QWidget):
         self._thumb_slider.setFixedWidth(72)
         self._thumb_slider.setToolTip("<p>갤러리 썸네일 크기 — 갤러리에서 Ctrl(⌘)+휠이나 Ctrl(⌘) +/−로도 바꿉니다.</p>")
         self._thumb_slider.valueChanged.connect(self._gallery.set_thumb)
-        self._shortcut_hint = QLabel("Space·P·X 고르기 · ? 도움말")
+        self._shortcut_hint = QLabel("? 단축키")
         self._shortcut_hint.setToolTip(
             "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교 · "
-            "S 여기서 나누기 · M 앞 장면과 합치기 · 오른쪽 클릭 메뉴</p>"
+            "S 여기서 나누기 · M 앞 장면과 합치기 · F 전체 화면으로 고르기 · 오른쪽 클릭 메뉴</p>"
             "<p>전체 단축키는 ? 키(또는 F1)나 도움말 › 단축키에서 볼 수 있습니다.</p>"
         )
         choice_button_row = QHBoxLayout()
@@ -987,6 +1007,7 @@ class BestCutTab(QWidget):
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
         choice_button_row.addWidget(self._compare_button)
+        choice_button_row.addWidget(self._cull_button)
         choice_button_row.addWidget(self._scene_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
@@ -1023,6 +1044,10 @@ class BestCutTab(QWidget):
         xmp_label = QLabel("라이트룸 ⓘ:")
         xmp_label.setToolTip(_XMP_TOOLTIP)
         output_form.addRow(xmp_label, xmp_row)
+        share_row = QHBoxLayout()
+        share_row.addWidget(self._sheet_button)
+        share_row.addStretch()
+        output_form.addRow("공유:", share_row)
         self._folder_warning = WarningLabel()
         output_form.addRow(self._folder_warning)
         output_group = QGroupBox("출력")
@@ -1368,6 +1393,8 @@ class BestCutTab(QWidget):
             self._viewer.update_rows(self._rows_for_paths(self._viewer_paths))
         if self._compare is not None:
             self._compare.update_rows(self._rows_for_paths(self._compare.paths))
+        if self._cull is not None:
+            self._cull.refresh()
 
     def _selected_table_row(self) -> int | None:
         """고른 사진의 결과 번호(self._rows 안 위치). 표를 정렬해도 같은 사진을 가리킨다."""
@@ -1403,12 +1430,14 @@ class BestCutTab(QWidget):
         fit_text(self._apply_button)
         fit_text(self._badcut_apply_button, padding=24)
         self._xmp_button.setEnabled(bool(rows) and not self._busy)
+        self._sheet_button.setEnabled(kept > 0 and not self._busy)
 
     def _update_choice_buttons(self) -> None:
         index = self._selected_table_row()
         row = self._rows[index] if self._rows and index is not None else None
         self._view_button.setEnabled(row is not None)
         self._compare_button.setEnabled(row is not None)
+        self._cull_button.setEnabled(bool(self._rows))
         self._split_action.setEnabled(row is not None)
         self._join_action.setEnabled(row is not None)
         self._reset_scenes_action.setEnabled(bool(self._scene_edits_in(self._rows or [])))
@@ -1520,9 +1549,54 @@ class BestCutTab(QWidget):
         if self._compare is not None:
             self._compare.close()
             self._compare = None
+        if self._cull is not None:
+            self._cull.close()
+            self._cull = None
 
     def _on_viewer_closed(self) -> None:
         self._viewer = None
+
+    # --- 전체 화면 컬링 ------------------------------------------------------------------
+    def _open_cull_for_selected(self) -> None:
+        self._open_cull(self._selected_table_row())
+
+    def _open_cull(self, index: int | None) -> None:
+        """지금 보기(거르기)에 보이는 사진을 차례로 전체 화면에서 고른다(고른 사진부터)."""
+        if not self._rows:
+            return
+        visible = [r.path for r in self._rows if self._row_visible(r)]
+        if not visible:
+            return
+        start_path = self._rows[index].path if index is not None else visible[0]
+        start = visible.index(start_path) if start_path in visible else 0
+        self._close_viewer()
+        self._cull = CullDialog(
+            visible,
+            start,
+            row_for=lambda path: self._rows_for_paths([path])[0],
+            on_choose=self._set_selected,
+            on_toggle=self._toggle,
+            thumbnail=lambda path: self._thumbnail_pixmap(path, GALLERY_THUMB),
+            is_client=lambda path: path in self._client_picks,
+            on_compare=lambda path: self._open_compare(self._index_of_path(path)),
+            auto_advance=load_bool(self._settings, CULL_AUTO_KEY, True),
+            parent=self,
+        )
+        self._cull.finished.connect(self._on_cull_closed)
+        self._cull.showFullScreen()
+
+    def _on_cull_closed(self) -> None:
+        if self._cull is not None:
+            save_bool(self._settings, CULL_AUTO_KEY, self._cull.auto_advance())
+            path = self._cull.current_path()
+            self._cull = None
+            index = self._index_of_path(path)
+            if index is not None:
+                self._select_index(index)  # 마지막으로 본 사진을 표·갤러리에서도 고른다
+                self._gallery.set_current(index)
+
+    def _index_of_path(self, path: Path) -> int | None:
+        return next((i for i, r in enumerate(self._rows or []) if r.path == path), None)
 
     # --- 장면 직접 고치기 -----------------------------------------------------------
     def _scene_edits_in(self, rows: list[ReportRow]) -> dict[Path, str]:
@@ -1597,6 +1671,7 @@ class BestCutTab(QWidget):
         menu.addAction("선택에서 빼기 (Space)" if row.selected else "선택에 넣기 (Space)", lambda: self._toggle(row))
         menu.addAction("크게 보기 (Enter)", lambda: self._open_viewer(index))
         menu.addAction("나란히 비교 (C)", lambda: self._open_compare(index))
+        menu.addAction("전체 화면으로 고르기 (F)", lambda: self._open_cull(index))
         menu.addSeparator()
         menu.addAction("여기서 나누기 (S)", lambda: self._edit_scene(index, SPLIT))
         menu.addAction("앞 장면과 합치기 (M)", lambda: self._edit_scene(index, JOIN))
@@ -1637,6 +1712,8 @@ class BestCutTab(QWidget):
             return "점수 계산 실패"
         rank, count = self._ranks_by_path.get(row.path, (0, 0))
         eyes = "눈뜸 없음" if row.face is None else f"눈뜸 {row.face:.2f}"
+        if row.smile is not None:
+            eyes += f" · 미소 {row.smile:.2f}"
         sharpness = f"선명도 장면 안 {rank}위/{count}" if rank else "선명도 —"
         return f"종합 {row.total:.2f} · {sharpness} · {eyes}"
 
@@ -1859,6 +1936,59 @@ class BestCutTab(QWidget):
         self._last_move = None
         self._update_undo_button()
         self._on_error(message)
+
+    # --- 컨택트 시트(PDF) -------------------------------------------------------------
+    def _make_contact_sheet(self) -> None:
+        if self._busy or not self._rows:
+            return
+        kept = [r for r in self._rows if r.selected]
+        if not kept:
+            QMessageBox.information(self, "컨택트 시트", "남기는 컷이 없습니다.")
+            return
+        folder = self._output_dir or (self._input_dirs[0] if self._input_dirs else Path.home())
+        title = self._input_dirs[0].name if self._input_dirs else "베스트컷"
+        stamp = time.strftime("%Y%m%d")
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "컨택트 시트 저장", str(folder / f"컨택트시트_{title}_{stamp}.pdf"), "PDF (*.pdf)"
+        )
+        if not chosen:
+            return
+        output = Path(chosen)
+        if output.suffix.lower() != ".pdf":
+            output = output.with_name(output.name + ".pdf")
+        # 장면 순서(장면 안에서는 표 순서 = 촬영 순서)
+        order = {id(r): i for i, r in enumerate(self._rows)}
+        items = [SheetItem(r.path, r.scene_id) for r in sorted(kept, key=lambda r: (r.scene_id, order[id(r)]))]
+        self._busy = True
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText(f"컨택트 시트 만드는 중... ({len(items)}장)")
+        self._progress_bar.setValue(0)
+        self._progress_bar.setMaximum(len(items))
+        worker = FunctionWorker(
+            lambda on_progress: make_contact_sheet(items, output, title, on_progress=on_progress), "컨택트 시트"
+        )
+        worker.progress.connect(self._on_sheet_progress)
+        worker.finished_ok.connect(lambda pages: self._on_sheet_done(output, len(items), pages))
+        worker.failed.connect(self._on_error)
+        self._sheet_worker = worker
+        worker.start()
+
+    def _on_sheet_progress(self, done: int, total: int) -> None:
+        self._progress_bar.setMaximum(total)
+        self._progress_bar.setValue(done)
+
+    def _on_sheet_done(self, output: Path, count: int, pages: int) -> None:
+        self._busy = False
+        self._preview_button.setEnabled(True)
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText(f"컨택트 시트: {count}장 · {pages}쪽")
+        self._summary_text.setPlainText(
+            f"컨택트 시트 PDF: {count}장 · {pages}쪽 → {output}\n" + self._summary_text.toPlainText()
+        )
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(output))):
+            log.warning("컨택트 시트를 열지 못함: %s", output)
 
     # --- 라이트룸 별점(.xmp) ------------------------------------------------------------
     def _run_xmp(self) -> None:
@@ -2148,9 +2278,10 @@ class BestCutTab(QWidget):
         sharpness_item.setToolTip(f"선명도 원래 값 {row.sharpness:.1f}" + (f" ({region})" if region else ""))
         self._table.setItem(table_row, 6, sharpness_item)
         self._table.setItem(table_row, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
-        self._table.setItem(
-            table_row, 8, _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
-        )
+        eyes_item = _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+        if row.smile is not None:
+            eyes_item.setToolTip(f"미소 {row.smile:.2f}")
+        self._table.setItem(table_row, 8, eyes_item)
         self._table.setItem(table_row, 9, QTableWidgetItem(row.reason))
         # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
         if row.selected:
