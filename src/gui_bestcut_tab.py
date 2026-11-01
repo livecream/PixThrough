@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QButtonGroup,
+    QComboBox,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -572,6 +573,7 @@ class BestCutTab(QWidget):
         # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
         self._auto_rows: list[ReportRow] | None = None
         self._choices: dict[Path, bool] = {}
+        self._client_picks: dict[Path, str] = {}  # 고객 셀렉에서 가져온 고객 선택(경로 → 메모), 표시만
         # 직접 나누거나 합친 장면 경계(사진 경로 → "split"/"join"). 앱을 꺼도 남는다(choice_store)
         self._scene_edits: dict[Path, str] = {}
         self._viewer: PhotoViewerDialog | None = None
@@ -918,9 +920,16 @@ class BestCutTab(QWidget):
         self._results.addWidget(self._guide)
         self._results.addWidget(self._gallery)
         self._results.addWidget(self._table)
-        self._only_kept_checkbox = QCheckBox("남기는 컷만 보기")
-        self._only_kept_checkbox.setToolTip("<p>장면마다 남기는(선택된) 컷만 보여줍니다. 빠진 컷을 다시 넣으려면 끄세요.</p>")
-        self._only_kept_checkbox.toggled.connect(self._on_only_kept_toggled)
+        # 보기 거르기: 모든 컷 / 남기는 컷만 / 고객이 고른 것만(고객 셀렉에서 가져온 결과)
+        self._view_filter = QComboBox()
+        for text, key in (("모든 컷 보기", "all"), ("남기는 컷만", "kept"), ("고객이 고른 것만", "client")):
+            self._view_filter.addItem(text, key)
+        self._view_filter.setToolTip(
+            "<p><b>남기는 컷만</b>: 장면마다 남기는(선택된) 컷만. 빠진 컷을 다시 넣으려면 모든 컷 보기로.</p>"
+            "<p><b>고객이 고른 것만</b>: 고객 셀렉 화면에서 가져온 고객 선택(파란 \"고객\" 표시)만. "
+            "베스트컷 선택은 바꾸지 않습니다.</p>"
+        )
+        self._view_filter.currentIndexChanged.connect(self._on_only_kept_toggled)
         self._gallery_button = QToolButton()
         self._gallery_button.setText("갤러리")
         self._gallery_button.setToolTip(
@@ -964,7 +973,7 @@ class BestCutTab(QWidget):
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
         choice_button_row.addSpacing(12)
-        choice_button_row.addWidget(self._only_kept_checkbox)
+        choice_button_row.addWidget(self._view_filter)
         choice_button_row.addStretch()
         choice_button_row.addWidget(self._thumb_slider)
         self._thumb_slider.setVisible(self._gallery_button.isChecked())
@@ -1226,7 +1235,9 @@ class BestCutTab(QWidget):
             p.path for p in photos if p.path not in self._scene_edits
         )
         self._scene_edits.update(restored_edits)  # 미리보기 기준과 달라져 끝난 뒤 다시 묶인다
+        self._client_picks = choice_store.client_picks.restore(p.path for p in photos)
         self._show_rows(rows, grouping)
+        self._refresh_client_picks()  # 거르기 칸의 고객 선택 수
         if restored:
             self._status_label.setText(f"완료 · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
         # 미리보기가 도는 사이에 묶는 기준을 바꿨으면, 끝난 뒤 새 기준으로 다시 묶는다.
@@ -2010,9 +2021,17 @@ class BestCutTab(QWidget):
             choice, order = "제외", 1
         if row.manual_choice is not None:
             choice += " (직접)"
+        client_note = self._client_picks.get(row.path)
+        if client_note is not None:
+            choice += " · 고객"
         choice_item = _SortItem(choice, (order, i))
+        tips = []
         if badcut:
-            choice_item.setToolTip(f"C컷: {row.badcut_reason}")
+            tips.append(f"C컷: {row.badcut_reason}")
+        if client_note is not None:
+            tips.append("고객이 고른 사진" + (f" — 메모: {client_note}" if client_note else ""))
+        if tips:
+            choice_item.setToolTip("\n".join(tips))
         self._table.setItem(table_row, 4, choice_item)
         unscored = _is_unscored(row)
         self._table.setItem(table_row, 5, _bar_item(f"{row.total:.2f}", None if unscored else row.total))
@@ -2042,10 +2061,9 @@ class BestCutTab(QWidget):
     def _apply_row_filter(self) -> None:
         """'남기는 컷만 보기'면 남기지 않는 줄을 숨긴다(정렬로 줄이 바뀌어도 다시 맞춤)."""
         rows = self._rows or []
-        only_kept = self._only_kept()
         for table_row in range(self._table.rowCount()):
             index = self._index_at(table_row)
-            hide = only_kept and index is not None and index < len(rows) and not rows[index].selected
+            hide = index is not None and index < len(rows) and not self._row_visible(rows[index])
             self._table.setRowHidden(table_row, hide)
 
     def _difference_text(self, row: ReportRow) -> str:
@@ -2086,14 +2104,14 @@ class BestCutTab(QWidget):
         return pixmap
 
     def _populate_gallery(self, rows: list[ReportRow]) -> None:
-        only_kept = self._only_kept()
         by_scene: dict[int, list[GalleryPhoto]] = {}
         for i, row in enumerate(rows):
             photos = by_scene.setdefault(row.scene_id, [])
-            if not only_kept or row.selected:
+            if self._row_visible(row):
                 photos.append(
                     GalleryPhoto(
-                        i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row)
+                        i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row),
+                        client=row.path in self._client_picks,
                     )
                 )
         # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다
@@ -2135,10 +2153,30 @@ class BestCutTab(QWidget):
             [bool(self._input_dirs), self._output_dir is not None, bool(self._rows), thresholds_set, False]
         )
 
-    def _only_kept(self) -> bool:
-        return self._only_kept_checkbox.isChecked()
+    def _row_visible(self, row: ReportRow) -> bool:
+        key = self._view_filter.currentData()
+        if key == "kept":
+            return row.selected
+        if key == "client":
+            return row.path in self._client_picks
+        return True
 
-    def _on_only_kept_toggled(self, _checked: bool) -> None:
+    def _refresh_client_picks(self) -> None:
+        """고객 셀렉에서 가져온 고객 선택을 다시 읽는다(다른 화면에서 새로 가져왔으면 표시를 고친다)."""
+        picks = choice_store.client_picks.restore(r.path for r in self._rows) if self._rows else {}
+        count = len(picks)
+        self._view_filter.setItemText(2, f"고객이 고른 것만 ({count})" if count else "고객이 고른 것만")
+        if picks != self._client_picks:
+            self._client_picks = picks
+            if self._rows:
+                self._table_rows = None  # 표시가 바뀐 줄이 많을 수 있어 표를 다시 채운다
+                self._populate_table(self._rows)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        super().showEvent(event)
+        self._refresh_client_picks()
+
+    def _on_only_kept_toggled(self, _index: int) -> None:
         if self._rows:
             self._populate_table(self._rows)
 

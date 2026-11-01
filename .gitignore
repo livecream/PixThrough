@@ -10,6 +10,8 @@ cache/
 # 앱 기록·업데이트 기록 (소스 실행이면 저장소 폴더에 생김, app_log.py)
 pixthrough.log*
 update.log
+# 라이트룸 별점·라벨 쓰기 전 .xmp 백업 (소스 실행이면 저장소 폴더에 생김, xmp_rating.py)
+xmp_backup/
 output/*
 !output/.gitkeep
 test_photos/*

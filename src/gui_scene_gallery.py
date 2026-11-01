@@ -31,6 +31,7 @@ _SCENE_ROLE = Qt.ItemDataRole.UserRole + 1
 
 KEPT_BORDER = QColor(52, 168, 83)
 FLAGGED_BORDER = QColor(214, 54, 40)
+CLIENT_BADGE = QColor(26, 115, 232)
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class GalleryPhoto:
     manual: bool  # 직접 넣거나 뺌
     total: float
     flagged: bool = False  # C컷(흔들림·눈감음)으로 옮길 사진
+    client: bool = False  # 고객 셀렉에서 고객이 고른 사진(표시만)
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,14 @@ class _SceneDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(badge, 4, 4)
             painter.setPen(QColor("white"))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "C컷")
+        if photo.client:
+            painter.setFont(font)
+            badge = QRect(box.right() - 44, box.y() + 6, 38, 20)
+            painter.setBrush(CLIENT_BADGE)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("white"))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "고객")
         if current:
             painter.setPen(QPen(palette.highlight().color(), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)

@@ -2,6 +2,8 @@
 
 - 직접 고른 것(선택에 넣기/빼기): choices.json, 값은 넣음(true)/뺌(false)
 - 장면 직접 고치기(여기서 나누기/앞 장면과 합치기): scene_edits.json, 값은 "split"/"join"
+- 고객이 고른 사진(고객 셀렉 가져오기): client_picks.json, 값은 고객 메모(없으면 "") — 베스트컷
+  화면에 "고객 선택"으로 표시만 한다
 
 수천 장을 몇 번에 나눠 고를 때, 앱을 다시 켜고 같은 사진을 미리보기하면 지난번에 직접
 한 것이 그대로 돌아오게 한다. 점수 저장소(score_store)와 같은 앱 데이터 폴더에
@@ -96,6 +98,7 @@ class PathRecordStore:
 
 choices = PathRecordStore("choices.json", lambda value: isinstance(value, bool))
 scene_edits = PathRecordStore("scene_edits.json", lambda value: value in ("split", "join"))
+client_picks = PathRecordStore("client_picks.json", lambda value: isinstance(value, str))
 
 
 # 직접 고른 것(예전 함수 이름 그대로)
@@ -108,10 +111,13 @@ def sync(paths: Iterable[Path], values: dict[Path, bool]) -> None:
 
 
 def forget(paths: Iterable[Path]) -> None:
+    paths = list(paths)
     choices.forget(paths)
     scene_edits.forget(paths)
+    client_picks.forget(paths)
 
 
 def clear_memory() -> None:
     choices.clear_memory()
     scene_edits.clear_memory()
+    client_picks.clear_memory()

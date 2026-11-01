@@ -173,3 +173,46 @@ def test_undo_leaves_files_changed_afterwards(tmp_path):
 def test_rating_out_of_range_is_refused(tmp_path):
     with pytest.raises(ValueError):
         write_xmp([], 6, tmp_path / "run")
+
+
+def test_client_label_creates_or_updates_only_the_label(tmp_path):
+    from xmp_rating import MARK_LABEL, undo_xmp
+
+    shoot = tmp_path / "shoot"
+    shoot.mkdir()
+    (shoot / "a.jpg").write_bytes(b"jpg")
+    (shoot / "a.CR3").write_bytes(b"raw")
+    (shoot / "b.CR3").write_bytes(b"raw")
+    existing = (
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        '<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="4" xmp:Label="Red"'
+        ' xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+0.50"/>'
+        "</rdf:RDF></x:xmpmeta>"
+    )
+    (shoot / "b.xmp").write_text(existing, encoding="utf-8")
+    (shoot / "c.jpg").write_bytes(b"jpg only")
+
+    rows = plan_xmp([], [], [shoot / "a.jpg", shoot / "b.CR3", shoot / "c.jpg"])
+    assert [row.mark for row in rows] == [MARK_LABEL] * 3
+    results = write_xmp(rows, 0, tmp_path / "run", label='녹색 & "고객"')
+
+    assert [r.action for r in results] == ["created", "updated", "skipped"]
+    created = (shoot / "a.xmp").read_text(encoding="utf-8")
+    assert 'xmp:Label="녹색 &amp; &quot;고객&quot;"' in created
+    assert "Rating" not in created  # 별점은 건드리지 않음
+    updated = (shoot / "b.xmp").read_text(encoding="utf-8")
+    assert 'xmp:Rating="4"' in updated and 'crs:Exposure2012="+0.50"' in updated
+    assert "Red" not in updated and "녹색 &amp;" in updated
+
+    restored, skipped = undo_xmp(results)
+    assert restored == 2 and not skipped
+    assert not (shoot / "a.xmp").exists()
+    assert (shoot / "b.xmp").read_text(encoding="utf-8") == existing
+
+
+def test_label_must_not_be_empty(tmp_path):
+    shoot = tmp_path / "s"
+    shoot.mkdir()
+    (shoot / "a.CR3").write_bytes(b"raw")
+    with pytest.raises(ValueError):
+        write_xmp(plan_xmp([], [], [shoot / "a.CR3"]), 0, tmp_path / "run", label="  ")
