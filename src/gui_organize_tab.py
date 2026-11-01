@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -32,17 +33,19 @@ from PySide6.QtWidgets import (
 )
 
 import history
+import score_store
 from gui_dnd import extract_dropped_folders
 from gui_errors import show_error
 from gui_format import format_bytes, format_folder_summary
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_reveal import add_file_actions
-from gui_settings import load_folder, make_settings, pick_directory, save_folder
+from gui_settings import load_float, load_folder, make_settings, pick_directory, save_float, save_folder
 from gui_widgets import (
     EtaProgressBar,
     FLAGGED_ROW,
     KEPT_ROW,
+    SCENE_BAND,
     GuidePanel,
     PathLabel,
     SummaryLabel,
@@ -55,6 +58,8 @@ from gui_widgets import (
 )
 from gui_worker import FunctionWorker
 from organize import (
+    SimilarGroup,
+    find_similar_photos,
     DuplicateGroup,
     MovePlanRow,
     apply_move_plan,
@@ -72,6 +77,8 @@ from rename_by_time import VIDEO_EXTENSIONS
 from scanner import RAW_EXTENSIONS
 
 _PATH_ROLE = Qt.ItemDataRole.UserRole + 1
+SIMILAR_KEY = "organize/similar_distance"
+SIMILAR_START = 5  # 사용자 결정(엄격)
 _SKIPPED_ROW = QColor(128, 128, 128, 60)
 
 # 정리 버튼 → (이동 이름, 하위 폴더 이름 또는 None=날짜별, 기록 이름)
@@ -133,9 +140,25 @@ class OrganizeTab(QWidget):
         empty_button.clicked.connect(self._find_empty_folders)
         find_duplicate_button = make_danger(QPushButton("중복 파일 찾아서 정리…"))
         find_duplicate_button.clicked.connect(self._find_duplicates)
+        similar_button = QPushButton("거의 같은 사진 찾기")
+        similar_button.clicked.connect(self._find_similar)
+        self._similar_spin = QSpinBox()
+        self._similar_spin.setRange(0, 20)
+        self._similar_spin.setPrefix("차이 ≤ ")
+        self._similar_spin.setValue(int(load_float(self._settings, SIMILAR_KEY, SIMILAR_START, 0, 20)))
+        self._similar_spin.setToolTip(
+            "<p>이미지 지문(0~64) 차이가 이 값 이하로 이어지는 사진을 묶습니다. 작을수록 엄격합니다 — "
+            "같은 사진의 크기·저장만 다른 변형은 보통 0~12, 다른 사진은 28 이상.</p>"
+        )
+        self._similar_spin.valueChanged.connect(lambda v: save_float(self._settings, SIMILAR_KEY, v))
+        similar_box = QWidget()
+        similar_row = QHBoxLayout(similar_box)
+        similar_row.setContentsMargins(0, 0, 0, 0)
+        similar_row.addWidget(similar_button, stretch=1)
+        similar_row.addWidget(self._similar_spin)
         self._action_buttons = (
             folder_button, summary_button, raw_button, video_button, mismatch_button,
-            date_button, empty_button, find_duplicate_button,
+            date_button, empty_button, find_duplicate_button, similar_button,
         )
 
         self._run_button = make_primary(QPushButton("실행"))
@@ -193,6 +216,7 @@ class OrganizeTab(QWidget):
                 [
                     (summary_button, "하위 폴더까지 파일 수·용량을 종류(사진·RAW·영상 등)별로 셉니다."),
                     (mismatch_button, "같은 이름의 짝이 없는 RAW나 JPG를 알려줍니다. 옮기거나 지우지 않습니다."),
+                    (similar_box, "크기만 다르거나 다시 저장한 비슷한 사진을 하위 폴더까지 묶어 보여줍니다(지우지 않음)."),
                 ],
             ),
             stretch=1,
@@ -432,6 +456,40 @@ class OrganizeTab(QWidget):
             return
         self._start("dup", "같은 파일 찾는 중(내용 비교)...", lambda progress: find_duplicate_files(folder, progress))
 
+    def _find_similar(self) -> None:
+        folder = self._require_folder()
+        if folder is None:
+            return
+        distance = self._similar_spin.value()
+        cache = score_store.hash_cache()  # 베스트컷 화면과 같은 지문 저장소(다시 계산 안 함)
+        self._start("similar", "사진 지문 계산 중...", lambda progress: find_similar_photos(
+            folder, distance, on_progress=progress, cache=cache
+        ))
+
+    def _show_similar(self, groups: list[SimilarGroup]) -> None:
+        score_store.save()
+        if not groups:
+            self._show_nothing(f"차이 {self._similar_spin.value()} 이하로 비슷한 사진이 없습니다.")
+            return
+        rows = []
+        for number, group in enumerate(groups, start=1):
+            band = SCENE_BAND if number % 2 == 0 else None
+            for position, (path, distance) in enumerate(zip(group.photos, group.distances)):
+                try:
+                    size = format_bytes(path.stat().st_size)
+                except OSError:
+                    size = ""
+                difference = "기준" if position == 0 else str(distance)
+                rows.append((path, (self._relative(path), f"{number}", difference, size), band))
+        count = sum(len(g.photos) for g in groups)
+        self._summary.setPlainText(
+            f"거의 같은 사진 {len(groups)}묶음 · 사진 {count}장 (지문 차이 {self._similar_spin.value()} 이하) — "
+            "옮기거나 지우지 않았습니다.\n고른 줄 사진을 옆에서 보고, 필요하면 오른쪽 클릭 › Finder에서 보기로 직접 "
+            "정리하세요. 바이트까지 똑같은 파일은 '중복 파일 찾아서 정리'로 지울 수 있습니다."
+        )
+        self._pending = None
+        self._fill_table(("파일", "묶음", "첫 사진과 차이", "크기"), rows)
+
     def _show_duplicates(self, groups: list[DuplicateGroup]) -> None:
         if not groups:
             self._show_nothing("중복 파일이 없습니다.")
@@ -559,6 +617,8 @@ class OrganizeTab(QWidget):
             self._show_empty_folders(value)
         elif task == "dup":
             self._show_duplicates(value)
+        elif task == "similar":
+            self._show_similar(value)
         elif task == "run_move":
             self._on_moved(*value)
         self._refresh()
@@ -591,7 +651,7 @@ class OrganizeTab(QWidget):
         busy = self.is_busy
         for button in self._action_buttons:
             button.setEnabled(not busy)
-        self._cancel_button.setEnabled(busy and self._task in ("plan_date", "dup"))
+        self._cancel_button.setEnabled(busy and self._task in ("plan_date", "dup", "similar"))
         self._undo_button.setVisible(self._last_operation is not None)
         self._undo_button.setEnabled(not busy)
         pending = self._pending

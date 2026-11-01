@@ -349,3 +349,28 @@ def test_find_duplicate_files_reports_progress(tmp_path):
     groups = find_duplicate_files(tmp_path, on_progress=lambda d, t: progress.append((d, t)))
     assert len(groups) == 1
     assert progress[-1] == (3, 3)
+
+
+def test_find_similar_photos_groups_resized_copies_but_not_different_photos(tmp_path):
+    import numpy as np
+
+    from organize import find_similar_photos
+
+    rng = np.random.default_rng(1)
+    base = Image.fromarray((rng.random((300, 450, 3)) * 255).astype("uint8")).resize((900, 600))
+    other = Image.fromarray((rng.random((300, 450, 3)) * 255).astype("uint8")).resize((900, 600))
+    base.save(tmp_path / "a.jpg", quality=95)
+    base.resize((450, 300)).save(tmp_path / "a_small.jpg", quality=80)
+    (tmp_path / "sub").mkdir()
+    base.save(tmp_path / "sub" / "a_copy.png")
+    other.save(tmp_path / "b.jpg", quality=95)
+    progress = []
+
+    groups = find_similar_photos(tmp_path, 5, on_progress=lambda d, t: progress.append((d, t)), cache={})
+
+    assert len(groups) == 1
+    assert {p.name for p in groups[0].photos} == {"a.jpg", "a_small.jpg", "a_copy.png"}
+    assert groups[0].distances[0] == 0 and max(groups[0].distances) <= 5
+    assert progress[-1] == (4, 4)
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["a.jpg", "a_copy.png", "a_small.jpg", "b.jpg"]
+    assert find_similar_photos(tmp_path / "sub", 5) == []

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from scanner import RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, extract_metadata
+from scanner import RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, extract_metadata, scan_folder
 import app_log
 import history
 
@@ -298,3 +298,64 @@ def delete_duplicate_files(groups: list[DuplicateGroup], log_folder: Path | None
     if log_folder is not None and deleted_paths:
         write_operation_log(deleted_paths, log_folder, "delete_duplicate")
     return len(deleted_paths)
+
+
+@dataclass(frozen=True)
+class SimilarGroup:
+    photos: list[Path]  # 촬영 파일 경로순, [0]이 기준
+    distances: list[int]  # photos[0]과의 지문 차이(0~64), [0]은 0
+
+
+def find_similar_photos(
+    root: Path,
+    max_distance: int,
+    on_progress: Callable[[int, int], None] | None = None,
+    cache: dict | None = None,
+) -> list[SimilarGroup]:
+    """root 아래(하위 포함) 사진 중 이미지 지문(pHash) 차이가 max_distance 이하로 이어지는 것끼리
+    묶는다 — 크기만 다르거나 다시 저장한 "거의 같은 사진". 바이트까지 같은 중복과 달리 확실하지
+    않아서 보여주기만 한다(옮기거나 지우지 않음). 기준값은 사용자가 정한다(시작값 5)."""
+    from image_hash import hashes_for  # numpy·OpenCV는 이 기능을 쓸 때만 읽는다
+    import numpy as np
+
+    photos = scan_folder(Path(root), recursive=True, include_unpaired_raw=True)
+    hashes = hashes_for(photos, cache=cache, on_progress=on_progress)
+    known = [(path, value) for path, value in hashes.items() if value is not None]
+    if len(known) < 2:
+        return []
+    paths = [path for path, _ in known]
+    values = np.array([value for _, value in known], dtype=np.uint64)
+    parent = list(range(len(paths)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(paths) - 1):
+        xor = np.bitwise_xor(values[i + 1:], values[i])
+        counts = np.unpackbits(xor.view(np.uint8)).reshape(-1, 64).sum(axis=1)
+        for offset in np.nonzero(counts <= max_distance)[0]:
+            a, b = find(i), find(i + 1 + int(offset))
+            if a != b:
+                parent[b] = a
+    members: dict[int, list[int]] = {}
+    for i in range(len(paths)):
+        members.setdefault(find(i), []).append(i)
+    groups = []
+    for indexes in members.values():
+        if len(indexes) < 2:
+            continue
+        indexes.sort(key=lambda i: str(paths[i]))
+        first = int(values[indexes[0]])
+        groups.append(
+            SimilarGroup(
+                [paths[i] for i in indexes],
+                [(first ^ int(values[i])).bit_count() for i in indexes],
+            )
+        )
+    groups.sort(key=lambda g: str(g.photos[0]))
+    log.info("거의 같은 사진 찾기(차이 ≤ %d): %d묶음, 사진 %d장", max_distance, len(groups),
+             sum(len(g.photos) for g in groups))
+    return groups
