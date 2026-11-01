@@ -115,3 +115,27 @@ def load_bool(settings: QSettings, key: str, default: bool) -> bool:
 
 def save_bool(settings: QSettings, key: str, value: bool) -> None:
     settings.setValue(key, value)
+
+
+WEIGHTS_KEY = "bestcut/weights"
+
+
+def load_weights(settings: QSettings) -> dict[str, float]:
+    """베스트컷 종합점수 가중치(가중치 맞추기로 저장한 것, 없거나 깨졌으면 기본값)."""
+    from selector import DEFAULT_WEIGHTS, WEIGHT_KEYS
+
+    raw = settings.value(WEIGHTS_KEY, "")
+    try:
+        values = [float(part) for part in str(raw).split(",")]
+    except ValueError:
+        return dict(DEFAULT_WEIGHTS)
+    if len(values) != len(WEIGHT_KEYS) or min(values) < 0 or values[0] + values[1] <= 0:
+        return dict(DEFAULT_WEIGHTS)
+    total = sum(values)
+    return {key: value / total for key, value in zip(WEIGHT_KEYS, values)}
+
+
+def save_weights(settings: QSettings, weights: dict[str, float]) -> None:
+    from selector import WEIGHT_KEYS
+
+    settings.setValue(WEIGHTS_KEY, ",".join(f"{weights[key]:.4f}" for key in WEIGHT_KEYS))

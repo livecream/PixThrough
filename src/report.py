@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from scanner import PhotoMetadata
-from selector import SceneSelection, select_best
+from selector import DEFAULT_WEIGHTS, SceneSelection, format_weights, select_best
 
 
 @dataclass(frozen=True)
@@ -102,16 +102,22 @@ def build_report(
     cache: dict | None = None,
     keep_percent: int = 0,
     exclude: Callable | None = None,
+    weights: dict[str, float] | None = None,
 ) -> list[ReportRow]:
     """장면 그룹 목록으로부터 사진별 선택/제외 리포트 행을 만든다.
     keep_percent: 장면마다 남길 비율(%), 올림·최소 1장 (selector.keep_count).
     exclude: 점수 → 후보에서 뺄 사유(C컷 판정, badcut.badcut_reason) 또는 None.
+    weights: 종합점수 가중치(없으면 기본값). 기본값과 다르면 선택 사유 끝에 적어 둔다.
 
     on_progress가 주어지면 전체 장면을 통틀어 사진 1장 처리할 때마다
     (누적 완료 수, 전체 수)를 알려준다 (장면마다 리셋되지 않음).
     """
     rows: list[ReportRow] = []
     total = sum(len(group) for group in groups)
+    custom = weights is not None and any(
+        abs(weights[k] - DEFAULT_WEIGHTS[k]) > 1e-9 for k in DEFAULT_WEIGHTS
+    )
+    weight_note = f" [가중치 {format_weights(weights)}]" if custom else ""
     done = 0
 
     for scene_id, group in enumerate(groups, start=1):
@@ -123,7 +129,8 @@ def build_report(
                 on_progress(base + i, total)
 
         selection = select_best(
-            group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent, exclude=exclude
+            group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent, exclude=exclude,
+            weights=weights,
         )
         done += len(group)
 
@@ -138,7 +145,7 @@ def build_report(
                     face=score.face,
                     total=selection.combined_scores[i],
                     selected=i in selection.kept_indices,
-                    reason=_reason_for(i, selection, keep_percent),
+                    reason=_reason_for(i, selection, keep_percent) + weight_note,
                     sharpness_region=score.sharpness_region,
                     sharpness_global=score.sharpness_global,
                     badcut_reason=selection.excluded.get(i),
