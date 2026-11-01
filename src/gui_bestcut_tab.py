@@ -95,6 +95,7 @@ from gui_settings import (
     save_folder,
     save_weights,
 )
+from gui_cull_view import CullDialog
 from gui_compare_view import STATE_FLAGGED, STATE_KEPT, STATE_NONE, CompareDialog
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import choice_store
@@ -472,6 +473,7 @@ TABLE_ICON = 64
 _INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
 VIEW_SETTINGS_KEY = "bestcut/view"  # "gallery" | "table"
 THUMB_SETTINGS_KEY = "bestcut/gallery_thumb"
+CULL_AUTO_KEY = "bestcut/cull_auto_advance"
 CLIENT_RESULT_SUFFIXES = (".json", ".txt")  # 고객 셀렉 결과 파일(끌어다 놓기)
 
 
@@ -589,6 +591,7 @@ class BestCutTab(QWidget):
         self._scene_edits: dict[Path, str] = {}
         self._viewer: PhotoViewerDialog | None = None
         self._compare: CompareDialog | None = None
+        self._cull: CullDialog | None = None
         # 나란히 비교 창 아래 줄에 쓰는 경로 → (장면 안 선명도 순위, 장면 사진 수)
         self._ranks_by_path: dict[Path, tuple[int, int]] = {}
         # 표에 지금 채워진 결과(같은 사진·순서면 바뀐 줄만 다시 채우려고)와 그때의 나누기 기준
@@ -860,6 +863,13 @@ class BestCutTab(QWidget):
             "있습니다. 표에서 사진을 더블클릭해도 됩니다.</p>"
         )
         self._view_button.clicked.connect(self._open_viewer_for_selected)
+        self._cull_button = QToolButton()  # 칸이 좁아 작은 버튼
+        self._cull_button.setText("⛶")
+        self._cull_button.setToolTip(
+            "<p><b>전체 화면으로 고르기 (F)</b> — 사진 한 장을 화면 가득 띄우고 P 남김·X 뺌(누르면 다음 "
+            "사진으로), ←/→ 사진, ↑/↓ 장면. 지금 보기(거르기)에 보이는 사진만 넘깁니다.</p>"
+        )
+        self._cull_button.clicked.connect(self._open_cull_for_selected)
         self._compare_button = compact(QPushButton("나란히 비교"))
         self._compare_button.setToolTip(
             "<p>고른 사진과 같은 장면의 컷을 2~4장 나란히 놓고 비교합니다. 확대·이동이 모든 "
@@ -908,6 +918,7 @@ class BestCutTab(QWidget):
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
         self._gallery.compare_requested.connect(self._open_compare)
+        self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
         self._gallery.context_requested.connect(self._show_context_menu)
         # 표에서도 크게 보기 창과 같은 단축키로 고른다
@@ -918,6 +929,7 @@ class BestCutTab(QWidget):
             ("Return", self._open_viewer_for_selected),
             ("Enter", self._open_viewer_for_selected),
             ("C", self._open_compare_for_selected),
+            ("F", self._open_cull_for_selected),
             ("S", lambda: self._edit_scene_at_selected(SPLIT)),
             ("M", lambda: self._edit_scene_at_selected(JOIN)),
         ):
@@ -975,10 +987,10 @@ class BestCutTab(QWidget):
         self._thumb_slider.setFixedWidth(72)
         self._thumb_slider.setToolTip("<p>갤러리 썸네일 크기 — 갤러리에서 Ctrl(⌘)+휠이나 Ctrl(⌘) +/−로도 바꿉니다.</p>")
         self._thumb_slider.valueChanged.connect(self._gallery.set_thumb)
-        self._shortcut_hint = QLabel("Space·P·X 고르기 · ? 도움말")
+        self._shortcut_hint = QLabel("? 단축키")
         self._shortcut_hint.setToolTip(
             "<p>Space 넣기/빼기 · P 넣기 · X 빼기 · Enter(더블클릭) 크게 보기 · C 나란히 비교 · "
-            "S 여기서 나누기 · M 앞 장면과 합치기 · 오른쪽 클릭 메뉴</p>"
+            "S 여기서 나누기 · M 앞 장면과 합치기 · F 전체 화면으로 고르기 · 오른쪽 클릭 메뉴</p>"
             "<p>전체 단축키는 ? 키(또는 F1)나 도움말 › 단축키에서 볼 수 있습니다.</p>"
         )
         choice_button_row = QHBoxLayout()
@@ -987,6 +999,7 @@ class BestCutTab(QWidget):
         choice_button_row.addSpacing(12)
         choice_button_row.addWidget(self._view_button)
         choice_button_row.addWidget(self._compare_button)
+        choice_button_row.addWidget(self._cull_button)
         choice_button_row.addWidget(self._scene_button)
         choice_button_row.addWidget(self._toggle_button)
         choice_button_row.addWidget(self._reset_choices_button)
@@ -1368,6 +1381,8 @@ class BestCutTab(QWidget):
             self._viewer.update_rows(self._rows_for_paths(self._viewer_paths))
         if self._compare is not None:
             self._compare.update_rows(self._rows_for_paths(self._compare.paths))
+        if self._cull is not None:
+            self._cull.refresh()
 
     def _selected_table_row(self) -> int | None:
         """고른 사진의 결과 번호(self._rows 안 위치). 표를 정렬해도 같은 사진을 가리킨다."""
@@ -1409,6 +1424,7 @@ class BestCutTab(QWidget):
         row = self._rows[index] if self._rows and index is not None else None
         self._view_button.setEnabled(row is not None)
         self._compare_button.setEnabled(row is not None)
+        self._cull_button.setEnabled(bool(self._rows))
         self._split_action.setEnabled(row is not None)
         self._join_action.setEnabled(row is not None)
         self._reset_scenes_action.setEnabled(bool(self._scene_edits_in(self._rows or [])))
@@ -1520,9 +1536,54 @@ class BestCutTab(QWidget):
         if self._compare is not None:
             self._compare.close()
             self._compare = None
+        if self._cull is not None:
+            self._cull.close()
+            self._cull = None
 
     def _on_viewer_closed(self) -> None:
         self._viewer = None
+
+    # --- 전체 화면 컬링 ------------------------------------------------------------------
+    def _open_cull_for_selected(self) -> None:
+        self._open_cull(self._selected_table_row())
+
+    def _open_cull(self, index: int | None) -> None:
+        """지금 보기(거르기)에 보이는 사진을 차례로 전체 화면에서 고른다(고른 사진부터)."""
+        if not self._rows:
+            return
+        visible = [r.path for r in self._rows if self._row_visible(r)]
+        if not visible:
+            return
+        start_path = self._rows[index].path if index is not None else visible[0]
+        start = visible.index(start_path) if start_path in visible else 0
+        self._close_viewer()
+        self._cull = CullDialog(
+            visible,
+            start,
+            row_for=lambda path: self._rows_for_paths([path])[0],
+            on_choose=self._set_selected,
+            on_toggle=self._toggle,
+            thumbnail=lambda path: self._thumbnail_pixmap(path, GALLERY_THUMB),
+            is_client=lambda path: path in self._client_picks,
+            on_compare=lambda path: self._open_compare(self._index_of_path(path)),
+            auto_advance=load_bool(self._settings, CULL_AUTO_KEY, True),
+            parent=self,
+        )
+        self._cull.finished.connect(self._on_cull_closed)
+        self._cull.showFullScreen()
+
+    def _on_cull_closed(self) -> None:
+        if self._cull is not None:
+            save_bool(self._settings, CULL_AUTO_KEY, self._cull.auto_advance())
+            path = self._cull.current_path()
+            self._cull = None
+            index = self._index_of_path(path)
+            if index is not None:
+                self._select_index(index)  # 마지막으로 본 사진을 표·갤러리에서도 고른다
+                self._gallery.set_current(index)
+
+    def _index_of_path(self, path: Path) -> int | None:
+        return next((i for i, r in enumerate(self._rows or []) if r.path == path), None)
 
     # --- 장면 직접 고치기 -----------------------------------------------------------
     def _scene_edits_in(self, rows: list[ReportRow]) -> dict[Path, str]:
@@ -1597,6 +1658,7 @@ class BestCutTab(QWidget):
         menu.addAction("선택에서 빼기 (Space)" if row.selected else "선택에 넣기 (Space)", lambda: self._toggle(row))
         menu.addAction("크게 보기 (Enter)", lambda: self._open_viewer(index))
         menu.addAction("나란히 비교 (C)", lambda: self._open_compare(index))
+        menu.addAction("전체 화면으로 고르기 (F)", lambda: self._open_cull(index))
         menu.addSeparator()
         menu.addAction("여기서 나누기 (S)", lambda: self._edit_scene(index, SPLIT))
         menu.addAction("앞 장면과 합치기 (M)", lambda: self._edit_scene(index, JOIN))

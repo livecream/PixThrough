@@ -192,6 +192,7 @@ class SceneGallery(QListView):
     toggle_requested = Signal(int)
     choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
     compare_requested = Signal(int)  # C = 나란히 비교
+    cull_requested = Signal(int)  # F = 전체 화면 컬링
     scene_edit_requested = Signal(int, str)  # S = 여기서 나누기("split"), M = 앞 장면과 합치기("join")
     context_requested = Signal(int, object)  # 오른쪽 클릭(사진 줄 번호, 화면 좌표)
     thumb_changed = Signal(int)  # 썸네일 크기를 바꿈(Ctrl+휠·Ctrl +/−)
@@ -336,6 +337,8 @@ class SceneGallery(QListView):
             self.toggle_requested.emit(self._current)
         elif key in (Qt.Key.Key_P, Qt.Key.Key_X) and self._current is not None:
             self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
+        elif key == Qt.Key.Key_F and self._current is not None:
+            self.cull_requested.emit(self._current)
         elif key == Qt.Key.Key_C and self._current is not None:
             self.compare_requested.emit(self._current)
         elif key in (Qt.Key.Key_S, Qt.Key.Key_M) and self._current is not None:
