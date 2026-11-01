@@ -492,11 +492,13 @@ class ApplyWorker(QThread):
 
     def run(self) -> None:
         try:
+            purpose = ("C컷" if self._kind == "badcut" else "베스트컷") + (" 이동" if self._move else " 복사")
             results = apply_selection(
                 self._rows,
                 self._output_dir,
                 move=self._move,
                 on_progress=self.progress.emit,
+                purpose=purpose,
             )
             # 파일 작업이 끝난 뒤에 쓴다 — 출력 폴더가 원본 폴더와 겹쳐 apply_selection이
             # 막은 경우엔 원본 폴더에 리포트가 생기지 않도록.

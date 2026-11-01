@@ -19,6 +19,7 @@ from raw_preview import is_raw
 from report import ReportRow
 from scanner import RAW_EXTENSIONS
 import app_log
+import history
 
 log = app_log.get("files")
 
@@ -125,6 +126,7 @@ def apply_selection(
     output_dir: Path,
     move: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    purpose: str = "",
 ) -> list[FileOpResult]:
     """선택된(selected=True) 사진을 output_dir로 복사(기본) 또는 이동한다.
 
@@ -211,6 +213,11 @@ def apply_selection(
                     on_progress(index, total)
 
     log.info("%s: %d장 → %s (실패 %d)", "이동" if move else "복사", len(results), output_dir, len(errors))
+    history.record(
+        purpose or ("이동" if move else "복사"),
+        f"{len(results)}장 {'이동' if move else '복사'} → {output_dir.name}" + (f" (실패 {len(errors)})" if errors else ""),
+        output_dir, log_path,
+    )
     for source, error in errors:
         log.warning("%s 실패: %s — %s", "이동" if move else "복사", source, error)
     if errors:
@@ -278,6 +285,11 @@ def undo_moves(results: list[FileOpResult], log_dir: Path) -> UndoOutcome:
             log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
     restored.reverse()
     log.info("이동 되돌리기: %d장 복원, %d개 건너뜀 (기록 %s)", len(restored), len(skipped), log_path)
+    history.record(
+        "이동 되돌리기",
+        f"{len(restored)}장을 원래 폴더로" + (f" ({len(skipped)}개 건너뜀)" if skipped else ""),
+        restored[0].source.parent if restored else None, log_path,
+    )
     for path, why in skipped:
         log.warning("되돌리지 못함: %s — %s", path, why)
     return UndoOutcome(restored=restored, skipped=skipped)

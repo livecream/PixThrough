@@ -31,6 +31,7 @@ from typing import Callable
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import app_log
+import history
 import choice_store
 from file_ops import FileOpResult, apply_selection
 from raw_preview import open_image
@@ -236,6 +237,11 @@ def build_proof(
         phone_path.write_text(render_page(title or folder.name, embedded, max_picks, phone=True), encoding="utf-8")
     log.info("고객 셀렉 페이지: %d장 (실패 %d) → %s%s", len(photos), len(failed), package,
              f" + 휴대폰용 {phone_path.name}" if phone_path else "")
+    history.record(
+        "고객 셀렉 페이지",
+        f"{package.name}: 사진 {len(photos)}장" + (" + 휴대폰용 한 파일" if phone_path else ""),
+        output_dir, package / "index.html",
+    )
     return ProofResult(package, zip_path, photos, failed, phone_path)
 
 
@@ -377,7 +383,7 @@ def copy_selection(
     ]
     report = output_dir / f"client_selection_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
     try:
-        results = apply_selection(rows, output_dir, on_progress=on_progress)
+        results = apply_selection(rows, output_dir, on_progress=on_progress, purpose="고객 선택 복사")
     finally:  # 일부가 실패해도(ApplyError) 고객이 고른 목록과 메모는 남긴다
         if output_dir.is_dir():
             with open(report, "w", encoding="utf-8-sig", newline="") as f:

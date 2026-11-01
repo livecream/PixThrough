@@ -30,6 +30,7 @@ from PIL import Image
 from raw_preview import RAW_EXTENSIONS
 from scanner import SUPPORTED_EXTENSIONS  # HEIC를 열 수 있게 pillow_heif도 등록된다
 import app_log
+import history
 
 log = app_log.get("resize")
 
@@ -274,4 +275,9 @@ def apply_resize_plan(
              len(results) - len(failed), output_dir, len(failed))
     for result in failed:
         log.warning("축소 실패: %s — %s", result.source, result.error)
+    history.record(
+        "사진 축소",
+        f"{len(results) - len(failed)}장 긴 변 {long_edge}px로 → {output_dir.name}" + (f" (실패 {len(failed)})" if failed else ""),
+        output_dir, log_path,
+    )
     return results

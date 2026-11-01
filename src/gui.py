@@ -30,7 +30,9 @@ from PySide6.QtWidgets import (
 )
 
 import app_log
+import history
 from gui_file_organize_tab import FileOrganizeTab
+from gui_history import HistoryDialog
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
 from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
@@ -167,6 +169,11 @@ class MainWindow(QMainWindow):
         self._recent_menu = file_menu.addMenu("최근 폴더")
         self._recent_menu.setToolTipsVisible(True)
         self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        history_action = QAction("작업 기록…", self)
+        history_action.setToolTip("앱에서 한 복사·이동·정리 등 파일 작업을 최근 것부터 봅니다")
+        history_action.triggered.connect(lambda: HistoryDialog(self).exec())
+        file_menu.addAction(history_action)
+        file_menu.addSeparator()
         client = QAction("고객 선택 결과 가져오기…", self)
         client.setToolTip("고객 셀렉 결과 파일을 베스트컷 화면의 미리보기 사진과 맞춰 \"고객\" 표시를 붙입니다")
         client.triggered.connect(self._import_client_result)
@@ -311,6 +318,10 @@ def main() -> None:
         pass  # 기록 파일을 못 만들어도(권한 등) 앱은 그대로 쓴다
     app = QApplication(sys.argv)
     install_korean_translation(app)
+    try:
+        history.enable()  # 파일 작업 기록(파일 › 작업 기록)
+    except OSError:
+        pass
     window = MainWindow()
     app_log.install_excepthooks(on_error=window.show_unexpected_error)
     window.show()

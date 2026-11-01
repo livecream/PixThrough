@@ -36,6 +36,7 @@ from pathlib import Path
 from file_ops import find_matching_raw
 from raw_preview import is_raw
 import app_log
+import history
 
 log = app_log.get("xmp")
 
@@ -240,6 +241,12 @@ def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path, label: str = "
     what = f"라벨 {label}" if label_only else f"별점 {rating}★"
     log.info("라이트룸 %s: 만듦 %d · 고침 %d · 건너뜀 %d (백업·기록 %s)", what,
              counts[ACTION_CREATED], counts[ACTION_UPDATED], counts[ACTION_SKIPPED], run_dir)
+    raws = [row.raw for row in rows if row.raw is not None]
+    history.record(
+        "라이트룸 라벨" if label_only else "라이트룸 별점",
+        f"{what}: .xmp 만듦 {counts[ACTION_CREATED]} · 고침 {counts[ACTION_UPDATED]} · 건너뜀 {counts[ACTION_SKIPPED]}",
+        raws[0].parent if raws else None, run_dir / "xmp_log.jsonl",
+    )
     return results
 
 
@@ -291,6 +298,11 @@ def undo_xmp(results: list[XmpResult]) -> tuple[int, list[tuple[Path, str]]]:
         except OSError as e:
             skipped.append((xmp, str(e)))
     log.info("라이트룸 별점 되돌리기: %d개 복원, %d개 건너뜀", restored, len(skipped))
+    xmps = [r.plan.xmp for r in results if r.plan.xmp is not None]
+    history.record(
+        "라이트룸 되돌리기", f".xmp {restored}개 되돌림" + (f" ({len(skipped)}개 그대로)" if skipped else ""),
+        xmps[0].parent if xmps else None,
+    )
     return restored, skipped
 
 
