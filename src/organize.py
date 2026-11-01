@@ -25,6 +25,7 @@ from typing import Callable
 
 from scanner import RAW_EXTENSIONS, SUPPORTED_EXTENSIONS, extract_metadata
 import app_log
+import history
 
 log = app_log.get("organize")
 
@@ -49,6 +50,15 @@ def _top_level_files(folder: Path) -> list[Path]:
     return sorted(p for p in Path(folder).iterdir() if p.is_file())
 
 
+_ACTION_LABELS = {
+    "move_raw": "RAW 폴더로 이동",
+    "move_video": "영상 폴더로 이동",
+    "organize_by_date": "날짜별로 이동",
+    "remove_empty_folders": "빈 폴더 삭제",
+    "delete_duplicate": "중복 파일 삭제",
+}
+
+
 def write_operation_log(items: list, folder: Path, action: str) -> Path:
     """정리 작업 내역을 folder/organize_log_<타임스탬프>.jsonl에 기록한다
     (rename_by_time.py의 rename_log_*.jsonl과 같은 형식). items는
@@ -66,6 +76,8 @@ def write_operation_log(items: list, folder: Path, action: str) -> Path:
                 + "\n"
             )
     log.info("폴더 정리 %s: %d개 (기록 %s)", action, len(items), log_path)
+    what = _ACTION_LABELS.get(action, action)
+    history.record("폴더 정리", f"{what} {len(items)}개", folder, log_path)
     return log_path
 
 

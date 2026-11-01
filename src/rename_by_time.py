@@ -37,6 +37,7 @@ from clock_sync import camera_keys, shifted
 from file_ops import find_matching_raw
 from scanner import PhotoMetadata, extract_metadata, scan_folder
 import app_log
+import history
 
 log = app_log.get("rename")
 
@@ -317,6 +318,7 @@ def apply_rename_plan(
                 on_progress(index, total)
 
     log.info("시간순 정렬 적용: %d개 파일", len(results))
+    history.record("시간순 정렬", f"{len(results)}개 파일 이름 바꿈(제자리)", log_dir, log_path)
     return results
 
 
@@ -401,4 +403,5 @@ def apply_merge_plan(
                 on_progress(index, total)
 
     log.info("시간순 정렬 적용: %d개 파일", len(results))
+    history.record("시간순 정렬", f"{len(results)}개 파일을 {output_dir.name}(으)로 합치며 이름 바꿈", output_dir, log_path)
     return results

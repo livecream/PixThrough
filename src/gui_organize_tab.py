@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import history
 from gui_dnd import extract_dropped_folders
 from gui_errors import show_error
 from gui_format import format_bytes, format_folder_summary
@@ -512,6 +513,7 @@ class OrganizeTab(QWidget):
             rows = self._last_operation["rows"]
             restored = apply_move_plan(build_undo_plan(rows))
             text = f"{len(restored)}개 파일 되돌리기 완료"
+            history.record("폴더 정리 되돌리기", f"{len(restored)}개 파일을 원래 자리로", self._folder)
             if len(restored) < len(rows):
                 text += f" · {len(rows) - len(restored)}개는 원래 자리에 같은 이름이 생겨 그대로 둠"
             self._show_nothing(text)
@@ -519,6 +521,7 @@ class OrganizeTab(QWidget):
             folders = self._last_operation["folders"]
             for folder in folders:
                 folder.mkdir(parents=True, exist_ok=True)
+            history.record("폴더 정리 되돌리기", f"빈 폴더 {len(folders)}개 다시 만듦", self._folder)
             self._show_nothing(f"빈 폴더 {len(folders)}개 다시 생성(복구) 완료")
         self._last_operation = None
         self._refresh()

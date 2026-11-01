@@ -12,8 +12,8 @@ from pathlib import Path
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 import score_store
-from gui_bestcut_tab import BestCutTab
-from gui_dnd import extract_dropped_folders
+from gui_bestcut_tab import CLIENT_RESULT_SUFFIXES, BestCutTab
+from gui_dnd import extract_dropped_files, extract_dropped_folders
 from gui_input_folders import InputFolderPanel
 
 
@@ -71,7 +71,14 @@ class PhotoSelectionTab(QWidget):
         folders = extract_dropped_folders(event.mimeData())
         if folders:
             self.inputs.add_folders(folders)
+        results = extract_dropped_files(event.mimeData(), CLIENT_RESULT_SUFFIXES)
+        if results:
+            self._best_cut_tab.import_client_result(results[0])
         event.acceptProposedAction()
+
+    def import_client_result(self) -> None:
+        """파일 › 고객 선택 결과 가져오기."""
+        self._best_cut_tab.import_client_result()
 
     @property
     def is_busy(self) -> bool:

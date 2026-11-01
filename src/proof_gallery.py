@@ -31,6 +31,7 @@ from typing import Callable
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import app_log
+import history
 import choice_store
 from file_ops import FileOpResult, apply_selection
 from raw_preview import open_image
@@ -181,18 +182,23 @@ def build_proof(
     recursive: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
     phone_long_edge: int | None = None,
+    only: set[Path] | None = None,
 ) -> ProofResult:
     """output_dir/<제목>/ 에 index.html·photos/·manifest.json을 만들고 같은 이름의 zip도 만든다.
     phone_long_edge를 주면 사진을 그 크기로 줄여 HTML 안에 넣은 휴대폰용 한 파일
     output_dir/<제목>.html도 만든다(페이지 사진에서 줄이므로 워터마크도 그대로, 키우지 않음).
+    only를 주면 그 사진만 넣는다(고객이 1차로 고른 사진으로 2차 페이지 — id는 원본 폴더 기준 그대로라
+    2차 결과도 같은 원본 폴더로 가져온다).
     같은 이름이 있으면 덮어쓰지 않고 " (n)"을 붙인다. 열 수 없는 사진은 건너뛰고 알린다."""
     folder, output_dir = Path(folder), Path(output_dir)
     _guard_overlap(folder, output_dir, "페이지를 만들 폴더")
     if not 200 <= long_edge <= 8000:
         raise ValueError("사진 긴 변은 200~8000px 사이여야 합니다.")
     items = list_photos(folder, recursive)
+    if only is not None:
+        items = [(photo_id, path) for photo_id, path in items if path in only]
     if not items:
-        raise ValueError("사진 폴더에 사진이 없습니다.")
+        raise ValueError("사진 폴더에 사진이 없습니다." if only is None else "다시 보낼 사진이 사진 폴더에 없습니다.")
     package = _unique_dir(output_dir / _safe_name(title or folder.name))
     photos_dir = package / "photos"
     photos_dir.mkdir(parents=True)
@@ -231,6 +237,11 @@ def build_proof(
         phone_path.write_text(render_page(title or folder.name, embedded, max_picks, phone=True), encoding="utf-8")
     log.info("고객 셀렉 페이지: %d장 (실패 %d) → %s%s", len(photos), len(failed), package,
              f" + 휴대폰용 {phone_path.name}" if phone_path else "")
+    history.record(
+        "고객 셀렉 페이지",
+        f"{package.name}: 사진 {len(photos)}장" + (" + 휴대폰용 한 파일" if phone_path else ""),
+        output_dir, package / "index.html",
+    )
     return ProofResult(package, zip_path, photos, failed, phone_path)
 
 
@@ -247,6 +258,14 @@ def _data_uri(page_photo: Path, long_edge: int) -> str:
 def estimate_phone_bytes(count: int, long_edge: int) -> int:
     """휴대폰용 한 파일의 대략 크기(3:2 사진 기준, 사진마다 다름)."""
     return int(count * long_edge * (long_edge * 2 / 3) * PHONE_BYTES_PER_PIXEL)
+
+
+def next_round_title(title: str) -> str:
+    """다음 차수 페이지 제목: "김씨 셀렉" → "김씨 셀렉 2차", "김씨 셀렉 2차" → "김씨 셀렉 3차"."""
+    match = re.search(r"\s*(\d+)차$", title)
+    if match:
+        return f"{title[: match.start()]} {int(match.group(1)) + 1}차".strip()
+    return f"{title} 2차".strip()
 
 
 def render_page(title: str, photos: list[ProofPhoto], max_picks: int = 0, phone: bool = False) -> str:
@@ -300,29 +319,48 @@ def match_selection(
     items: list[tuple[str, Path]] | None = None,
 ) -> tuple[list[MatchedPick], list[str]]:
     """고객이 고른 것을 원본 폴더 사진과 맞춘다. 경로(id)가 같으면 그대로, 아니면 확장자를 뺀
-    파일 이름이 하나뿐일 때만 그 사진(둘 이상이면 못 찾음으로 — 잘못 복사하지 않게)."""
+    파일 이름이 하나뿐일 때만 그 사진(둘 이상이면 못 찾음으로 — 잘못 복사하지 않게).
+    items를 주면 그 (id, 사진) 목록과 맞춘다(여러 입력 폴더 — 같은 id가 다른 사진이면 그 id로는
+    고르지 않음)."""
     if items is None:
         items = list_photos(folder, recursive)
-    by_id = {photo_id: path for photo_id, path in items}
-    by_stem: dict[str, list[tuple[str, Path]]] = {}
+    paths_by_id: dict[str, set[Path]] = {}
+    by_stem: dict[str, dict[Path, str]] = {}
     for photo_id, path in items:
-        by_stem.setdefault(path.stem.lower(), []).append((photo_id, path))
+        paths_by_id.setdefault(photo_id, set()).add(path)
+        by_stem.setdefault(path.stem.lower(), {}).setdefault(path, photo_id)
     matched: list[MatchedPick] = []
     missing: list[str] = []
-    seen: set[str] = set()
+    seen: set[Path] = set()
     for wanted in selection.ids:
         key = wanted.replace("\\", "/")
-        if key in by_id:
-            hit = (key, by_id[key])
+        hit = None
+        if len(paths_by_id.get(key, ())) == 1:
+            hit = (key, next(iter(paths_by_id[key])))
         else:
-            candidates = by_stem.get(Path(key).stem.lower(), [])
-            hit = candidates[0] if len(candidates) == 1 else None
+            candidates = by_stem.get(Path(key).stem.lower(), {})
+            if len(candidates) == 1:
+                path, photo_id = next(iter(candidates.items()))
+                hit = (photo_id, path)
         if hit is None:
             missing.append(wanted)
-        elif hit[0] not in seen:
-            seen.add(hit[0])
+        elif hit[1] not in seen:
+            seen.add(hit[1])
             matched.append(MatchedPick(hit[0], hit[1], selection.notes.get(wanted, "")))
     return matched, missing
+
+
+def photo_ids(photos: list[Path], folders: list[Path]) -> list[tuple[str, Path]]:
+    """사진마다 그 사진을 담은 입력 폴더 기준 상대 경로 id(여러 폴더에 걸치면 각각) — 베스트컷
+    화면처럼 입력 폴더가 여러 개일 때 고객 결과와 맞추는 데 쓴다."""
+    items = []
+    for path in photos:
+        for folder in folders:
+            try:
+                items.append((path.relative_to(folder).as_posix(), path))
+            except ValueError:
+                continue
+    return items
 
 
 def record_client_picks(matched: list[MatchedPick], photos: list[Path]) -> None:
@@ -345,7 +383,7 @@ def copy_selection(
     ]
     report = output_dir / f"client_selection_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
     try:
-        results = apply_selection(rows, output_dir, on_progress=on_progress)
+        results = apply_selection(rows, output_dir, on_progress=on_progress, purpose="고객 선택 복사")
     finally:  # 일부가 실패해도(ApplyError) 고객이 고른 목록과 메모는 남긴다
         if output_dir.is_dir():
             with open(report, "w", encoding="utf-8-sig", newline="") as f:
