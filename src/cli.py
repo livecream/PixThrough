@@ -14,7 +14,15 @@ from badcut import BadCutThresholds, build_badcut_rows
 from clock_sync import parse_offset, shift_photos, summarize
 from file_ops import apply_selection
 from grouping import DEFAULT_SCENE_GAP_SECONDS, group_scenes
-from proof_gallery import LONG_EDGE_START, build_proof, copy_selection, list_photos, match_selection, parse_selection
+from proof_gallery import (
+    LONG_EDGE_START,
+    PHONE_LONG_EDGE_START,
+    build_proof,
+    copy_selection,
+    list_photos,
+    match_selection,
+    parse_selection,
+)
 from rename_by_time import (
     DEFAULT_DIGITS,
     apply_merge_plan,
@@ -245,10 +253,14 @@ def cmd_proof_make(args: argparse.Namespace) -> None:
     result = build_proof(
         folder, output, title, long_edge=args.long_edge, watermark=args.watermark,
         max_picks=args.limit, recursive=args.recursive,
+        phone_long_edge=args.phone_long_edge if args.phone else None,
     )
     for path, error in result.failed:
         print(f"건너뜀: {path} — {error}")
     print(f"완료: {len(result.photos)}장 → {result.package_dir} (zip: {result.zip_path})")
+    if result.phone_path is not None:
+        size = result.phone_path.stat().st_size / 1024 / 1024
+        print(f"휴대폰용 한 파일: {result.phone_path} ({size:.1f}MB)")
 
 
 def cmd_proof_import(args: argparse.Namespace) -> None:
@@ -520,6 +532,11 @@ def main() -> None:
     p_make.add_argument("--watermark", default="", help="사진 가운데 넣을 글자(없으면 넣지 않음)")
     p_make.add_argument("--limit", type=int, default=0, help="고를 수 있는 최대 장 수 안내(0 = 제한 없음)")
     p_make.add_argument("--recursive", action="store_true", help="하위 폴더까지")
+    p_make.add_argument("--phone", action="store_true", help="휴대폰용 한 파일(사진을 HTML 안에 넣음)도 만들기")
+    p_make.add_argument(
+        "--phone-long-edge", type=int, default=PHONE_LONG_EDGE_START, dest="phone_long_edge",
+        help=f"휴대폰용 파일 사진 긴 변 픽셀, 기본값 {PHONE_LONG_EDGE_START}",
+    )
     p_make.add_argument("--apply", action="store_true", help="실제로 만들기. 없으면 dry-run(대상 사진만 출력)")
     p_make.set_defaults(func=cmd_proof_make)
     p_import = proof_sub.add_parser("import", help="고객 선택 결과(JSON 또는 이름 목록)로 원본을 따로 복사")

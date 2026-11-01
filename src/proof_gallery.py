@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import datetime
 import html
+import io
 import json
 import re
 import shutil
@@ -40,6 +42,11 @@ log = app_log.get("proof")
 RESULT_VERSION = 1
 LONG_EDGE_START = 1600
 QUALITY = 85
+# 휴대폰용 한 파일(사진을 HTML 안에 넣음): 카톡 등으로 보내기 좋게 따로 작게(사용자 결정)
+PHONE_LONG_EDGE_START = 1200
+PHONE_QUALITY = 75
+PHONE_BYTES_PER_PIXEL = 0.2 * 4 / 3  # 실제 사진 1200px·화질 75 측정 ≈ 0.2바이트/픽셀, base64로 4/3배
+PHONE_WARN_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,7 @@ class ProofResult:
     zip_path: Path
     photos: list[ProofPhoto]
     failed: list[tuple[Path, str]]
+    phone_path: Path | None = None  # 휴대폰용 한 파일(만들었으면)
 
 
 @dataclass
@@ -152,8 +160,12 @@ def _safe_name(title: str) -> str:
 
 
 def _unique_dir(path: Path) -> Path:
+    """폴더·같은 이름 zip·휴대폰용 html이 모두 없는 이름(" (n)")."""
     candidate, n = path, 1
-    while candidate.exists() or candidate.with_suffix(".zip").exists():
+    while any(
+        p.exists() for p in (candidate, candidate.with_name(candidate.name + ".zip"),
+                             candidate.with_name(candidate.name + ".html"))
+    ):
         candidate = path.with_name(f"{path.name} ({n})")
         n += 1
     return candidate
@@ -168,8 +180,11 @@ def build_proof(
     max_picks: int = 0,
     recursive: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    phone_long_edge: int | None = None,
 ) -> ProofResult:
     """output_dir/<제목>/ 에 index.html·photos/·manifest.json을 만들고 같은 이름의 zip도 만든다.
+    phone_long_edge를 주면 사진을 그 크기로 줄여 HTML 안에 넣은 휴대폰용 한 파일
+    output_dir/<제목>.html도 만든다(페이지 사진에서 줄이므로 워터마크도 그대로, 키우지 않음).
     같은 이름이 있으면 덮어쓰지 않고 " (n)"을 붙인다. 열 수 없는 사진은 건너뛰고 알린다."""
     folder, output_dir = Path(folder), Path(output_dir)
     _guard_overlap(folder, output_dir, "페이지를 만들 폴더")
@@ -183,6 +198,7 @@ def build_proof(
     photos_dir.mkdir(parents=True)
     photos: list[ProofPhoto] = []
     failed: list[tuple[Path, str]] = []
+    steps = len(items) * (2 if phone_long_edge else 1)
     for index, (photo_id, source) in enumerate(items, start=1):
         file = f"photos/{index:04d}.jpg"
         try:
@@ -192,7 +208,7 @@ def build_proof(
         else:
             photos.append(ProofPhoto(photo_id, source, file))
         if on_progress is not None:
-            on_progress(index, len(items))
+            on_progress(index, steps)
     manifest = {
         "version": RESULT_VERSION,
         "title": title,
@@ -204,13 +220,38 @@ def build_proof(
     (package / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     (package / "index.html").write_text(render_page(title or folder.name, photos, max_picks), encoding="utf-8")
     zip_path = Path(shutil.make_archive(str(package), "zip", root_dir=package.parent, base_dir=package.name))
-    log.info("고객 셀렉 페이지: %d장 (실패 %d) → %s", len(photos), len(failed), package)
-    return ProofResult(package, zip_path, photos, failed)
+    phone_path = None
+    if phone_long_edge:
+        phone_path = package.with_name(package.name + ".html")
+        embedded = []
+        for index, photo in enumerate(photos, start=1):
+            embedded.append(ProofPhoto(photo.id, photo.source, _data_uri(package / photo.file, phone_long_edge)))
+            if on_progress is not None:
+                on_progress(len(items) + index, steps)
+        phone_path.write_text(render_page(title or folder.name, embedded, max_picks, phone=True), encoding="utf-8")
+    log.info("고객 셀렉 페이지: %d장 (실패 %d) → %s%s", len(photos), len(failed), package,
+             f" + 휴대폰용 {phone_path.name}" if phone_path else "")
+    return ProofResult(package, zip_path, photos, failed, phone_path)
 
 
-def render_page(title: str, photos: list[ProofPhoto], max_picks: int = 0) -> str:
+def _data_uri(page_photo: Path, long_edge: int) -> str:
+    """페이지 사진(이미 회전·워터마크·EXIF 없음)을 long_edge로 줄여 data URI로(키우지 않음)."""
+    with Image.open(page_photo) as img:
+        image = img.convert("RGB")
+    image.thumbnail((long_edge, long_edge), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=PHONE_QUALITY, optimize=True)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def estimate_phone_bytes(count: int, long_edge: int) -> int:
+    """휴대폰용 한 파일의 대략 크기(3:2 사진 기준, 사진마다 다름)."""
+    return int(count * long_edge * (long_edge * 2 / 3) * PHONE_BYTES_PER_PIXEL)
+
+
+def render_page(title: str, photos: list[ProofPhoto], max_picks: int = 0, phone: bool = False) -> str:
     data = [{"id": p.id, "file": p.file, "name": Path(p.id).name} for p in photos]
-    payload = json.dumps({"title": title, "limit": max_picks, "photos": data}, ensure_ascii=False)
+    payload = json.dumps({"title": title, "limit": max_picks, "phone": phone, "photos": data}, ensure_ascii=False)
     payload = payload.replace("</", "<\\/")  # 스크립트 안에서 태그가 닫히지 않게
     return _PAGE.replace("__TITLE__", html.escape(title)).replace("__DATA__", payload)
 
@@ -360,11 +401,15 @@ textarea { width:100%; min-height:70px; font:inherit; border-radius:8px; border:
   <div class="bar">
     <span class="count" id="count"></span>
     <label class="toggle"><input type="checkbox" id="onlyPicked"> 고른 사진만 보기</label>
+    <button class="hidden" id="share">보내기</button>
     <button id="copy">목록 복사</button>
     <button class="primary" id="save">선택 결과 저장</button>
   </div>
-  <p class="help">사진을 눌러 고르세요(다시 누르면 취소). 크게 보려면 사진 아래 이름을 누르세요 — ←/→ 넘기기, Space 고르기, Esc 닫기.
+  <p class="help" id="helpPc">사진을 눌러 고르세요(다시 누르면 취소). 크게 보려면 사진 아래 이름을 누르세요 — ←/→ 넘기기, Space 고르기, Esc 닫기.
   고른 것은 이 브라우저에 저장되니 창을 닫았다 열어도 남아 있습니다. 다 고르면 <b>선택 결과 저장</b>으로 받은 파일(pixthrough-selection.json)을 보내거나 <b>목록 복사</b>로 붙여 보내 주세요.</p>
+  <p class="help hidden" id="helpPhone">사진을 눌러 고르세요(다시 누르면 취소). 크게 보려면 사진 아래 이름을 누르세요.
+  다 고르면 <b>보내기</b>(카톡·문자 등으로 목록 보내기)나 <b>목록 복사</b> 후 메신저에 붙여 보내 주세요.
+  카톡 안에서 바로 열면 고른 것이 남지 않을 수 있으니, 가능하면 사파리·크롬 같은 브라우저로 열어 주세요.</p>
 </header>
 <main id="grid"></main>
 <footer>
@@ -450,8 +495,24 @@ document.getElementById("onlyPicked").onchange = render;
 const memo = document.getElementById("memo");
 memo.value = state.memo || "";
 memo.oninput = () => { state.memo = memo.value; try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+function shareText() { return listText() + (state.memo ? "\\n\\n메모: " + state.memo : ""); }
+// 휴대폰용 한 파일: 보내기(공유 창)를 앞에 두고 안내를 휴대폰에 맞춘다
+const shareButton = document.getElementById("share");
+if (navigator.share) {
+  shareButton.classList.remove("hidden");
+  shareButton.onclick = async () => {
+    if (!picked().length) { alert("먼저 사진을 골라 주세요."); return; }
+    try { await navigator.share({ title: DATA.title + " 고른 사진", text: shareText() }); } catch (e) {}
+  };
+}
+if (DATA.phone) {
+  document.getElementById("helpPc").classList.add("hidden");
+  document.getElementById("helpPhone").classList.remove("hidden");
+  document.getElementById("save").classList.remove("primary");
+  if (navigator.share) shareButton.classList.add("primary");
+}
 document.getElementById("copy").onclick = async () => {
-  const text = listText() + (state.memo ? "\\n\\n메모: " + state.memo : "");
+  const text = shareText();
   try { await navigator.clipboard.writeText(text); alert(`${picked().length}장 목록을 복사했습니다. 메신저에 붙여 보내 주세요.`); }
   catch (e) { const list = document.getElementById("list"); list.focus(); list.select(); alert("자동 복사가 안 돼서 아래 목록을 선택해 두었습니다. 복사해서 보내 주세요."); }
 };

@@ -161,3 +161,35 @@ def test_record_client_picks_replaces_previous_picks_for_the_folder(tmp_path, mo
     record_client_picks(matched, photos)  # 고객이 다시 고르면 빠진 사진은 표시 해제
     assert choice_store.client_picks.restore(photos) == {src / "b.jpg": ""}
     choice_store.clear_memory()
+
+
+def test_build_proof_can_also_make_one_phone_file_with_embedded_photos(tmp_path):
+    import base64
+    import io
+    import re
+
+    from proof_gallery import estimate_phone_bytes
+
+    src = _photos(tmp_path / "shoot")
+    result = build_proof(src, tmp_path / "out", "셀렉", long_edge=600, phone_long_edge=300)
+    assert result.phone_path == tmp_path / "out" / "셀렉.html"
+    page = result.phone_path.read_text(encoding="utf-8")
+    assert '"phone": true' in page and "photos/0001.jpg" not in page
+    uris = re.findall(r"data:image/jpeg;base64,([A-Za-z0-9+/=]+)", page)
+    assert len(uris) == 2
+    with Image.open(io.BytesIO(base64.b64decode(uris[0]))) as first:
+        assert max(first.size) == 300  # 페이지 사진(600)에서 줄임, 회전 반영된 그대로
+        assert len(first.getexif()) == 0
+    # 다음에 같은 제목으로 만들면 폴더·zip·html 모두 안 겹치는 이름
+    again = build_proof(src, tmp_path / "out", "셀렉", long_edge=600, phone_long_edge=300)
+    assert again.phone_path.name == "셀렉 (1).html"
+    assert build_proof(src, tmp_path / "out2", "셀렉", long_edge=600).phone_path is None
+    assert 15_000_000 < estimate_phone_bytes(100, 1200) < 30_000_000
+
+
+def test_title_with_dot_does_not_reuse_an_existing_zip(tmp_path):
+    src = _photos(tmp_path / "shoot")
+    first = build_proof(src, tmp_path / "out", "김씨.웨딩", long_edge=200)
+    second = build_proof(src, tmp_path / "out", "김씨.웨딩", long_edge=200)
+    assert first.zip_path.name == "김씨.웨딩.zip"
+    assert second.zip_path.name == "김씨.웨딩 (1).zip" and first.zip_path.exists()
