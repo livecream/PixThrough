@@ -74,6 +74,7 @@ from proof_gallery import (
     estimate_phone_bytes,
     list_photos,
     match_selection,
+    next_round_title,
     parse_selection,
     record_client_picks,
 )
@@ -242,6 +243,13 @@ class ProofTab(QWidget):
         self._open_copy_button.clicked.connect(lambda: self._open_folder(self._copy_dir))
         self._copy_button = make_primary(QPushButton("복사"))
         self._copy_button.clicked.connect(self._run_copy)
+        self._next_round_button = compact(QPushButton("2차 페이지…"))
+        self._next_round_button.setToolTip(
+            "<p>고객이 고른 사진만으로 다음 차수 페이지를 만듭니다(예: 100장 → 1차 30장 → 2차 최종 10장). "
+            "① 페이지 만들기의 저장 폴더·사진 크기·워터마크·고를 장 수·휴대폰용 설정을 그대로 씁니다 — "
+            "고를 장 수를 먼저 줄여 두세요. 돌려받은 2차 결과도 같은 사진 폴더로 가져옵니다.</p>"
+        )
+        self._next_round_button.clicked.connect(self._run_next_round)
         # 라이트룸 색 라벨(고객 선택 표시) — 원본 RAW 옆 .xmp에, 사진 파일은 그대로
         self._label_combo = QComboBox()
         self._label_combo.setEditable(True)
@@ -276,9 +284,10 @@ class ProofTab(QWidget):
         self._copy_warning = WarningLabel()
         import_form.addRow(self._copy_warning)
         copy_row = QHBoxLayout()
-        copy_note = QLabel("원본(+같은 이름 RAW)을 복사 · 원본은 그대로")
+        copy_note = QLabel("원본(+RAW) 복사 · 원본 그대로")
         copy_note.setEnabled(False)
         copy_row.addWidget(copy_note, stretch=1)
+        copy_row.addWidget(self._next_round_button)
         copy_row.addWidget(self._copy_button)
         import_form.addRow(copy_row)
         label_row = QHBoxLayout()
@@ -440,15 +449,43 @@ class ProofTab(QWidget):
             return
         folder, output = self._input_dir, self._output_dir
         title = self._title_edit.text().strip() or folder.name
-        args = dict(
+        args = self._page_args()
+        self._start("build", "페이지 만드는 중...", lambda progress: build_proof(
+            folder, output, title, on_progress=progress, **args
+        ))
+
+    def _page_args(self) -> dict:
+        return dict(
             long_edge=self._long_edge_spin.value(),
             watermark=self._watermark_edit.text().strip(),
             max_picks=self._limit_spin.value(),
             recursive=self._recursive_checkbox.isChecked(),
             phone_long_edge=self._phone_edge_spin.value() if self._phone_checkbox.isChecked() else None,
         )
-        self._start("build", "페이지 만드는 중...", lambda progress: build_proof(
-            folder, output, title, on_progress=progress, **args
+
+    def _run_next_round(self) -> None:
+        """고객이 고른 사진만으로 다음 차수 페이지를 만든다(① 설정 그대로)."""
+        if self.is_busy or not self._matched or self._input_dir is None:
+            return
+        if self._output_dir is None:
+            QMessageBox.warning(self, "저장 폴더 필요", "① 페이지 만들기의 저장 폴더를 먼저 고르세요.")
+            return
+        base = (self._selection.title if self._selection else "") or self._title_edit.text().strip() \
+            or self._input_dir.name
+        limit = self._limit_spin.value()
+        title, ok = QInputDialog.getText(
+            self, "2차 페이지 만들기",
+            f"고객이 고른 {len(self._matched)}장으로 다음 페이지를 만듭니다"
+            f"(고를 장 수: {f'{limit}장' if limit else '제한 없음'} — ①에서 바꿀 수 있음).\n페이지 제목:",
+            text=next_round_title(base),
+        )
+        if not ok or not title.strip():
+            return
+        folder, output, only = self._input_dir, self._output_dir, {pick.source for pick in self._matched}
+        args = self._page_args()
+        self._title_edit.setText(title.strip())  # 다음 결과 파일의 제목과 맞게
+        self._start("build", "2차 페이지 만드는 중...", lambda progress: build_proof(
+            folder, output, title.strip(), on_progress=progress, only=only, **args
         ))
 
     def _on_build_done(self, result: ProofResult) -> None:
@@ -727,6 +764,7 @@ class ProofTab(QWidget):
         fit_text(self._copy_button)
         self._copy_button.setEnabled(bool(count) and not busy and self._copy_dir is not None)
         self._label_button.setText(f"라벨 쓰기 ({len(self._matched)}장)" if self._matched else "라벨 쓰기")
+        self._next_round_button.setEnabled(bool(self._matched) and not busy)
         self._label_button.setEnabled(bool(self._matched) and not busy)
         self._undo_label_button.setVisible(bool(self._last_label))
         self._undo_label_button.setEnabled(not busy)

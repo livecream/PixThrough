@@ -181,18 +181,23 @@ def build_proof(
     recursive: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
     phone_long_edge: int | None = None,
+    only: set[Path] | None = None,
 ) -> ProofResult:
     """output_dir/<제목>/ 에 index.html·photos/·manifest.json을 만들고 같은 이름의 zip도 만든다.
     phone_long_edge를 주면 사진을 그 크기로 줄여 HTML 안에 넣은 휴대폰용 한 파일
     output_dir/<제목>.html도 만든다(페이지 사진에서 줄이므로 워터마크도 그대로, 키우지 않음).
+    only를 주면 그 사진만 넣는다(고객이 1차로 고른 사진으로 2차 페이지 — id는 원본 폴더 기준 그대로라
+    2차 결과도 같은 원본 폴더로 가져온다).
     같은 이름이 있으면 덮어쓰지 않고 " (n)"을 붙인다. 열 수 없는 사진은 건너뛰고 알린다."""
     folder, output_dir = Path(folder), Path(output_dir)
     _guard_overlap(folder, output_dir, "페이지를 만들 폴더")
     if not 200 <= long_edge <= 8000:
         raise ValueError("사진 긴 변은 200~8000px 사이여야 합니다.")
     items = list_photos(folder, recursive)
+    if only is not None:
+        items = [(photo_id, path) for photo_id, path in items if path in only]
     if not items:
-        raise ValueError("사진 폴더에 사진이 없습니다.")
+        raise ValueError("사진 폴더에 사진이 없습니다." if only is None else "다시 보낼 사진이 사진 폴더에 없습니다.")
     package = _unique_dir(output_dir / _safe_name(title or folder.name))
     photos_dir = package / "photos"
     photos_dir.mkdir(parents=True)
@@ -247,6 +252,14 @@ def _data_uri(page_photo: Path, long_edge: int) -> str:
 def estimate_phone_bytes(count: int, long_edge: int) -> int:
     """휴대폰용 한 파일의 대략 크기(3:2 사진 기준, 사진마다 다름)."""
     return int(count * long_edge * (long_edge * 2 / 3) * PHONE_BYTES_PER_PIXEL)
+
+
+def next_round_title(title: str) -> str:
+    """다음 차수 페이지 제목: "김씨 셀렉" → "김씨 셀렉 2차", "김씨 셀렉 2차" → "김씨 셀렉 3차"."""
+    match = re.search(r"\s*(\d+)차$", title)
+    if match:
+        return f"{title[: match.start()]} {int(match.group(1)) + 1}차".strip()
+    return f"{title} 2차".strip()
 
 
 def render_page(title: str, photos: list[ProofPhoto], max_picks: int = 0, phone: bool = False) -> str:

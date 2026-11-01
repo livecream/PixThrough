@@ -193,3 +193,23 @@ def test_title_with_dot_does_not_reuse_an_existing_zip(tmp_path):
     second = build_proof(src, tmp_path / "out", "김씨.웨딩", long_edge=200)
     assert first.zip_path.name == "김씨.웨딩.zip"
     assert second.zip_path.name == "김씨.웨딩 (1).zip" and first.zip_path.exists()
+
+
+def test_second_round_page_has_only_picked_photos_with_original_ids(tmp_path):
+    from proof_gallery import next_round_title
+
+    src = tmp_path / "shoot"
+    _jpeg(src / "day1" / "a.jpg", when=0)
+    _jpeg(src / "day1" / "b.jpg", when=1)
+    _jpeg(src / "day2" / "c.jpg", when=2)
+    matched, _ = match_selection(ClientSelection(ids=["day1/b.jpg", "day2/c.jpg"]), src, recursive=True)
+    result = build_proof(src, tmp_path / "out", next_round_title("셀렉"), long_edge=200, recursive=True,
+                         only={m.source for m in matched})
+    assert result.package_dir.name == "셀렉 2차"
+    assert [p.id for p in result.photos] == ["day1/b.jpg", "day2/c.jpg"]  # 원본 폴더 기준 그대로
+    # 2차 결과도 같은 원본 폴더로 맞춰진다
+    again, missing = match_selection(ClientSelection(ids=["day2/c.jpg"]), src, recursive=True)
+    assert [m.source for m in again] == [src / "day2" / "c.jpg"] and not missing
+    with pytest.raises(ValueError):
+        build_proof(src, tmp_path / "out", "x", long_edge=200, only={tmp_path / "nope.jpg"})
+    assert next_round_title("김씨 셀렉 2차") == "김씨 셀렉 3차"
