@@ -100,9 +100,10 @@ from gui_compare_view import STATE_FLAGGED, STATE_KEPT, STATE_NONE, CompareDialo
 from gui_photo_viewer import PhotoViewerDialog, ViewerAction, ViewerShortcut
 import choice_store
 import score_store
-from gui_worker import CancellableWorker, PreviewCancelled
+from gui_worker import CancellableWorker, FunctionWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from badcut import BadCutThresholds, badcut_reason
+from contact_sheet import SheetItem, make_contact_sheet
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
@@ -701,6 +702,13 @@ class BestCutTab(QWidget):
         self._xmp_button = compact(QPushButton("별점 쓰기"))
         self._xmp_button.setToolTip(_XMP_TOOLTIP)
         self._xmp_button.clicked.connect(self._run_xmp)
+        self._sheet_button = compact(QPushButton("컨택트 시트 PDF…"))
+        self._sheet_button.setToolTip(
+            "<p>남기는 컷을 장면 순서대로 A4 PDF에 모읍니다(한 쪽에 24장, 칸마다 장면 번호·파일 이름). "
+            "팀·고객에게 고른 결과를 보여주거나 출력해 볼 때 씁니다. 사진 파일은 그대로입니다.</p>"
+        )
+        self._sheet_button.clicked.connect(self._make_contact_sheet)
+        self._sheet_worker: FunctionWorker | None = None
 
         self._cancel_preview_button = compact(QPushButton("취소"))
         self._cancel_preview_button.setEnabled(False)
@@ -1036,6 +1044,10 @@ class BestCutTab(QWidget):
         xmp_label = QLabel("라이트룸 ⓘ:")
         xmp_label.setToolTip(_XMP_TOOLTIP)
         output_form.addRow(xmp_label, xmp_row)
+        share_row = QHBoxLayout()
+        share_row.addWidget(self._sheet_button)
+        share_row.addStretch()
+        output_form.addRow("공유:", share_row)
         self._folder_warning = WarningLabel()
         output_form.addRow(self._folder_warning)
         output_group = QGroupBox("출력")
@@ -1418,6 +1430,7 @@ class BestCutTab(QWidget):
         fit_text(self._apply_button)
         fit_text(self._badcut_apply_button, padding=24)
         self._xmp_button.setEnabled(bool(rows) and not self._busy)
+        self._sheet_button.setEnabled(kept > 0 and not self._busy)
 
     def _update_choice_buttons(self) -> None:
         index = self._selected_table_row()
@@ -1923,6 +1936,59 @@ class BestCutTab(QWidget):
         self._last_move = None
         self._update_undo_button()
         self._on_error(message)
+
+    # --- 컨택트 시트(PDF) -------------------------------------------------------------
+    def _make_contact_sheet(self) -> None:
+        if self._busy or not self._rows:
+            return
+        kept = [r for r in self._rows if r.selected]
+        if not kept:
+            QMessageBox.information(self, "컨택트 시트", "남기는 컷이 없습니다.")
+            return
+        folder = self._output_dir or (self._input_dirs[0] if self._input_dirs else Path.home())
+        title = self._input_dirs[0].name if self._input_dirs else "베스트컷"
+        stamp = time.strftime("%Y%m%d")
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "컨택트 시트 저장", str(folder / f"컨택트시트_{title}_{stamp}.pdf"), "PDF (*.pdf)"
+        )
+        if not chosen:
+            return
+        output = Path(chosen)
+        if output.suffix.lower() != ".pdf":
+            output = output.with_name(output.name + ".pdf")
+        # 장면 순서(장면 안에서는 표 순서 = 촬영 순서)
+        order = {id(r): i for i, r in enumerate(self._rows)}
+        items = [SheetItem(r.path, r.scene_id) for r in sorted(kept, key=lambda r: (r.scene_id, order[id(r)]))]
+        self._busy = True
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText(f"컨택트 시트 만드는 중... ({len(items)}장)")
+        self._progress_bar.setValue(0)
+        self._progress_bar.setMaximum(len(items))
+        worker = FunctionWorker(
+            lambda on_progress: make_contact_sheet(items, output, title, on_progress=on_progress), "컨택트 시트"
+        )
+        worker.progress.connect(self._on_sheet_progress)
+        worker.finished_ok.connect(lambda pages: self._on_sheet_done(output, len(items), pages))
+        worker.failed.connect(self._on_error)
+        self._sheet_worker = worker
+        worker.start()
+
+    def _on_sheet_progress(self, done: int, total: int) -> None:
+        self._progress_bar.setMaximum(total)
+        self._progress_bar.setValue(done)
+
+    def _on_sheet_done(self, output: Path, count: int, pages: int) -> None:
+        self._busy = False
+        self._preview_button.setEnabled(True)
+        self._update_apply_buttons()
+        self._update_undo_button()
+        self._status_label.setText(f"컨택트 시트: {count}장 · {pages}쪽")
+        self._summary_text.setPlainText(
+            f"컨택트 시트 PDF: {count}장 · {pages}쪽 → {output}\n" + self._summary_text.toPlainText()
+        )
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(output))):
+            log.warning("컨택트 시트를 열지 못함: %s", output)
 
     # --- 라이트룸 별점(.xmp) ------------------------------------------------------------
     def _run_xmp(self) -> None:
