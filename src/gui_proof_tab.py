@@ -64,16 +64,20 @@ from gui_widgets import (
 from gui_worker import FunctionWorker
 from proof_gallery import (
     LONG_EDGE_START,
+    PHONE_LONG_EDGE_START,
+    PHONE_WARN_BYTES,
     ClientSelection,
     MatchedPick,
     ProofResult,
     build_proof,
     copy_selection,
+    estimate_phone_bytes,
     list_photos,
     match_selection,
     parse_selection,
     record_client_picks,
 )
+from scanner import scan_folder
 from xmp_rating import (
     ACTION_CREATED,
     ACTION_SKIPPED,
@@ -94,6 +98,8 @@ LONG_EDGE_KEY = "proof/long_edge"
 LIMIT_KEY = "proof/limit"
 WATERMARK_KEY = "proof/watermark"
 LABEL_KEY = "proof/xmp_label"
+PHONE_KEY = "proof/phone"
+PHONE_EDGE_KEY = "proof/phone_long_edge"
 
 _COLUMNS = ("고객이 고른 사진", "원본", "메모")
 
@@ -170,6 +176,27 @@ class ProofTab(QWidget):
         self._watermark_edit.setPlaceholderText("비우면 넣지 않음 (예: 스튜디오 이름)")
         self._watermark_edit.setToolTip("<p>페이지 사진 가운데에 반투명 글자로 넣습니다. 원본은 그대로입니다.</p>")
         self._watermark_edit.textChanged.connect(lambda t: self._settings.setValue(WATERMARK_KEY, t))
+        # 휴대폰용 한 파일(사진을 HTML 안에 넣음) — 카톡 등으로 보내 휴대폰 브라우저에서 바로 열게
+        self._phone_checkbox = QCheckBox("한 파일도 만들기")
+        self._phone_checkbox.setChecked(load_bool(self._settings, PHONE_KEY, False))
+        self._phone_checkbox.setToolTip(
+            "<p>사진을 작게 줄여 HTML 파일 하나에 넣은 '제목.html'도 만듭니다. 카톡·메일로 보내면 압축을 "
+            "풀 필요 없이 휴대폰 브라우저에서 바로 열립니다(카톡 안 보기보다 사파리·크롬으로 열기 권장). "
+            "고객은 '보내기'나 '목록 복사'로 고른 목록을 돌려보냅니다.</p>"
+        )
+        self._phone_checkbox.toggled.connect(self._on_phone_changed)
+        self._phone_edge_spin = QSpinBox()
+        self._phone_edge_spin.setRange(400, 3000)
+        self._phone_edge_spin.setSingleStep(100)
+        self._phone_edge_spin.setSuffix(" px")
+        self._phone_edge_spin.setValue(
+            int(load_float(self._settings, PHONE_EDGE_KEY, PHONE_LONG_EDGE_START, 400, 3000))
+        )
+        self._phone_edge_spin.setToolTip("<p>휴대폰용 파일에 넣을 사진의 긴 변. 작을수록 파일이 가볍습니다.</p>")
+        self._phone_edge_spin.valueChanged.connect(self._on_phone_changed)
+        self._phone_estimate = QLabel()
+        self._phone_estimate.setEnabled(False)
+        self._photo_count: int | None = None
         self._build_button = make_primary(QPushButton("페이지 만들기"))
         self._build_button.clicked.connect(self._run_build)
 
@@ -185,6 +212,11 @@ class ProofTab(QWidget):
         size_row.addStretch(1)
         make_form.addRow("사진 긴 변:", size_row)
         make_form.addRow("워터마크:", self._watermark_edit)
+        phone_row = QHBoxLayout()
+        phone_row.addWidget(self._phone_checkbox)
+        phone_row.addWidget(self._phone_edge_spin)
+        phone_row.addWidget(self._phone_estimate, stretch=1)
+        make_form.addRow("휴대폰용:", phone_row)
         build_row = QHBoxLayout()
         note = QLabel("촬영 정보(GPS 포함)는 빼고 저장")
         note.setEnabled(False)
@@ -281,7 +313,7 @@ class ProofTab(QWidget):
             [
                 "사진 폴더 고르기 (끌어다 놓아도 됩니다)",
                 "① 페이지 만들기 — 저장 폴더에 페이지 폴더와 zip이 생깁니다",
-                "zip을 구글 드라이브·메일 등으로 고객에게 보내기 — 고객은 압축을 풀고 index.html을 열어 고릅니다",
+                "zip(PC용) 또는 휴대폰용 한 파일(.html)을 카톡·메일·구글 드라이브 등으로 고객에게 보내기",
                 "② 고객이 보낸 결과 파일을 열거나 목록을 붙여넣기 — 원본과 맞춘 결과를 확인",
                 "복사 — 고른 사진 원본을 따로 폴더에",
             ],
@@ -306,6 +338,7 @@ class ProofTab(QWidget):
         layout.addWidget(self._results, stretch=1)
         self.setLayout(layout)
         self._refresh()
+        self._on_phone_changed()
 
     @property
     def is_busy(self) -> bool:
@@ -336,11 +369,37 @@ class ProofTab(QWidget):
         self._input_dir = folder
         self._input_label.set_path(folder)
         save_folder(self._settings, INPUT_KEY, folder)
+        self._photo_count = None
         self._clear_import()
+        self._on_phone_changed()
 
     def _on_recursive_changed(self, checked: bool) -> None:
         save_bool(self._settings, RECURSIVE_KEY, checked)
+        self._photo_count = None
         self._clear_import()
+        self._on_phone_changed()
+
+    def _on_phone_changed(self, *_args) -> None:
+        """휴대폰용 설정을 기억하고 예상 크기를 보여준다(사진 수는 파일 이름만 훑어 셈)."""
+        save_bool(self._settings, PHONE_KEY, self._phone_checkbox.isChecked())
+        save_float(self._settings, PHONE_EDGE_KEY, self._phone_edge_spin.value())
+        on = self._phone_checkbox.isChecked()
+        self._phone_edge_spin.setEnabled(on)
+        if not on or self._input_dir is None:
+            self._phone_estimate.setText("")
+            return
+        if self._photo_count is None:
+            try:
+                self._photo_count = len(
+                    scan_folder(self._input_dir, self._recursive_checkbox.isChecked(), include_unpaired_raw=True)
+                )
+            except OSError:
+                self._photo_count = 0
+        size = estimate_phone_bytes(self._photo_count, self._phone_edge_spin.value())
+        text = f"예상 약 {size / 1024 / 1024:.0f}MB ({self._photo_count}장)"
+        if size > PHONE_WARN_BYTES:
+            text = "⚠ " + text + " — 크면 휴대폰에서 느릴 수 있어요"
+        self._phone_estimate.setText(text)
 
     def _choose_output_dir(self) -> None:
         directory = pick_directory(self, "페이지를 만들 폴더 선택")
@@ -386,6 +445,7 @@ class ProofTab(QWidget):
             watermark=self._watermark_edit.text().strip(),
             max_picks=self._limit_spin.value(),
             recursive=self._recursive_checkbox.isChecked(),
+            phone_long_edge=self._phone_edge_spin.value() if self._phone_checkbox.isChecked() else None,
         )
         self._start("build", "페이지 만드는 중...", lambda progress: build_proof(
             folder, output, title, on_progress=progress, **args
@@ -397,9 +457,17 @@ class ProofTab(QWidget):
             f"페이지를 만들었습니다: 사진 {len(result.photos)}장",
             f"폴더: {result.package_dir}",
             f"zip: {result.zip_path}",
-            "zip을 고객에게 보내세요. 고객은 압축을 풀고 index.html을 PC 브라우저로 열어 고릅니다"
-            " (휴대폰에서 보려면 폴더를 웹에 올려야 합니다).",
+            "zip을 고객에게 보내세요. 고객은 압축을 풀고 index.html을 PC 브라우저로 열어 고릅니다.",
         ]
+        if result.phone_path is not None:
+            size = result.phone_path.stat().st_size
+            lines.append(
+                f"휴대폰용 한 파일: {result.phone_path.name} ({size / 1024 / 1024:.1f}MB) — 카톡·메일로 보내면 "
+                "휴대폰 브라우저에서 바로 열립니다."
+                + (" 파일이 커서 휴대폰에서 느릴 수 있으니 사진 크기를 줄여 보세요." if size > PHONE_WARN_BYTES else "")
+            )
+        else:
+            lines.append("휴대폰에서 바로 열게 하려면 '휴대폰용 한 파일도 만들기'를 켜세요.")
         if result.failed:
             lines.append(f"열지 못해 뺀 사진 {len(result.failed)}장: "
                          + ", ".join(path.name for path, _ in result.failed[:5])
