@@ -95,10 +95,39 @@ class PathRecordStore:
         """테스트용: 앱을 껐다 켠 것처럼 메모리의 기록을 버린다."""
         self._entries = None
 
+    def export_entries(self) -> dict[str, list]:
+        """설정 내보내기용: 저장된 기록 전체(경로 문자열 → [수정 시각, 크기, 값])."""
+        return dict(self._load())
+
+    def import_entries(self, entries: object) -> int:
+        """설정 가져오기용: 형식이 맞는 기록만 더한다(같은 경로는 가져온 것으로). 더한 개수."""
+        if not isinstance(entries, dict):
+            return 0
+        current = self._load()
+        added = 0
+        for key, entry in entries.items():
+            if not (
+                isinstance(key, str)
+                and isinstance(entry, list)
+                and len(entry) == 3
+                and isinstance(entry[0], (int, float))
+                and isinstance(entry[1], int)
+                and self._valid(entry[2])
+            ):
+                continue
+            current.pop(key, None)
+            current[key] = list(entry)
+            added += 1
+        if added:
+            self._save()
+        return added
+
 
 choices = PathRecordStore("choices.json", lambda value: isinstance(value, bool))
 scene_edits = PathRecordStore("scene_edits.json", lambda value: value in ("split", "join"))
 client_picks = PathRecordStore("client_picks.json", lambda value: isinstance(value, str))
+# 설정 내보내기·가져오기에서 쓰는 이름 → 저장소
+RECORD_STORES = {"choices": choices, "scene_edits": scene_edits, "client_picks": client_picks}
 
 
 # 직접 고른 것(예전 함수 이름 그대로)

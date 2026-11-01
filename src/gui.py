@@ -9,14 +9,17 @@ gui_rename_tab.py / gui_organize_tab.py에 있다.
 
 from __future__ import annotations
 
+import datetime
 import sys
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -30,7 +33,10 @@ from PySide6.QtWidgets import (
 )
 
 import app_log
+import choice_store
 import history
+import settings_transfer
+from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
@@ -178,6 +184,15 @@ class MainWindow(QMainWindow):
         client.setToolTip("고객 셀렉 결과 파일을 베스트컷 화면의 미리보기 사진과 맞춰 \"고객\" 표시를 붙입니다")
         client.triggered.connect(self._import_client_result)
         file_menu.addAction(client)
+        file_menu.addSeparator()
+        export_settings = QAction("설정 내보내기…", self)
+        export_settings.setToolTip("앱 설정과 직접 고른 컷·고친 장면·고객 선택 기록을 파일 하나로 저장합니다(점수는 빼고)")
+        export_settings.triggered.connect(self._export_settings)
+        file_menu.addAction(export_settings)
+        import_settings = QAction("설정 가져오기…", self)
+        import_settings.setToolTip("내보낸 설정 파일을 이 컴퓨터에 가져옵니다(가져오기 전 상태는 백업)")
+        import_settings.triggered.connect(self._import_settings)
+        file_menu.addAction(import_settings)
         help_menu = self.menuBar().addMenu("도움말")
         welcome = QAction("처음 사용 안내…", self)
         welcome.triggered.connect(self.show_welcome)
@@ -195,6 +210,69 @@ class MainWindow(QMainWindow):
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def _export_settings(self) -> None:
+        stamp = datetime.date.today().strftime("%Y%m%d")
+        start = recent_folders(self._settings)[0] if recent_folders(self._settings) else Path.home()
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "설정 내보내기", str(start / f"pixthrough-settings_{stamp}.json"), "PixThrough 설정 (*.json)"
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if path.suffix.lower() != ".json":
+            path = path.with_name(path.name + ".json")
+        try:
+            summary = settings_transfer.export_to(self._settings, path)
+        except OSError as e:
+            show_error(self, "설정을 내보내지 못했습니다", str(e))
+            return
+        QMessageBox.information(
+            self,
+            "설정 내보내기",
+            f"내보냈습니다: {summary.describe()}\n{path}\n\n"
+            "다른 컴퓨터에서는 파일 › 설정 가져오기…로 가져옵니다. 저장된 점수는 넣지 않아서 "
+            "처음 미리보기할 때 다시 계산합니다. 직접 고른 기록은 같은 경로에 같은 사진이 있을 때 쓰입니다.",
+        )
+
+    def _import_settings(self) -> None:
+        if self.is_busy():
+            QMessageBox.information(self, "설정 가져오기", "작업이 끝난 뒤에 가져오세요.")
+            return
+        start = recent_folders(self._settings)[0] if recent_folders(self._settings) else Path.home()
+        chosen, _ = QFileDialog.getOpenFileName(self, "설정 가져오기", str(start), "PixThrough 설정 (*.json)")
+        if not chosen:
+            return
+        try:
+            data = settings_transfer.read_file(Path(chosen))
+        except (OSError, ValueError) as e:
+            show_error(self, "설정 파일을 읽지 못했습니다", str(e))
+            return
+        summary = settings_transfer.summarize(data)
+        made = f" (PixThrough {data.get('app_version', '?')}, {str(data.get('exported', ''))[:16].replace('T', ' ')})"
+        confirm = QMessageBox.question(
+            self,
+            "설정 가져오기",
+            f"{Path(chosen).name}{made}\n{summary.describe()}\n\n"
+            "파일에 있는 설정은 바꾸고(없는 설정은 그대로), 직접 고른 기록은 더합니다. "
+            "지금 상태는 먼저 백업해 둡니다. 가져올까요?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            imported, backup = settings_transfer.import_from(self._settings, Path(chosen))
+        except (OSError, ValueError) as e:
+            show_error(self, "설정을 가져오지 못했습니다", str(e))
+            return
+        choice_store.clear_memory()
+        answer = QMessageBox.question(
+            self,
+            "설정 가져오기",
+            f"가져왔습니다: {imported.describe()}\n가져오기 전 상태 백업: {backup}\n\n"
+            "설정은 앱을 다시 켜야 화면에 모두 반영됩니다. 지금 앱을 닫을까요?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.close()
 
     def _fill_recent_menu(self) -> None:
         """최근 폴더를 고르면 지금 화면의 입력 폴더로 넣는다."""
