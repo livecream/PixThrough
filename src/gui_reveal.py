@@ -69,3 +69,23 @@ def add_file_actions(menu: QMenu, parent: QWidget, path: Path) -> None:
             f"RAW 열기 ({raw.suffix.lstrip('.').upper()})",
             lambda: open_with_default_app(raw) or fail("RAW"),
         )
+
+
+def start_file_drag(source: "QWidget", paths: list[Path], pixmap=None) -> None:
+    """사진 파일을 다른 앱(Finder·라이트룸·메신저)으로 끌어다 놓게 한다. 파일 경로만 넘기고(복사 동작),
+    파일은 옮기지도 바꾸지도 않는다."""
+    from PySide6.QtCore import QMimeData, Qt
+    from PySide6.QtGui import QDrag
+
+    paths = [p for p in paths if Path(p).exists()]
+    if not paths:
+        return
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    mime.setText("\n".join(str(p) for p in paths))
+    drag = QDrag(source)
+    drag.setMimeData(mime)
+    if pixmap is not None and not pixmap.isNull():
+        drag.setPixmap(pixmap.scaled(96, 96, Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation))
+    drag.exec(Qt.DropAction.CopyAction)

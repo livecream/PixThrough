@@ -30,10 +30,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -138,7 +139,7 @@ from gui_scene_gallery import (
 from gui_input_folders import InputFolderPanel
 from gui_navigation import NextStep, NextStepBar
 from gui_weight_tuning import WeightTuningDialog, weights_differ
-from gui_reveal import add_file_actions
+from gui_reveal import add_file_actions, start_file_drag
 from gui_widgets import (
     BAR_ROLE,
     BarDelegate,
@@ -978,6 +979,9 @@ class BestCutTab(QWidget):
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
         self._gallery.rating_requested.connect(self._rate_row)
+        self._gallery.drag_requested.connect(self._drag_photos)
+        self._table.viewport().installEventFilter(self)  # 표에서도 끌어내기
+        self._table_press: tuple | None = None
         self._gallery.compare_requested.connect(self._open_compare)
         self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
@@ -1474,6 +1478,38 @@ class BestCutTab(QWidget):
     def _index_at(self, table_row: int) -> int | None:
         item = self._table.item(table_row, 1)
         return item.data(_INDEX_ROLE) if item is not None else None
+
+    def _drag_photos(self, index: int, all_kept: bool) -> None:
+        """사진을 다른 앱으로 끌어낸다. Shift를 누르고 끌면 지금 보이는 남기는 컷 전부(파일은 그대로)."""
+        if not self._rows or index >= len(self._rows):
+            return
+        if all_kept:
+            paths = [r.path for r in self._rows if r.selected and self._row_visible(r)]
+        else:
+            paths = [self._rows[index].path]
+        pixmap = self._thumbnail_pixmap(self._rows[index].path, GALLERY_THUMB)
+        if all_kept and paths:
+            self._status_label.setText(f"남기는 컷 {len(paths)}장을 끌어 놓는 중…")
+        start_file_drag(self, paths, pixmap)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override signature
+        """표 줄을 끌면 그 사진(Shift: 보이는 남기는 컷 전부)을 다른 앱으로."""
+        if watched is self._table.viewport():
+            kind = event.type()
+            if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                item = self._table.itemAt(event.position().toPoint())
+                self._table_press = (event.position().toPoint(), self._index_at(item.row())) if item else None
+            elif kind == QEvent.Type.MouseMove and getattr(self, "_table_press", None) is not None \
+                    and event.buttons() & Qt.MouseButton.LeftButton:
+                start, index = self._table_press
+                if (event.position().toPoint() - start).manhattanLength() >= QApplication.startDragDistance():
+                    self._table_press = None
+                    if index is not None:
+                        self._drag_photos(index, bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+                    return True
+            elif kind == QEvent.Type.MouseButtonRelease:
+                self._table_press = None
+        return super().eventFilter(watched, event)
 
     def _go_to(self) -> None:
         """장면 번호(숫자)나 파일 이름 일부로 그 사진을 고른다. 같은 이름으로 다시 하면 다음 것으로."""
