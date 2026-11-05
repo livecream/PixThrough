@@ -38,6 +38,7 @@ class Summary:
 
     def describe(self) -> str:
         names = {"choices": "직접 고른 컷", "scene_edits": "직접 고친 장면", "client_picks": "고객이 고른 사진",
+                 "ratings": "별점",
                  "projects": "촬영 건"}
         parts = [f"설정 {self.settings}개"]
         parts += [f"{names.get(k, k)} {n}장" for k, n in self.records.items() if n]

@@ -593,6 +593,7 @@ class BestCutTab(QWidget):
         # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
         self._auto_rows: list[ReportRow] | None = None
         self._choices: dict[Path, bool] = {}
+        self._ratings: dict[Path, int] = {}  # 컬링 별점 1~5(choice_store.ratings) — 별점이 있으면 남기는 컷
         self._client_picks: dict[Path, str] = {}  # 고객 셀렉에서 가져온 고객 선택(경로 → 메모), 표시만
         # 직접 나누거나 합친 장면 경계(사진 경로 → "split"/"join"). 앱을 꺼도 남는다(choice_store)
         self._scene_edits: dict[Path, str] = {}
@@ -956,6 +957,7 @@ class BestCutTab(QWidget):
         self._gallery.photo_activated.connect(self._open_viewer)
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
+        self._gallery.rating_requested.connect(self._rate_row)
         self._gallery.compare_requested.connect(self._open_compare)
         self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
@@ -971,6 +973,7 @@ class BestCutTab(QWidget):
             ("F", self._open_cull_for_selected),
             ("S", lambda: self._edit_scene_at_selected(SPLIT)),
             ("M", lambda: self._edit_scene_at_selected(JOIN)),
+            *((str(stars), lambda s=stars: self._rate_selected_row(s)) for stars in range(6)),
         ):
             QShortcut(QKeySequence(key), self._table, activated=action, context=Qt.ShortcutContext.WidgetShortcut)
         # 결과가 아직 없을 때 결과 자리에 띄우는 순서 안내
@@ -990,7 +993,8 @@ class BestCutTab(QWidget):
         self._results.addWidget(self._table)
         # 보기 거르기: 모든 컷 / 남기는 컷만 / 고객이 고른 것만(고객 셀렉에서 가져온 결과)
         self._view_filter = QComboBox()
-        for text, key in (("모든 컷 보기", "all"), ("남기는 컷만", "kept"), ("고객이 고른 것만", "client")):
+        for text, key in (("모든 컷 보기", "all"), ("남기는 컷만", "kept"), ("고객이 고른 것만", "client"),
+                          ("별점 ★★★ 이상", "stars3")):
             self._view_filter.addItem(text, key)
         self._view_filter.setToolTip(
             "<p><b>남기는 컷만</b>: 장면마다 남기는(선택된) 컷만. 빠진 컷을 다시 넣으려면 모든 컷 보기로.</p>"
@@ -1361,6 +1365,7 @@ class BestCutTab(QWidget):
         )
         self._scene_edits.update(restored_edits)  # 미리보기 기준과 달라져 끝난 뒤 다시 묶인다
         self._client_picks = choice_store.client_picks.restore(p.path for p in photos)
+        self._ratings.update(choice_store.ratings.restore(p.path for p in photos if p.path not in self._ratings))
         self._show_rows(rows, grouping)
         self._refresh_client_picks()  # 거르기 칸의 고객 선택 수
         if restored:
@@ -1402,6 +1407,8 @@ class BestCutTab(QWidget):
         """자동 결과에 직접 고른 것을 덮어써 화면·적용 대상을 갱신한다."""
         selected_row = self._selected_table_row()
         rows = apply_manual_choices(self._auto_rows or [], self._choices)
+        if self._ratings:
+            rows = [replace(r, rating=self._ratings[r.path]) if r.path in self._ratings else r for r in rows]
         self._rows = rows
         self._update_apply_buttons()
         settings = self._rows_grouping
@@ -1500,8 +1507,31 @@ class BestCutTab(QWidget):
             self._choices.pop(row.path, None)
         else:
             self._choices[row.path] = wanted
+        if not wanted:
+            self._ratings.pop(row.path, None)  # 빼면 별점도 지운다(별점 = 남기는 컷)
         self._save_choices()
         self._refresh_selection()
+
+    def _set_rating(self, row: ReportRow, stars: int) -> None:
+        """컬링 별점: 1~5는 그 별점으로 남기고, 0은 별점만 지운다(선택은 그대로)."""
+        if stars:
+            self._ratings[row.path] = stars
+            if not row.selected:
+                self._toggle(row)  # 넣으면서 저장·새로 고침
+                return
+        else:
+            self._ratings.pop(row.path, None)
+        self._save_choices()
+        self._refresh_selection()
+
+    def _rate_selected_row(self, stars: int) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._set_rating(self._rows[index], stars)
+
+    def _rate_row(self, index: int, stars: int) -> None:
+        self._select_index(index)
+        self._rate_selected_row(stars)
 
     def _set_selected(self, row: ReportRow, wanted: bool) -> None:
         """이미 원하는 상태면 그대로 둔다(P를 두 번 눌러도 빠지지 않게)."""
@@ -1515,12 +1545,15 @@ class BestCutTab(QWidget):
 
     def _reset_choices(self) -> None:
         self._choices.clear()
+        self._ratings.clear()
         self._save_choices()
         self._refresh_selection()
 
     def _save_choices(self) -> None:
         """직접 고른 것을 앱을 꺼도 남게 저장한다(지금 화면의 사진 기준, choice_store)."""
-        choice_store.sync([r.path for r in self._auto_rows or []], self._choices)
+        paths = [r.path for r in self._auto_rows or []]
+        choice_store.sync(paths, self._choices)
+        choice_store.ratings.sync(paths, self._ratings)
 
     def _rows_for_paths(self, paths: list[Path]) -> list[ReportRow]:
         by_path = {r.path: r for r in self._rows or []}
@@ -1620,6 +1653,7 @@ class BestCutTab(QWidget):
             is_client=lambda path: path in self._client_picks,
             on_compare=lambda path: self._open_compare(self._index_of_path(path)),
             auto_advance=load_bool(self._settings, CULL_AUTO_KEY, True),
+            on_rate=self._set_rating,
             parent=self,
         )
         self._cull.finished.connect(self._on_cull_closed)
@@ -1889,6 +1923,7 @@ class BestCutTab(QWidget):
                 self._photos = [p for p in self._photos if p.path not in moved]
             for path in moved:
                 self._choices.pop(path, None)
+                self._ratings.pop(path, None)
             choice_store.forget(moved)
             self._rows_grouping = None
         else:
@@ -2043,7 +2078,7 @@ class BestCutTab(QWidget):
         rating = self._xmp_rating_spin.value()
         best = [r.path for r in self._rows if r.selected]
         rejects = [r.path for r in self._rows if _is_badcut(r)]
-        plan = plan_xmp(best, rejects)
+        plan = plan_xmp(best, rejects, ratings=self._ratings)
         with_raw = [row for row in plan if row.xmp is not None]
         if not with_raw:
             QMessageBox.information(
@@ -2059,6 +2094,9 @@ class BestCutTab(QWidget):
         no_raw = len(plan) - len(with_raw)
         lines = [f"베스트컷 {best_count}장에 {'★' * rating}, C컷 {reject_count}장에 거부 표시를 "
                  "RAW 옆 .xmp에 씁니다(RAW·JPG 파일은 그대로)."]
+        rated = sum(1 for row in with_raw if row.rating)
+        if rated:
+            lines.append(f"컬링에서 별점을 매긴 {rated}장은 그 별점으로 씁니다.")
         lines.append(f"새로 만들기 {len(with_raw) - existing}개 · 기존 .xmp 고치기 {existing}개"
                      "(별점·거부 칸만, 고치기 전 파일은 백업)")
         if no_raw:
@@ -2326,6 +2364,8 @@ class BestCutTab(QWidget):
             choice, order = "제외", 1
         if row.manual_choice is not None:
             choice += " (직접)"
+        if row.rating:
+            choice += " " + "★" * row.rating
         client_note = self._client_picks.get(row.path)
         if client_note is not None:
             choice += " · 고객"
@@ -2430,6 +2470,7 @@ class BestCutTab(QWidget):
                         i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row),
                         client=row.path in self._client_picks,
                         bracket=self._brackets.get(row.path) is not None,
+                        stars=row.rating or 0,
                     )
                 )
         # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다
@@ -2477,6 +2518,8 @@ class BestCutTab(QWidget):
             return row.selected
         if key == "client":
             return row.path in self._client_picks
+        if key == "stars3":
+            return (row.rating or 0) >= 3
         return True
 
     def _refresh_client_picks(self) -> None:

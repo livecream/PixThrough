@@ -40,6 +40,7 @@ class ReportRow:
     # 눈 분석에 성공한 얼굴 수와 그중 가장 낮은 눈뜸(face는 고르는 데 쓴 값 — 평균 또는 가장 낮은 사람)
     face_min: float | None = None
     face_count: int = 0
+    rating: int | None = None  # 컬링에서 매긴 별점(1~5, 화면에서만 붙임 — choice_store.ratings)
 
 
 MANUAL_ADDED = "added"

@@ -39,8 +39,8 @@ def test_export_then_import_on_fresh_settings_restores_values_and_records(tmp_pa
     summary = settings_transfer.export_to(old, exported)
     data = json.loads(exported.read_text(encoding="utf-8"))
     assert "window/geometry" not in data["settings"]
-    assert summary.records == {"choices": 1, "scene_edits": 1, "client_picks": 1, "projects": 1}
-    assert set(data["records"]) == {"choices", "scene_edits", "client_picks"}  # 점수 저장소는 넣지 않음
+    assert summary.records == {"choices": 1, "scene_edits": 1, "client_picks": 1, "ratings": 0, "projects": 1}
+    assert set(data["records"]) == {"choices", "scene_edits", "client_picks", "ratings"}  # 점수 저장소는 넣지 않음
 
     # 다른 컴퓨터(빈 설정·빈 기록)에 가져오기
     for name in ("choices.json", "scene_edits.json", "client_picks.json"):
@@ -52,7 +52,7 @@ def test_export_then_import_on_fresh_settings_restores_values_and_records(tmp_pa
     imported, backup = settings_transfer.import_from(new, exported)
     assert float(new.value("bestcut/scene_gap_seconds")) == 4.5
     assert new.value("bestcut/view") == "table"
-    assert imported.records == {"choices": 1, "scene_edits": 1, "client_picks": 1, "projects": 1}
+    assert imported.records == {"choices": 1, "scene_edits": 1, "client_picks": 1, "ratings": 0, "projects": 1}
     assert [p.name for p in projects.load()] == ["본식"]
     assert choice_store.choices.restore([photo]) == {photo: True}
     assert choice_store.scene_edits.restore([other]) == {other: "split"}
