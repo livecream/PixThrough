@@ -35,10 +35,12 @@ from PySide6.QtWidgets import (
 import app_log
 import choice_store
 import history
+import projects
 import settings_transfer
 from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
+from gui_projects import ProjectsDialog
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
 from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
@@ -51,6 +53,7 @@ from version import __version__
 DEFAULT_SIZE = (1180, 780)
 GEOMETRY_SETTINGS_KEY = "window/geometry"
 PAGE_SETTINGS_KEY = "window/page"
+PROJECT_SETTINGS_KEY = "project/current"  # 마지막으로 연 촬영 건(창 제목)
 SIDEBAR_WIDTH = 200
 _PAGE_ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -175,6 +178,15 @@ class MainWindow(QMainWindow):
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         file_menu = self.menuBar().addMenu("파일")
+        projects_action = QAction("촬영 건…", self)
+        projects_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        projects_action.setToolTip("촬영 하나를 이름과 폴더로 기억해 이어서 작업합니다")
+        projects_action.triggered.connect(self.show_projects)
+        file_menu.addAction(projects_action)
+        file_menu.addSeparator()
+        current = self._settings.value(PROJECT_SETTINGS_KEY, "")
+        project = next((p for p in projects.load() if p.id == current), None) if current else None
+        self._set_project_title(project.name if project else None)
         self._recent_menu = file_menu.addMenu("최근 폴더")
         self._recent_menu.setToolTipsVisible(True)
         self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -213,6 +225,28 @@ class MainWindow(QMainWindow):
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def show_projects(self) -> None:
+        dialog = ProjectsDialog(self)
+        dialog.opened.connect(self._open_project)
+        dialog.exec()
+
+    def _open_project(self, project, page: str) -> None:
+        """촬영 건을 열면 각 화면에 그 폴더를 넣고 다음에 할 화면으로 간다."""
+        if self.is_busy():
+            QMessageBox.warning(self, "작업 진행 중", "작업이 끝난 뒤에 촬영 건을 여세요.")
+            return
+        root = project.root
+        for key in FileOrganizeTab.PAGES:
+            folders = projects.photo_folders(root) if key == "rename" else [root]
+            self._file_organize_tab.page_widget(key).receive_folders(folders, replace=True)
+        self._photo_selection_tab.receive_folders([root], replace=True)
+        self._settings.setValue(PROJECT_SETTINGS_KEY, project.id)
+        self._set_project_title(project.name)
+        self._select_page(page)
+
+    def _set_project_title(self, name: str | None) -> None:
+        self.setWindowTitle(f"PixThrough v{__version__}" + (f" — {name}" if name else ""))
 
     def _export_settings(self) -> None:
         stamp = datetime.date.today().strftime("%Y%m%d")

@@ -240,7 +240,7 @@ def build_proof(
     history.record(
         "고객 셀렉 페이지",
         f"{package.name}: 사진 {len(photos)}장" + (" + 휴대폰용 한 파일" if phone_path else ""),
-        output_dir, package / "index.html",
+        output_dir, package / "index.html", source=Path(folder),
     )
     return ProofResult(package, zip_path, photos, failed, phone_path)
 

@@ -297,6 +297,6 @@ def apply_resize_plan(
     history.record(
         "사진 축소",
         f"{len(results) - len(failed)}장 긴 변 {long_edge}px로 → {output_dir.name}" + (f" (실패 {len(failed)})" if failed else ""),
-        output_dir, log_path,
+        output_dir, log_path, source=history.common_folder(r.source for r in rows),
     )
     return results

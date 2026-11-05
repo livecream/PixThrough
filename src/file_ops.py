@@ -232,7 +232,7 @@ def apply_selection(
     history.record(
         purpose or ("이동" if move else "복사"),
         f"{len(results)}장 {'이동' if move else '복사'} → {output_dir.name}" + (f" (실패 {len(errors)})" if errors else ""),
-        output_dir, log_path,
+        output_dir, log_path, source=history.common_folder(r.path for r in selected_rows),
     )
     for source, error in errors:
         log.warning("%s 실패: %s — %s", "이동" if move else "복사", source, error)

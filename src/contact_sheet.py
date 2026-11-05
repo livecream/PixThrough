@@ -97,5 +97,6 @@ def make_contact_sheet(
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     pages[0].save(output, "PDF", resolution=DPI, save_all=True, append_images=pages[1:])
-    history.record("컨택트 시트", f"{len(items)}장 · {len(pages)}쪽 PDF ({output.name})", output.parent, output)
+    history.record("컨택트 시트", f"{len(items)}장 · {len(pages)}쪽 PDF ({output.name})", output.parent, output,
+                   source=history.common_folder(i.path for i in items))
     return len(pages)
