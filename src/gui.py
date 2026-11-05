@@ -68,6 +68,9 @@ MENU = (
     (
         "사진 파일 정리",
         (
+            Page("import", "카드 가져오기",
+                 "메모리카드의 사진·영상을 촬영 날짜별 폴더로 복사하고(백업 드라이브에도), 원본과 같은지 확인합니다.",
+                 QStyle.StandardPixmap.SP_DriveFDIcon),
             Page("rename", "시간순 정렬", "여러 바디의 사진·영상을 촬영 시각 순으로 00001부터 번호를 붙입니다.",
                  QStyle.StandardPixmap.SP_FileDialogDetailedView),
             Page("organize", "폴더 정리", "RAW·영상 분리, 날짜별 정리, 짝 안 맞는 파일·중복 파일·빈 폴더를 정리합니다.",
