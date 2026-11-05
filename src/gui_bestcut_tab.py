@@ -103,6 +103,7 @@ import score_store
 from gui_worker import CancellableWorker, FunctionWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from badcut import BadCutThresholds, badcut_reason
+from bracketing import find_brackets, keep_brackets
 from contact_sheet import SheetItem, make_contact_sheet
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
@@ -210,6 +211,7 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+KEEP_BRACKETS_SETTINGS_KEY = "bestcut/keep_brackets"  # 브라케팅 묶음 통째로 남기기(기본 꺼짐)
 EYES_MIN_SETTINGS_KEY = "bestcut/eyes_min"  # 단체 사진: 눈뜸은 가장 낮은 사람 기준(기본 꺼짐)
 XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
 _XMP_TOOLTIP = (
@@ -239,6 +241,7 @@ class _SelectionSettings(NamedTuple):
     scene_edits: tuple[tuple[Path, str], ...] = ()  # 직접 나누기/합치기(grouping.apply_scene_edits)
     weights: tuple[tuple[str, float], ...] = ()  # 종합점수 가중치(비면 기본값, 가중치 맞추기로 바꿈)
     eyes_mode: str = EYES_MEAN  # 눈뜸: 얼굴들의 평균 / 가장 낮은 사람(단체 사진 옵션)
+    keep_brackets: bool = False  # 브라케팅 묶음은 통째로 남기기
 
 
 def _scene_key(settings: _SelectionSettings) -> tuple:
@@ -604,6 +607,8 @@ class BestCutTab(QWidget):
         self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
+        self._brackets: dict = {}  # 경로 → bracketing.Bracket (_bracket_map)
+        self._brackets_source: list[PhotoMetadata] | None = None
         # 지금 화면의 결과를 만든 기준
         self._rows_grouping: _SelectionSettings | None = None
         self._hashes: dict[Path, int | None] = {}
@@ -814,6 +819,14 @@ class BestCutTab(QWidget):
             "점수가 낮아지고, C컷 눈뜸 기준도 이 값으로 판정합니다."
         )
         self._eyes_min_action.toggled.connect(self._on_eyes_mode_changed)
+        self._brackets_action = options_menu.addAction("브라케팅: 묶음은 통째로 남기기")
+        self._brackets_action.setCheckable(True)
+        self._brackets_action.setChecked(load_bool(self._settings, KEEP_BRACKETS_SETTINGS_KEY, False))
+        self._brackets_action.setToolTip(
+            "노출을 바꿔 연속으로 찍은 묶음(AEB, 예: 0 · −2 · +2 EV)은 HDR 합성에 다 필요해서, "
+            "켜면 묶음의 사진을 모두 남깁니다. 끄면 다른 사진처럼 점수로 고릅니다(묶음 표시는 그대로)."
+        )
+        self._brackets_action.toggled.connect(self._on_keep_brackets_changed)
         self._options_button.setMenu(options_menu)
         self._update_options_button()
         self._update_weights_button()
@@ -1366,11 +1379,14 @@ class BestCutTab(QWidget):
             tuple(sorted(self._scene_edits.items(), key=lambda item: str(item[0]))),
             tuple(self._weights.items()) if weights_differ(self._weights, DEFAULT_WEIGHTS) else (),
             EYES_MIN if self._eyes_min_action.isChecked() else EYES_MEAN,
+            self._brackets_action.isChecked(),
         )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
         """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
         previous = self._rows_grouping
+        if grouping.keep_brackets:
+            rows = keep_brackets(rows, self._bracket_map())
         self._auto_rows = rows
         self._rows_grouping = grouping
         # 장면 묶음이 바뀌었으면(간격·나누기) 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
@@ -1397,6 +1413,10 @@ class BestCutTab(QWidget):
         edits_here = self._scene_edits_in(rows)
         if edits_here:
             summary += f" · 장면 직접 고침 {len(edits_here)}곳"
+        brackets = self._bracket_map()
+        if brackets:
+            count = len({b.number for b in brackets.values()})
+            summary += f" · 브라케팅 {count}묶음" + (" (통째로 남김)" if settings and settings.keep_brackets else "")
         badcut = format_badcut_summary(rows, self._current_grouping().thresholds)
         manual = format_manual_choice_summary(rows)
         self._summary_text.setPlainText(
@@ -2108,6 +2128,19 @@ class BestCutTab(QWidget):
         self._split_spin.setEnabled(self._split_checkbox.isChecked())
         self._on_grouping_changed()
 
+    def _on_keep_brackets_changed(self, checked: bool) -> None:
+        save_bool(self._settings, KEEP_BRACKETS_SETTINGS_KEY, checked)
+        self._update_options_button()
+        self._on_grouping_changed()
+
+    def _bracket_map(self) -> dict:
+        """지금 미리보기 사진의 브라케팅 묶음(경로 → Bracket). 사진 목록이 바뀔 때만 다시 찾는다."""
+        photos = self._photos
+        if self._brackets_source is not photos:
+            self._brackets_source = photos
+            self._brackets = find_brackets(photos or [])
+        return self._brackets
+
     def _on_eyes_mode_changed(self, checked: bool) -> None:
         save_bool(self._settings, EYES_MIN_SETTINGS_KEY, checked)
         self._update_options_button()
@@ -2296,12 +2329,17 @@ class BestCutTab(QWidget):
         client_note = self._client_picks.get(row.path)
         if client_note is not None:
             choice += " · 고객"
+        bracket = self._brackets.get(row.path)
+        if bracket is not None:
+            choice += " · 브라케팅"
         choice_item = _SortItem(choice, (order, i))
         tips = []
         if badcut:
             tips.append(f"C컷: {row.badcut_reason}")
         if client_note is not None:
             tips.append("고객이 고른 사진" + (f" — 메모: {client_note}" if client_note else ""))
+        if bracket is not None:
+            tips.append(bracket.describe())
         if tips:
             choice_item.setToolTip("\n".join(tips))
         self._table.setItem(table_row, 4, choice_item)
@@ -2391,6 +2429,7 @@ class BestCutTab(QWidget):
                     GalleryPhoto(
                         i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row),
                         client=row.path in self._client_picks,
+                        bracket=self._brackets.get(row.path) is not None,
                     )
                 )
         # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다

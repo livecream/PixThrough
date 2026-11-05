@@ -32,6 +32,7 @@ _SCENE_ROLE = Qt.ItemDataRole.UserRole + 1
 KEPT_BORDER = QColor(52, 168, 83)
 FLAGGED_BORDER = QColor(214, 54, 40)
 CLIENT_BADGE = QColor(26, 115, 232)
+BRACKET_BADGE = QColor(142, 68, 173)  # 브라케팅(노출 연사) 묶음
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class GalleryPhoto:
     total: float
     flagged: bool = False  # C컷(흔들림·눈감음)으로 옮길 사진
     client: bool = False  # 고객 셀렉에서 고객이 고른 사진(표시만)
+    bracket: bool = False  # 브라케팅(노출 연사) 묶음의 사진
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,14 @@ class _SceneDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(badge, 4, 4)
             painter.setPen(QColor("white"))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "고객")
+        if photo.bracket:
+            painter.setFont(font)
+            badge = QRect(box.x() + 6, box.bottom() - 26, 36, 20)
+            painter.setBrush(BRACKET_BADGE)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("white"))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "AEB")
         if current:
             painter.setPen(QPen(palette.highlight().color(), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)

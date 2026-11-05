@@ -49,6 +49,7 @@ class PhotoMetadata:
     width: int | None = None
     height: int | None = None
     error: str | None = None
+    exposure_bias: float | None = None  # 노출 보정(EV) — 브라케팅 묶음 찾기(bracketing)
 
 
 def _photo_stems(folder: Path, cache: dict[Path, set[str]]) -> set[str]:
@@ -139,6 +140,7 @@ def extract_metadata(path: Path) -> PhotoMetadata:
     dt_original = None
     orientation = camera_make = camera_model = camera_serial = None
     aperture = iso = shutter_speed = None
+    exposure_bias = None
 
     try:
         with open(path, "rb") as f:
@@ -163,6 +165,10 @@ def extract_metadata(path: Path) -> PhotoMetadata:
             iso = str(tags["EXIF ISOSpeedRatings"])
         if "EXIF ExposureTime" in tags:
             shutter_speed = str(tags["EXIF ExposureTime"])
+        bias = tags.get("EXIF ExposureBiasValue")
+        if bias is not None and bias.values:
+            value = bias.values[0]
+            exposure_bias = round(float(value.num) / value.den, 2) if getattr(value, "den", 0) else None
     except Exception:
         pass  # EXIF 파싱 실패 시 mtime 폴백으로 넘어감
 
@@ -187,6 +193,7 @@ def extract_metadata(path: Path) -> PhotoMetadata:
         shutter_speed=shutter_speed,
         width=width,
         height=height,
+        exposure_bias=exposure_bias,
     )
 
 
