@@ -34,7 +34,7 @@ def _card(tmp_path):
 def test_plan_groups_by_capture_date_and_skips_hidden_and_other(tmp_path):
     card = _card(tmp_path)
     plan = build_import_plan(card, tmp_path / "photos", tmp_path / "backup")
-    assert sorted(str(r.relative) for r in plan.rows) == [
+    assert sorted(r.relative.as_posix() for r in plan.rows) == [
         "2026-11-03/IMG_0001.CR3", "2026-11-03/IMG_0001.JPG", "2026-11-04/IMG_0002.JPG",
     ]
     assert all(r.status == STATUS_COPY and r.backup_status == STATUS_COPY for r in plan.rows)
@@ -70,7 +70,7 @@ def test_same_name_different_photo_keeps_pair_names(tmp_path):
     _jpeg(card / "DCIM" / "101CANON" / "IMG_0001.JPG", "2026:11:03 15:00:00", color=(200, 0, 0))
     plan = build_import_plan(card, dest)
     renamed = [r for r in plan.rows if r.status == STATUS_RENAMED]
-    assert [str(r.relative) for r in renamed] == ["2026-11-03/IMG_0001_101CANON.JPG"]
+    assert [r.relative.as_posix() for r in renamed] == ["2026-11-03/IMG_0001_101CANON.JPG"]
     outcome = apply_import(plan)
     assert outcome.safe_to_erase
     assert (dest / "2026-11-03" / "IMG_0001.JPG").read_bytes() != (dest / "2026-11-03" / "IMG_0001_101CANON.JPG").read_bytes()
