@@ -20,6 +20,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShort
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QProgressDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -41,10 +42,13 @@ from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
 from gui_projects import ProjectsDialog
+from gui_shoot_stats import StatsDialog
+from gui_worker import FunctionWorker
+from shoot_stats import collect, compute
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
 from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
-from gui_settings import clear_recent, make_settings, recent_folders
+from gui_settings import clear_recent, make_settings, pick_directory, recent_folders
 from gui_update import UpdateController
 from version import __version__
 
@@ -194,6 +198,10 @@ class MainWindow(QMainWindow):
         history_action.setToolTip("앱에서 한 복사·이동·정리 등 파일 작업을 최근 것부터 봅니다")
         history_action.triggered.connect(lambda: HistoryDialog(self).exec())
         file_menu.addAction(history_action)
+        stats_action = QAction("촬영 통계…", self)
+        stats_action.setToolTip("바디·렌즈·시간대·ISO·셔터 분포(베스트컷 미리보기가 있으면 C컷 비율까지)")
+        stats_action.triggered.connect(self.show_shoot_stats)
+        file_menu.addAction(stats_action)
         file_menu.addSeparator()
         client = QAction("고객 선택 결과 가져오기…", self)
         client.setToolTip("고객 셀렉 결과 파일을 베스트컷 화면의 미리보기 사진과 맞춰 \"고객\" 표시를 붙입니다")
@@ -225,6 +233,42 @@ class MainWindow(QMainWindow):
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def show_shoot_stats(self) -> None:
+        """베스트컷 미리보기가 있으면 그 사진(C컷·남김 비율 포함), 없으면 폴더를 골라 통계를 본다."""
+        source = self._photo_selection_tab._best_cut_tab.stats_source()
+        if source is not None:
+            photos, flagged, kept = source
+            StatsDialog(compute(photos, flagged, kept), "베스트컷·C컷 화면의 미리보기 사진", self).exec()
+            return
+        directory = pick_directory(self, "통계를 볼 사진 폴더 선택 (하위 폴더 포함)")
+        if not directory:
+            return
+        folder = Path(directory)
+        progress = QProgressDialog("촬영 정보 읽는 중...", "취소", 0, 0, self)
+        progress.setWindowTitle("촬영 통계")
+        progress.setMinimumDuration(300)
+        worker = FunctionWorker(lambda on_progress: collect(folder, True, on_progress), "촬영 통계")
+
+        def on_progress(done: int, total: int) -> None:
+            progress.setMaximum(total)
+            progress.setValue(done)
+
+        def on_done(photos) -> None:
+            progress.close()
+            StatsDialog(compute(photos), f"{folder} (하위 폴더 포함)", self).exec()
+
+        def on_failed(message: str) -> None:
+            progress.close()
+            show_error(self, "촬영 통계를 만들지 못했습니다", message)
+
+        worker.progress.connect(on_progress)
+        worker.finished_ok.connect(on_done)
+        worker.failed.connect(on_failed)
+        worker.cancelled.connect(progress.close)
+        progress.canceled.connect(worker.request_cancel)
+        self._stats_worker = worker
+        worker.start()
 
     def show_projects(self) -> None:
         dialog = ProjectsDialog(self)

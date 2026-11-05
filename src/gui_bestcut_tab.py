@@ -1669,6 +1669,14 @@ class BestCutTab(QWidget):
                 self._select_index(index)  # 마지막으로 본 사진을 표·갤러리에서도 고른다
                 self._gallery.set_current(index)
 
+    def stats_source(self):
+        """촬영 통계용(파일 › 촬영 통계): 미리보기 사진, C컷(기준이 있을 때만), 남기는 컷. 미리보기 전이면 None."""
+        if not self._rows or not self._photos:
+            return None
+        thresholds = self._current_grouping().thresholds
+        flagged = {r.path for r in self._rows if _is_badcut(r)} if thresholds != NO_BADCUT else None
+        return list(self._photos), flagged, {r.path for r in self._rows if r.selected}
+
     def _index_of_path(self, path: Path) -> int | None:
         return next((i for i, r in enumerate(self._rows or []) if r.path == path), None)
 

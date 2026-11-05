@@ -57,6 +57,8 @@ from gui_widgets import (
     status_row,
 )
 from gui_worker import FunctionWorker
+from gui_shoot_stats import StatsDialog
+from shoot_stats import collect, compute
 from organize import (
     SimilarGroup,
     find_similar_photos,
@@ -128,6 +130,14 @@ class OrganizeTab(QWidget):
 
         summary_button = QPushButton("폴더 정보 보기")
         summary_button.clicked.connect(self._show_folder_summary)
+        stats_button = QPushButton("촬영 통계")
+        stats_button.setToolTip("<p>바디·렌즈별 장 수, 시간대별 촬영량, ISO·셔터속도·조리개·초점거리 분포를 봅니다.</p>")
+        stats_button.clicked.connect(self._show_shoot_stats)
+        summary_box = QWidget()
+        summary_row = QHBoxLayout(summary_box)
+        summary_row.setContentsMargins(0, 0, 0, 0)
+        summary_row.addWidget(summary_button, stretch=1)
+        summary_row.addWidget(stats_button, stretch=1)
         raw_button = QPushButton("RAW 폴더로 이동…")
         raw_button.clicked.connect(lambda: self._plan_move("raw"))
         video_button = QPushButton("영상 폴더로 이동…")
@@ -158,7 +168,7 @@ class OrganizeTab(QWidget):
         similar_row.addWidget(self._similar_spin)
         self._action_buttons = (
             folder_button, summary_button, raw_button, video_button, mismatch_button,
-            date_button, empty_button, find_duplicate_button, similar_button,
+            date_button, empty_button, find_duplicate_button, similar_button, stats_button,
         )
 
         self._run_button = make_primary(QPushButton("실행"))
@@ -214,7 +224,7 @@ class OrganizeTab(QWidget):
             _section(
                 "살펴보기 — 파일을 바꾸지 않음",
                 [
-                    (summary_button, "하위 폴더까지 파일 수·용량을 종류(사진·RAW·영상 등)별로 셉니다."),
+                    (summary_box, "파일 수·용량(폴더 정보) / 바디·렌즈·시간대·ISO·셔터 분포(촬영 통계), 하위 폴더까지."),
                     (mismatch_button, "같은 이름의 짝이 없는 RAW나 JPG를 알려줍니다. 옮기거나 지우지 않습니다."),
                     (similar_box, "크기만 다르거나 다시 저장한 비슷한 사진을 하위 폴더까지 묶어 보여줍니다(지우지 않음)."),
                 ],
@@ -456,6 +466,12 @@ class OrganizeTab(QWidget):
             return
         self._start("dup", "같은 파일 찾는 중(내용 비교)...", lambda progress: find_duplicate_files(folder, progress))
 
+    def _show_shoot_stats(self) -> None:
+        folder = self._require_folder()
+        if folder is None:
+            return
+        self._start("stats", "촬영 정보 읽는 중...", lambda progress: collect(folder, True, progress))
+
     def _find_similar(self) -> None:
         folder = self._require_folder()
         if folder is None:
@@ -619,6 +635,8 @@ class OrganizeTab(QWidget):
             self._show_duplicates(value)
         elif task == "similar":
             self._show_similar(value)
+        elif task == "stats":
+            StatsDialog(compute(value), f"{self._folder} (하위 폴더 포함)", self).exec()
         elif task == "run_move":
             self._on_moved(*value)
         self._refresh()
