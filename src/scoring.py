@@ -67,7 +67,7 @@ _MODEL_URL = (
 # 예전 방식의 점수(score_store)를 버리고 다시 계산하게 하기 위함이다.
 # 2: 얼굴 검출을 YuNet + 얼굴별 눈 분석으로 바꿈(눈뜸·얼굴 영역 선명도가 달라짐)
 # 3: 미소(smile) 점수 추가 — 같은 얼굴 분석의 mouthSmile 블렌드셰이프
-SCORING_VERSION = 3
+SCORING_VERSION = 4
 
 # 얼굴 위치 검출 모델 (OpenCV Zoo YuNet). 랜드마크 모델과 마찬가지로 최초 사용 시
 # 다운로드한다.
@@ -112,6 +112,9 @@ class PhotoScore:
     sharpness_global: float | None = None  # 예전 방식(원본 해상도·사진 전체), 비교용
     sharpness_region: str | None = None  # SHARPNESS_REGION_FACE / _TILES
     smile: float | None = None  # 미소(0~1, 얼굴 분석에 성공한 얼굴 평균), 얼굴이 없으면 None
+    # 눈 분석에 성공한 얼굴 중 가장 낮은 눈뜸과 그 얼굴 수(단체 사진 "가장 낮은 사람 기준" 옵션용)
+    face_min: float | None = None
+    face_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -397,6 +400,7 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
         exposure = _exposure_from_gray(gray)
         face = _eyes_open_of(faces)
         smile = _smile_of(faces)
+        eyes = [f.eyes_open for f in faces if f.eyes_open is not None]
     except Exception as e:
         return PhotoScore(
             path=meta.path,
@@ -416,6 +420,8 @@ def score_photo(meta: PhotoMetadata) -> PhotoScore:
         sharpness_global=sharpness_global,
         sharpness_region=sharpness_region,
         smile=smile,
+        face_min=min(eyes) if eyes else None,
+        face_count=len(eyes),
     )
 
 

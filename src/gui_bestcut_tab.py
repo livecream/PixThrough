@@ -109,7 +109,7 @@ from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
 from proof_gallery import match_selection, parse_selection, photo_ids, record_client_picks
 from scoring import score_photos
-from selector import DEFAULT_WEIGHTS, format_weights
+from selector import DEFAULT_WEIGHTS, EYES_MEAN, EYES_MIN, format_weights
 from thumbnails import make_thumbnail_jpeg
 from xmp_rating import (
     ACTION_CREATED,
@@ -210,6 +210,7 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+EYES_MIN_SETTINGS_KEY = "bestcut/eyes_min"  # 단체 사진: 눈뜸은 가장 낮은 사람 기준(기본 꺼짐)
 XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
 _XMP_TOOLTIP = (
     "<p>파일을 옮기지 않고, 라이트룸에서 바로 걸러 볼 수 있게 RAW 옆에 같은 이름의 "
@@ -237,6 +238,7 @@ class _SelectionSettings(NamedTuple):
     clock_offsets: tuple[tuple[str, float], ...] = ()  # 바디별 시차(clock_sync), 장면 묶기에 씀
     scene_edits: tuple[tuple[Path, str], ...] = ()  # 직접 나누기/합치기(grouping.apply_scene_edits)
     weights: tuple[tuple[str, float], ...] = ()  # 종합점수 가중치(비면 기본값, 가중치 맞추기로 바꿈)
+    eyes_mode: str = EYES_MEAN  # 눈뜸: 얼굴들의 평균 / 가장 낮은 사람(단체 사진 옵션)
 
 
 def _scene_key(settings: _SelectionSettings) -> tuple:
@@ -385,6 +387,7 @@ class PreviewWorker(CancellableWorker):
                 keep_percent=settings.keep_percent,
                 exclude=_exclude_for(settings.thresholds),
                 weights=dict(settings.weights) or None,
+                eyes_mode=settings.eyes_mode,
             )
             self._generate_thumbnails(rows)
             self.finished_ok.emit(photos, rows, settings, hashes)
@@ -792,12 +795,27 @@ class BestCutTab(QWidget):
         keep_row.addStretch()
 
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
-        self._scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
+        self._scoring_help_label = QLabel("ⓘ 어떻게 고르나요?")
         # 종합점수 가중치(앱 설정, 기본 50·30·20) — "가중치…"로 내 선택에 맞춰보고 바꾼다
         self._weights: dict[str, float] = load_weights(self._settings)
         self._weights_button = QToolButton()  # 가운데 칸이 좁아 작은 버튼으로
         self._weights_button.setText("가중치…")
         self._weights_button.clicked.connect(self._open_weight_tuning)
+        # 고르는 방식 옵션(기본 꺼짐) — 가운데 칸 높이를 늘리지 않게 메뉴 하나로
+        self._options_button = QToolButton()
+        self._options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_menu = QMenu(self._options_button)
+        options_menu.setToolTipsVisible(True)
+        self._eyes_min_action = options_menu.addAction("단체 사진: 눈뜸은 가장 낮은 사람 기준")
+        self._eyes_min_action.setCheckable(True)
+        self._eyes_min_action.setChecked(load_bool(self._settings, EYES_MIN_SETTINGS_KEY, False))
+        self._eyes_min_action.setToolTip(
+            "얼굴이 여러 명이면 눈뜸을 평균 대신 가장 낮은 사람 값으로 봅니다 — 한 명이라도 눈을 감으면 "
+            "점수가 낮아지고, C컷 눈뜸 기준도 이 값으로 판정합니다."
+        )
+        self._eyes_min_action.toggled.connect(self._on_eyes_mode_changed)
+        self._options_button.setMenu(options_menu)
+        self._update_options_button()
         self._update_weights_button()
         help_row = QHBoxLayout()
         help_row.addWidget(self._gap_spin)
@@ -1067,6 +1085,7 @@ class BestCutTab(QWidget):
         scoring_row = QHBoxLayout()
         scoring_row.addWidget(self._scoring_help_label)
         scoring_row.addStretch(1)
+        scoring_row.addWidget(self._options_button)
         scoring_row.addWidget(self._weights_button)
         settings_form.addRow(scoring_row)
         settings_group = QGroupBox("장면·베스트컷 기준")
@@ -1346,6 +1365,7 @@ class BestCutTab(QWidget):
             self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key(),
             tuple(sorted(self._scene_edits.items(), key=lambda item: str(item[0]))),
             tuple(self._weights.items()) if weights_differ(self._weights, DEFAULT_WEIGHTS) else (),
+            EYES_MIN if self._eyes_min_action.isChecked() else EYES_MEAN,
         )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
@@ -1712,6 +1732,8 @@ class BestCutTab(QWidget):
             return "점수 계산 실패"
         rank, count = self._ranks_by_path.get(row.path, (0, 0))
         eyes = "눈뜸 없음" if row.face is None else f"눈뜸 {row.face:.2f}"
+        if row.face_count > 1:
+            eyes += f" (얼굴 {row.face_count}명, 가장 낮은 {row.face_min:.2f})"
         if row.smile is not None:
             eyes += f" · 미소 {row.smile:.2f}"
         sharpness = f"선명도 장면 안 {rank}위/{count}" if rank else "선명도 —"
@@ -2086,6 +2108,19 @@ class BestCutTab(QWidget):
         self._split_spin.setEnabled(self._split_checkbox.isChecked())
         self._on_grouping_changed()
 
+    def _on_eyes_mode_changed(self, checked: bool) -> None:
+        save_bool(self._settings, EYES_MIN_SETTINGS_KEY, checked)
+        self._update_options_button()
+        self._on_grouping_changed()
+
+    def _update_options_button(self) -> None:
+        actions = self._options_button.menu().actions()
+        on = [a.text().split(":")[0] for a in actions if a.isChecked()]
+        self._options_button.setText("옵션 ✎" if on else "옵션")
+        self._options_button.setToolTip(
+            "고르는 방식 옵션" + (f" — 켜짐: {', '.join(on)}" if on else " (모두 꺼짐 — 기본)")
+        )
+
     def _on_keep_changed(self, value: int) -> None:
         save_float(self._settings, KEEP_PERCENT_SETTINGS_KEY, value)
         self._on_grouping_changed()
@@ -2135,6 +2170,7 @@ class BestCutTab(QWidget):
                 keep_percent=grouping.keep_percent,
                 exclude=_exclude_for(grouping.thresholds),
                 weights=dict(grouping.weights) or None,
+                eyes_mode=grouping.eyes_mode,
             )
         except OSError as e:
             # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
@@ -2283,8 +2319,14 @@ class BestCutTab(QWidget):
         self._table.setItem(table_row, 6, sharpness_item)
         self._table.setItem(table_row, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
         eyes_item = _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+        eyes_tips = []
+        if row.face_count > 1:
+            mode = "가장 낮은 사람" if self._eyes_min_action.isChecked() else "평균"
+            eyes_tips.append(f"얼굴 {row.face_count}명 · 가장 낮은 사람 {row.face_min:.2f} (지금 기준: {mode})")
         if row.smile is not None:
-            eyes_item.setToolTip(f"미소 {row.smile:.2f}")
+            eyes_tips.append(f"미소 {row.smile:.2f}")
+        if eyes_tips:
+            eyes_item.setToolTip("\n".join(eyes_tips))
         self._table.setItem(table_row, 8, eyes_item)
         self._table.setItem(table_row, 9, QTableWidgetItem(row.reason))
         # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를

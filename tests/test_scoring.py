@@ -318,6 +318,7 @@ def test_score_photo_keeps_eyes_open_average_and_global_sharpness(tmp_path, monk
     result = score_photo(PhotoMetadata(path=path, datetime_original=None, exif_source="exif"))
 
     assert result.face == pytest.approx(0.75)
+    assert result.face_min == pytest.approx(0.5) and result.face_count == 2
     assert result.sharpness_region == scoring.SHARPNESS_REGION_FACE
     assert result.sharpness_global == pytest.approx(scoring._sharpness_from_gray(_texture(200, 200)))
     assert result.total == result.sharpness
