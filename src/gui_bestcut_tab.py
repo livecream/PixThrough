@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QInputDialog,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -930,7 +931,21 @@ class BestCutTab(QWidget):
         self._join_action.triggered.connect(lambda: self._edit_scene_at_selected(JOIN))
         self._reset_scenes_action = QAction("직접 고친 장면 모두 되돌리기", self)
         self._reset_scenes_action.triggered.connect(self._reset_scene_edits)
+        # 찾기·장면으로 가기(편의 5): 파일 이름 일부나 장면 번호 — 같은 글자로 다시 하면 다음 사진으로
+        self._goto_action = QAction("장면·사진으로 가기… (Ctrl+G)", self)
+        self._goto_action.setShortcut(QKeySequence("Ctrl+G"))
+        self._goto_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._goto_action.triggered.connect(self._go_to)
+        self.addAction(self._goto_action)
+        find_action = QAction(self)
+        find_action.setShortcut(QKeySequence.StandardKey.Find)
+        find_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        find_action.triggered.connect(self._go_to)
+        self.addAction(find_action)
+        self._last_goto = ""
         scene_menu = QMenu(self)
+        scene_menu.addAction(self._goto_action)
+        scene_menu.addSeparator()
         scene_menu.addAction(self._split_action)
         scene_menu.addAction(self._join_action)
         scene_menu.addSeparator()
@@ -1459,6 +1474,46 @@ class BestCutTab(QWidget):
     def _index_at(self, table_row: int) -> int | None:
         item = self._table.item(table_row, 1)
         return item.data(_INDEX_ROLE) if item is not None else None
+
+    def _go_to(self) -> None:
+        """장면 번호(숫자)나 파일 이름 일부로 그 사진을 고른다. 같은 이름으로 다시 하면 다음 것으로."""
+        if not self._rows:
+            return
+        text, ok = QInputDialog.getText(
+            self, "장면·사진으로 가기", "장면 번호 또는 파일 이름(일부):", text=self._last_goto
+        )
+        text = text.strip()
+        if not ok or not text:
+            return
+        rows = self._rows
+        if text.isdigit():
+            matches = [i for i, r in enumerate(rows) if r.scene_id == int(text)][:1]
+            missing = f"장면 {text}번이 없습니다(장면 {max(r.scene_id for r in rows)}개)."
+        else:
+            needle = text.lower()
+            matches = [i for i, r in enumerate(rows) if needle in r.path.name.lower()]
+            missing = f"\"{text}\"이(가) 들어간 사진이 없습니다."
+        if not matches:
+            QMessageBox.information(self, "장면·사진으로 가기", missing)
+            return
+        current = self._selected_table_row()
+        if text == self._last_goto and current is not None:
+            later = [i for i in matches if i > current]
+            target = later[0] if later else matches[0]  # 끝까지 가면 처음부터
+        else:
+            target = matches[0]
+        self._last_goto = text
+        if not self._row_visible(rows[target]):
+            self._view_filter.setCurrentIndex(0)  # 거르기에 가려 있으면 모든 컷 보기로
+        self._select_index(target)
+        self._gallery.set_current(target)
+        if self._table.currentItem() is not None:
+            self._table.scrollToItem(self._table.currentItem())
+        position = matches.index(target) + 1
+        self._status_label.setText(
+            f"{rows[target].path.name} · 장면 {rows[target].scene_id}"
+            + (f" · 찾은 {len(matches)}장 중 {position}번째 (Ctrl+G로 다음)" if len(matches) > 1 else "")
+        )
 
     def _select_index(self, index: int) -> None:
         """결과 번호로 표의 줄을 고른다(갤러리 클릭 등)."""
