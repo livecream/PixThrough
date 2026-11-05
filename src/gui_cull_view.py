@@ -108,6 +108,7 @@ class CullDialog(QDialog):
         is_client: Callable[[Path], bool] = lambda path: False,
         on_compare: Callable[[Path], None] | None = None,
         auto_advance: bool = True,
+        on_rate: Callable[[ReportRow, int], None] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -121,6 +122,7 @@ class CullDialog(QDialog):
         self.thumbnail = thumbnail
         self.is_client = is_client
         self._on_compare = on_compare
+        self._on_rate = on_rate
         self._actual = False
         self._cache: OrderedDict[Path, QImage | None] = OrderedDict()
         self._pending: set[Path] = set()
@@ -130,7 +132,7 @@ class CullDialog(QDialog):
         self._pool.setMaxThreadCount(2)
 
         self._title = QLabel()
-        self._auto_checkbox = QCheckBox("P/X 누르면 다음 사진으로")
+        self._auto_checkbox = QCheckBox("P/X·별점 누르면 다음 사진으로")
         self._auto_checkbox.setChecked(auto_advance)
         self._auto_checkbox.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         top = QHBoxLayout()
@@ -148,7 +150,8 @@ class CullDialog(QDialog):
         self._strip = _Strip(self)
         self._strip.clicked.connect(lambda i: self._go(self._scene_start() + i))
         help_label = QLabel(
-            "P 남김 · X 뺌 · Space 넣기/빼기 · ←/→ 사진 · ↑/↓ 장면 · Z 100%/맞춤 · C 나란히 비교 · Esc 닫기"
+            "P 남김 · X 뺌 · 1~5 별점(남김)·0 지우기 · Space 넣기/빼기 · ←/→ 사진 · ↑/↓ 장면 · Z 100%/맞춤 · "
+            "C 나란히 비교 · Esc 닫기"
         )
         help_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         help_label.setStyleSheet("color: #888;")
@@ -171,6 +174,8 @@ class CullDialog(QDialog):
             ("C", self._compare),
         ):
             QShortcut(QKeySequence(key), self, activated=action)
+        for stars in range(6):
+            QShortcut(QKeySequence(str(stars)), self, activated=lambda s=stars: self._rate(s))
         self._show_current()
 
     # --- 데이터 ---------------------------------------------------------------------
@@ -233,6 +238,14 @@ class CullDialog(QDialog):
         self._on_toggle(self.row_for(self.current_path()))
         self.refresh()
 
+    def _rate(self, stars: int) -> None:
+        if self._on_rate is None:
+            return
+        self._on_rate(self.row_for(self.current_path()), stars)
+        self.refresh()
+        if stars and self.auto_advance():
+            self._go(self._index + 1)
+
     def _compare(self) -> None:
         if self._on_compare is not None:
             self._on_compare(self.current_path())
@@ -249,6 +262,8 @@ class CullDialog(QDialog):
         state = "✓ 남김" if row.selected else "C컷" if row.badcut_reason else "빠짐"
         if row.manual_choice is not None:
             state += " (직접)"
+        if row.rating:
+            state += " " + "★" * row.rating
         if self.is_client(path):
             state += " · 고객 선택"
         scenes = len({self.row_for(p).scene_id for p in self._paths})

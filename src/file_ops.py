@@ -121,6 +121,22 @@ def _guard_against_overlapping_output(rows: list[ReportRow], output_dir: Path) -
             )
 
 
+def selection_bytes(paths) -> int:
+    """paths(+같은 이름의 RAW)를 복사하는 데 드는 용량. 읽을 수 없는 파일은 0으로 센다."""
+    total = 0
+    for path in paths:
+        path = Path(path)
+        files = [path] if is_raw(path) else [path, find_matching_raw(path)]
+        for file in files:
+            if file is None:
+                continue
+            try:
+                total += file.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
 def apply_selection(
     rows: list[ReportRow],
     output_dir: Path,
@@ -216,7 +232,7 @@ def apply_selection(
     history.record(
         purpose or ("이동" if move else "복사"),
         f"{len(results)}장 {'이동' if move else '복사'} → {output_dir.name}" + (f" (실패 {len(errors)})" if errors else ""),
-        output_dir, log_path,
+        output_dir, log_path, source=history.common_folder(r.path for r in selected_rows),
     )
     for source, error in errors:
         log.warning("%s 실패: %s — %s", "이동" if move else "복사", source, error)

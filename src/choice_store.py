@@ -126,8 +126,12 @@ class PathRecordStore:
 choices = PathRecordStore("choices.json", lambda value: isinstance(value, bool))
 scene_edits = PathRecordStore("scene_edits.json", lambda value: value in ("split", "join"))
 client_picks = PathRecordStore("client_picks.json", lambda value: isinstance(value, str))
+# 컬링 별점 1~5(사용자 결정: 앱에 저장, 라이트룸은 "별점 쓰기" 때 사진별로). 별점이 있으면 남기는 컷
+ratings = PathRecordStore(
+    "ratings.json", lambda value: isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 5
+)
 # 설정 내보내기·가져오기에서 쓰는 이름 → 저장소
-RECORD_STORES = {"choices": choices, "scene_edits": scene_edits, "client_picks": client_picks}
+RECORD_STORES = {"choices": choices, "scene_edits": scene_edits, "client_picks": client_picks, "ratings": ratings}
 
 
 # 직접 고른 것(예전 함수 이름 그대로)
@@ -144,9 +148,11 @@ def forget(paths: Iterable[Path]) -> None:
     choices.forget(paths)
     scene_edits.forget(paths)
     client_picks.forget(paths)
+    ratings.forget(paths)
 
 
 def clear_memory() -> None:
     choices.clear_memory()
     scene_edits.clear_memory()
     client_picks.clear_memory()
+    ratings.clear_memory()

@@ -91,6 +91,25 @@ def target_size(width: int, height: int, long_edge: int) -> tuple[int, int]:
     return max(1, round(width * scale)), long_edge
 
 
+ESTIMATE_BYTES_PER_PIXEL = 0.45  # 남은 공간 확인용 넉넉한 어림(실사진 JPG 화질 90 ≈ 0.3~0.4)
+
+
+def estimate_output_bytes(rows: list[ResizePlanRow]) -> int:
+    """축소본이 차지할 용량 어림(남은 공간 확인용). 그대로 복사하는 것은 원본 크기."""
+    total = 0
+    for row in rows:
+        if row.action == ACTION_ERROR:
+            continue
+        if row.action == ACTION_COPY or row.new_size is None:
+            try:
+                total += row.source.stat().st_size
+            except OSError:
+                pass
+        else:
+            total += int(row.new_size[0] * row.new_size[1] * ESTIMATE_BYTES_PER_PIXEL)
+    return total
+
+
 def _guard_against_overlap(input_dir: Path, output_dir: Path) -> None:
     resolved_input = input_dir.resolve()
     resolved_output = output_dir.resolve()
@@ -278,6 +297,6 @@ def apply_resize_plan(
     history.record(
         "사진 축소",
         f"{len(results) - len(failed)}장 긴 변 {long_edge}px로 → {output_dir.name}" + (f" (실패 {len(failed)})" if failed else ""),
-        output_dir, log_path,
+        output_dir, log_path, source=history.common_folder(r.source for r in rows),
     )
     return results

@@ -17,6 +17,7 @@ from gui_widgets import compact
 
 # 화면 이름 → 다음 단계 버튼 글자
 PAGE_LABELS = {
+    "import": "카드 가져오기",
     "rename": "시간순 정렬",
     "organize": "폴더 정리",
     "resize": "사진 축소",

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from scanner import PhotoMetadata
-from selector import DEFAULT_WEIGHTS, SceneSelection, format_weights, select_best
+from selector import DEFAULT_WEIGHTS, EYES_MEAN, SceneSelection, format_weights, select_best
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,10 @@ class ReportRow:
     # C컷 이동 대상과 빨간 표시에 쓴다(직접 넣은 컷은 옮기지 않음).
     badcut_reason: str | None = None
     smile: float | None = None  # 미소(0~1), 얼굴이 없으면 None
+    # 눈 분석에 성공한 얼굴 수와 그중 가장 낮은 눈뜸(face는 고르는 데 쓴 값 — 평균 또는 가장 낮은 사람)
+    face_min: float | None = None
+    face_count: int = 0
+    rating: int | None = None  # 컬링에서 매긴 별점(1~5, 화면에서만 붙임 — choice_store.ratings)
 
 
 MANUAL_ADDED = "added"
@@ -104,6 +108,7 @@ def build_report(
     keep_percent: int = 0,
     exclude: Callable | None = None,
     weights: dict[str, float] | None = None,
+    eyes_mode: str = EYES_MEAN,
 ) -> list[ReportRow]:
     """장면 그룹 목록으로부터 사진별 선택/제외 리포트 행을 만든다.
     keep_percent: 장면마다 남길 비율(%), 올림·최소 1장 (selector.keep_count).
@@ -131,7 +136,7 @@ def build_report(
 
         selection = select_best(
             group, on_progress=scene_progress, cache=cache, keep_percent=keep_percent, exclude=exclude,
-            weights=weights,
+            weights=weights, eyes_mode=eyes_mode,
         )
         done += len(group)
 
@@ -151,6 +156,8 @@ def build_report(
                     sharpness_global=score.sharpness_global,
                     badcut_reason=selection.excluded.get(i),
                     smile=score.smile,
+                    face_min=score.face_min,
+                    face_count=score.face_count,
                 )
             )
     return rows

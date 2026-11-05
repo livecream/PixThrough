@@ -81,3 +81,20 @@ def test_oldest_choices_are_dropped_past_the_limit(tmp_path, monkeypatch):
         choice_store.sync([photo], {photo: True})
 
     assert choice_store.restore([a, b, c]) == {b: True, c: True}
+
+
+def test_ratings_store_keeps_only_1_to_5(tmp_path, monkeypatch):
+    import choice_store
+    import score_store
+
+    monkeypatch.setattr(score_store, "cache_dir", lambda: tmp_path / "cache")
+    choice_store.clear_memory()
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    choice_store.ratings.sync([photo], {photo: 4})
+    choice_store.clear_memory()
+    assert choice_store.ratings.restore([photo]) == {photo: 4}
+    assert choice_store.ratings.import_entries({"/x.jpg": [1.0, 2, 7], "/y.jpg": [1.0, 2, True]}) == 0
+    choice_store.forget([photo])
+    assert choice_store.ratings.restore([photo]) == {}
+    choice_store.clear_memory()

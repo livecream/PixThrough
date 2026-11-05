@@ -216,3 +216,16 @@ def test_label_must_not_be_empty(tmp_path):
     (shoot / "a.CR3").write_bytes(b"raw")
     with pytest.raises(ValueError):
         write_xmp(plan_xmp([], [], [shoot / "a.CR3"]), 0, tmp_path / "run", label="  ")
+
+
+def test_per_photo_rating_overrides_screen_rating(tmp_path):
+    from xmp_rating import plan_xmp, write_xmp
+
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.jpg").write_bytes(b"jpg")
+        (tmp_path / f"{name}.CR3").write_bytes(b"raw")
+    plan = plan_xmp([tmp_path / "a.jpg", tmp_path / "b.jpg"], [], ratings={tmp_path / "a.jpg": 5})
+    assert [row.rating for row in plan] == [5, None]
+    write_xmp(plan, 3, tmp_path / "run")
+    assert 'xmp:Rating="5"' in (tmp_path / "a.xmp").read_text(encoding="utf-8")
+    assert 'xmp:Rating="3"' in (tmp_path / "b.xmp").read_text(encoding="utf-8")

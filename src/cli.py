@@ -177,10 +177,13 @@ def cmd_rename(args: argparse.Namespace) -> None:
     offsets = _clock_offsets(args)
     if merge_output is not None:
         rows = build_merge_plan(
-            input_dirs, merge_output, recursive=args.recursive, digits=args.digits, offsets=offsets
+            input_dirs, merge_output, recursive=args.recursive, digits=args.digits, offsets=offsets,
+            template=args.name,
         )
     else:
-        rows = build_rename_plan(input_dirs, recursive=args.recursive, digits=args.digits, offsets=offsets)
+        rows = build_rename_plan(
+            input_dirs, recursive=args.recursive, digits=args.digits, offsets=offsets, template=args.name
+        )
     write_rename_report(rows, Path(args.report))
 
     if not args.apply:
@@ -456,6 +459,10 @@ def main() -> None:
     p_rename.add_argument("--recursive", action="store_true", help="하위 폴더까지 재귀 탐색")
     p_rename.add_argument(
         "--digits", type=int, default=DEFAULT_DIGITS, help=f"번호 자릿수, 기본값 {DEFAULT_DIGITS}"
+    )
+    p_rename.add_argument(
+        "--name", default="{순번}",
+        help="이름 규칙: {순번} {순번:4} {날짜} {시각} {바디} {원래이름} (예: \"{날짜}_{순번:4}\", {순번}은 꼭 필요)",
     )
     p_rename.add_argument("--report", required=True, help="리네임 계획 리포트 저장 경로 (.json)")
     p_rename.add_argument(

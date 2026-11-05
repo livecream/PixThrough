@@ -67,6 +67,7 @@ class XmpPlanRow:
     xmp: Path | None  # 쓸 .xmp 경로
     mark: str  # MARK_BEST | MARK_REJECT | MARK_LABEL
     existing: bool  # 이미 .xmp가 있음(고침)
+    rating: int | None = None  # 이 사진에 직접 매긴 별점(있으면 화면의 별점 대신)
 
 
 @dataclass(frozen=True)
@@ -86,18 +87,22 @@ def _existing_sidecar(raw: Path) -> Path | None:
     return None
 
 
-def plan_xmp(best: list[Path], rejects: list[Path], labels: list[Path] = ()) -> list[XmpPlanRow]:
-    """베스트컷·C컷(·고객 선택 라벨) 사진마다 표시를 붙일 RAW와 .xmp 경로를 정한다(아직 쓰지 않음)."""
+def plan_xmp(best: list[Path], rejects: list[Path], labels: list[Path] = (),
+             ratings: dict | None = None) -> list[XmpPlanRow]:
+    """베스트컷·C컷(·고객 선택 라벨) 사진마다 표시를 붙일 RAW와 .xmp 경로를 정한다(아직 쓰지 않음).
+    ratings(사진 → 1~5)가 있으면 그 베스트컷은 그 별점으로."""
+    ratings = ratings or {}
     rows = []
     for mark, photos in ((MARK_BEST, best), (MARK_REJECT, rejects), (MARK_LABEL, labels)):
         for photo in photos:
             raw = photo if is_raw(photo) else find_matching_raw(photo)
+            stars = ratings.get(photo) if mark == MARK_BEST else None
             if raw is None:
-                rows.append(XmpPlanRow(photo, None, None, mark, False))
+                rows.append(XmpPlanRow(photo, None, None, mark, False, stars))
                 continue
             existing = _existing_sidecar(raw)
             xmp = existing if existing is not None else raw.with_suffix(".xmp")
-            rows.append(XmpPlanRow(photo, raw, xmp, mark, existing is not None))
+            rows.append(XmpPlanRow(photo, raw, xmp, mark, existing is not None, stars))
     return rows
 
 
@@ -218,7 +223,7 @@ def write_xmp(rows: list[XmpPlanRow], rating: int, run_dir: Path, label: str = "
     results: list[XmpResult] = []
     with open(run_dir / "xmp_log.jsonl", "w", encoding="utf-8") as log_file:
         for index, row in enumerate(rows, start=1):
-            result = _write_one(row, rating, backup_dir, index, label)
+            result = _write_one(row, row.rating or rating, backup_dir, index, label)
             results.append(result)
             log_file.write(
                 json.dumps(

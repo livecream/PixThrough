@@ -26,7 +26,7 @@ C컷으로 판정된 사진(exclude가 사유를 돌려준 사진, 사용자 결
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from scanner import PhotoMetadata
@@ -101,6 +101,16 @@ def combined_score(
     return sum(weights.get(k, 0.0) * v for k, v in parts.items()) / weight_sum
 
 
+EYES_MEAN = "mean"  # 얼굴들의 평균(기본)
+EYES_MIN = "min"  # 가장 낮은 사람(단체 사진 — 한 명이라도 눈 감으면 감점, 사용자 결정: 옵션·기본 꺼짐)
+
+
+def apply_eyes_mode(scores: list[PhotoScore], eyes_mode: str) -> list[PhotoScore]:
+    if eyes_mode != EYES_MIN:
+        return scores
+    return [replace(s, face=s.face_min) if s.face_min is not None else s for s in scores]
+
+
 def select_best(
     scene: list[PhotoMetadata],
     on_progress: Callable[[int, int], None] | None = None,
@@ -108,13 +118,15 @@ def select_best(
     keep_percent: int = 0,
     exclude: Callable[[PhotoScore], str | None] | None = None,
     weights: dict[str, float] | None = None,
+    eyes_mode: str = EYES_MEAN,
 ) -> SceneSelection:
     """장면 그룹에서 종합 점수가 높은 사진을 고른다 (기본 1장, keep_percent로 더 남김).
-    exclude가 주어지면 사유(문자열)를 돌려준 사진은 후보에서 뺀다(C컷 등)."""
+    exclude가 주어지면 사유(문자열)를 돌려준 사진은 후보에서 뺀다(C컷 등).
+    eyes_mode가 EYES_MIN이면 눈뜸을 얼굴들의 평균 대신 가장 낮은 사람 값으로(C컷 판정에도)."""
     if not scene:
         raise ValueError("빈 장면 그룹은 베스트 컷을 선정할 수 없습니다.")
 
-    scores = score_photos(scene, on_progress=on_progress, cache=cache)
+    scores = apply_eyes_mode(score_photos(scene, on_progress=on_progress, cache=cache), eyes_mode)
     valid = [i for i, s in enumerate(scores) if s.error is None]
     combined_scores = [0.0] * len(scene)
     if valid:

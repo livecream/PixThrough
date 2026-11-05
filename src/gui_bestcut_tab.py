@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, undo_moves
+from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, selection_bytes, undo_moves
 from grouping import (
     DEFAULT_SCENE_GAP_SECONDS,
     JOIN,
@@ -71,7 +71,7 @@ import app_log
 from clock_sync import shift_photos
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_files, extract_dropped_folders
-from gui_errors import overlap_warning, show_error
+from gui_errors import confirm_space, overlap_warning, show_error
 from gui_format import (
     bestcut_grouping_help,
     bestcut_scoring_help,
@@ -103,13 +103,14 @@ import score_store
 from gui_worker import CancellableWorker, FunctionWorker, PreviewCancelled
 from image_hash import HASH_BITS, hashes_for
 from badcut import BadCutThresholds, badcut_reason
+from bracketing import find_brackets, keep_brackets
 from contact_sheet import SheetItem, make_contact_sheet
 from report import ReportRow, apply_manual_choices, build_report, write_apply_report
 from scanner import PhotoMetadata, scan_and_extract_many
 from parallel import map_in_order
 from proof_gallery import match_selection, parse_selection, photo_ids, record_client_picks
 from scoring import score_photos
-from selector import DEFAULT_WEIGHTS, format_weights
+from selector import DEFAULT_WEIGHTS, EYES_MEAN, EYES_MIN, format_weights
 from thumbnails import make_thumbnail_jpeg
 from xmp_rating import (
     ACTION_CREATED,
@@ -210,6 +211,8 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+KEEP_BRACKETS_SETTINGS_KEY = "bestcut/keep_brackets"  # 브라케팅 묶음 통째로 남기기(기본 꺼짐)
+EYES_MIN_SETTINGS_KEY = "bestcut/eyes_min"  # 단체 사진: 눈뜸은 가장 낮은 사람 기준(기본 꺼짐)
 XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
 _XMP_TOOLTIP = (
     "<p>파일을 옮기지 않고, 라이트룸에서 바로 걸러 볼 수 있게 RAW 옆에 같은 이름의 "
@@ -237,6 +240,8 @@ class _SelectionSettings(NamedTuple):
     clock_offsets: tuple[tuple[str, float], ...] = ()  # 바디별 시차(clock_sync), 장면 묶기에 씀
     scene_edits: tuple[tuple[Path, str], ...] = ()  # 직접 나누기/합치기(grouping.apply_scene_edits)
     weights: tuple[tuple[str, float], ...] = ()  # 종합점수 가중치(비면 기본값, 가중치 맞추기로 바꿈)
+    eyes_mode: str = EYES_MEAN  # 눈뜸: 얼굴들의 평균 / 가장 낮은 사람(단체 사진 옵션)
+    keep_brackets: bool = False  # 브라케팅 묶음은 통째로 남기기
 
 
 def _scene_key(settings: _SelectionSettings) -> tuple:
@@ -385,6 +390,7 @@ class PreviewWorker(CancellableWorker):
                 keep_percent=settings.keep_percent,
                 exclude=_exclude_for(settings.thresholds),
                 weights=dict(settings.weights) or None,
+                eyes_mode=settings.eyes_mode,
             )
             self._generate_thumbnails(rows)
             self.finished_ok.emit(photos, rows, settings, hashes)
@@ -587,6 +593,7 @@ class BestCutTab(QWidget):
         # 화면·적용에 쓰는 self._rows는 둘을 합친 결과다.
         self._auto_rows: list[ReportRow] | None = None
         self._choices: dict[Path, bool] = {}
+        self._ratings: dict[Path, int] = {}  # 컬링 별점 1~5(choice_store.ratings) — 별점이 있으면 남기는 컷
         self._client_picks: dict[Path, str] = {}  # 고객 셀렉에서 가져온 고객 선택(경로 → 메모), 표시만
         # 직접 나누거나 합친 장면 경계(사진 경로 → "split"/"join"). 앱을 꺼도 남는다(choice_store)
         self._scene_edits: dict[Path, str] = {}
@@ -601,6 +608,8 @@ class BestCutTab(QWidget):
         self._viewer_paths: list[Path] = []
         # 마지막 미리보기에서 스캔한 사진. 간격만 바꿔 다시 묶을 때 재사용한다.
         self._photos: list[PhotoMetadata] | None = None
+        self._brackets: dict = {}  # 경로 → bracketing.Bracket (_bracket_map)
+        self._brackets_source: list[PhotoMetadata] | None = None
         # 지금 화면의 결과를 만든 기준
         self._rows_grouping: _SelectionSettings | None = None
         self._hashes: dict[Path, int | None] = {}
@@ -792,12 +801,35 @@ class BestCutTab(QWidget):
         keep_row.addStretch()
 
         self._grouping_help_label = QLabel("ⓘ 장면은 어떻게 묶나요?")
-        self._scoring_help_label = QLabel("ⓘ 베스트컷은 어떻게 고르나요?")
+        self._scoring_help_label = QLabel("ⓘ 어떻게 고르나요?")
         # 종합점수 가중치(앱 설정, 기본 50·30·20) — "가중치…"로 내 선택에 맞춰보고 바꾼다
         self._weights: dict[str, float] = load_weights(self._settings)
         self._weights_button = QToolButton()  # 가운데 칸이 좁아 작은 버튼으로
         self._weights_button.setText("가중치…")
         self._weights_button.clicked.connect(self._open_weight_tuning)
+        # 고르는 방식 옵션(기본 꺼짐) — 가운데 칸 높이를 늘리지 않게 메뉴 하나로
+        self._options_button = QToolButton()
+        self._options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_menu = QMenu(self._options_button)
+        options_menu.setToolTipsVisible(True)
+        self._eyes_min_action = options_menu.addAction("단체 사진: 눈뜸은 가장 낮은 사람 기준")
+        self._eyes_min_action.setCheckable(True)
+        self._eyes_min_action.setChecked(load_bool(self._settings, EYES_MIN_SETTINGS_KEY, False))
+        self._eyes_min_action.setToolTip(
+            "얼굴이 여러 명이면 눈뜸을 평균 대신 가장 낮은 사람 값으로 봅니다 — 한 명이라도 눈을 감으면 "
+            "점수가 낮아지고, C컷 눈뜸 기준도 이 값으로 판정합니다."
+        )
+        self._eyes_min_action.toggled.connect(self._on_eyes_mode_changed)
+        self._brackets_action = options_menu.addAction("브라케팅: 묶음은 통째로 남기기")
+        self._brackets_action.setCheckable(True)
+        self._brackets_action.setChecked(load_bool(self._settings, KEEP_BRACKETS_SETTINGS_KEY, False))
+        self._brackets_action.setToolTip(
+            "노출을 바꿔 연속으로 찍은 묶음(AEB, 예: 0 · −2 · +2 EV)은 HDR 합성에 다 필요해서, "
+            "켜면 묶음의 사진을 모두 남깁니다. 끄면 다른 사진처럼 점수로 고릅니다(묶음 표시는 그대로)."
+        )
+        self._brackets_action.toggled.connect(self._on_keep_brackets_changed)
+        self._options_button.setMenu(options_menu)
+        self._update_options_button()
         self._update_weights_button()
         help_row = QHBoxLayout()
         help_row.addWidget(self._gap_spin)
@@ -925,6 +957,7 @@ class BestCutTab(QWidget):
         self._gallery.photo_activated.connect(self._open_viewer)
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
+        self._gallery.rating_requested.connect(self._rate_row)
         self._gallery.compare_requested.connect(self._open_compare)
         self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
@@ -940,6 +973,7 @@ class BestCutTab(QWidget):
             ("F", self._open_cull_for_selected),
             ("S", lambda: self._edit_scene_at_selected(SPLIT)),
             ("M", lambda: self._edit_scene_at_selected(JOIN)),
+            *((str(stars), lambda s=stars: self._rate_selected_row(s)) for stars in range(6)),
         ):
             QShortcut(QKeySequence(key), self._table, activated=action, context=Qt.ShortcutContext.WidgetShortcut)
         # 결과가 아직 없을 때 결과 자리에 띄우는 순서 안내
@@ -959,7 +993,8 @@ class BestCutTab(QWidget):
         self._results.addWidget(self._table)
         # 보기 거르기: 모든 컷 / 남기는 컷만 / 고객이 고른 것만(고객 셀렉에서 가져온 결과)
         self._view_filter = QComboBox()
-        for text, key in (("모든 컷 보기", "all"), ("남기는 컷만", "kept"), ("고객이 고른 것만", "client")):
+        for text, key in (("모든 컷 보기", "all"), ("남기는 컷만", "kept"), ("고객이 고른 것만", "client"),
+                          ("별점 ★★★ 이상", "stars3")):
             self._view_filter.addItem(text, key)
         self._view_filter.setToolTip(
             "<p><b>남기는 컷만</b>: 장면마다 남기는(선택된) 컷만. 빠진 컷을 다시 넣으려면 모든 컷 보기로.</p>"
@@ -1067,6 +1102,7 @@ class BestCutTab(QWidget):
         scoring_row = QHBoxLayout()
         scoring_row.addWidget(self._scoring_help_label)
         scoring_row.addStretch(1)
+        scoring_row.addWidget(self._options_button)
         scoring_row.addWidget(self._weights_button)
         settings_form.addRow(scoring_row)
         settings_group = QGroupBox("장면·베스트컷 기준")
@@ -1329,6 +1365,7 @@ class BestCutTab(QWidget):
         )
         self._scene_edits.update(restored_edits)  # 미리보기 기준과 달라져 끝난 뒤 다시 묶인다
         self._client_picks = choice_store.client_picks.restore(p.path for p in photos)
+        self._ratings.update(choice_store.ratings.restore(p.path for p in photos if p.path not in self._ratings))
         self._show_rows(rows, grouping)
         self._refresh_client_picks()  # 거르기 칸의 고객 선택 수
         if restored:
@@ -1346,11 +1383,15 @@ class BestCutTab(QWidget):
             self._gap_spin.value(), split, self._keep_spin.value(), thresholds, offset_store().as_key(),
             tuple(sorted(self._scene_edits.items(), key=lambda item: str(item[0]))),
             tuple(self._weights.items()) if weights_differ(self._weights, DEFAULT_WEIGHTS) else (),
+            EYES_MIN if self._eyes_min_action.isChecked() else EYES_MEAN,
+            self._brackets_action.isChecked(),
         )
 
     def _show_rows(self, rows: list[ReportRow], grouping: _SelectionSettings) -> None:
         """새 자동 선정 결과(미리보기 또는 다시 묶기)를 받아 화면에 반영한다."""
         previous = self._rows_grouping
+        if grouping.keep_brackets:
+            rows = keep_brackets(rows, self._bracket_map())
         self._auto_rows = rows
         self._rows_grouping = grouping
         # 장면 묶음이 바뀌었으면(간격·나누기) 열려 있던 크게 보기 창(한 장면의 컷 목록)은 닫는다.
@@ -1366,6 +1407,8 @@ class BestCutTab(QWidget):
         """자동 결과에 직접 고른 것을 덮어써 화면·적용 대상을 갱신한다."""
         selected_row = self._selected_table_row()
         rows = apply_manual_choices(self._auto_rows or [], self._choices)
+        if self._ratings:
+            rows = [replace(r, rating=self._ratings[r.path]) if r.path in self._ratings else r for r in rows]
         self._rows = rows
         self._update_apply_buttons()
         settings = self._rows_grouping
@@ -1377,6 +1420,10 @@ class BestCutTab(QWidget):
         edits_here = self._scene_edits_in(rows)
         if edits_here:
             summary += f" · 장면 직접 고침 {len(edits_here)}곳"
+        brackets = self._bracket_map()
+        if brackets:
+            count = len({b.number for b in brackets.values()})
+            summary += f" · 브라케팅 {count}묶음" + (" (통째로 남김)" if settings and settings.keep_brackets else "")
         badcut = format_badcut_summary(rows, self._current_grouping().thresholds)
         manual = format_manual_choice_summary(rows)
         self._summary_text.setPlainText(
@@ -1460,8 +1507,31 @@ class BestCutTab(QWidget):
             self._choices.pop(row.path, None)
         else:
             self._choices[row.path] = wanted
+        if not wanted:
+            self._ratings.pop(row.path, None)  # 빼면 별점도 지운다(별점 = 남기는 컷)
         self._save_choices()
         self._refresh_selection()
+
+    def _set_rating(self, row: ReportRow, stars: int) -> None:
+        """컬링 별점: 1~5는 그 별점으로 남기고, 0은 별점만 지운다(선택은 그대로)."""
+        if stars:
+            self._ratings[row.path] = stars
+            if not row.selected:
+                self._toggle(row)  # 넣으면서 저장·새로 고침
+                return
+        else:
+            self._ratings.pop(row.path, None)
+        self._save_choices()
+        self._refresh_selection()
+
+    def _rate_selected_row(self, stars: int) -> None:
+        index = self._selected_table_row()
+        if self._rows and index is not None:
+            self._set_rating(self._rows[index], stars)
+
+    def _rate_row(self, index: int, stars: int) -> None:
+        self._select_index(index)
+        self._rate_selected_row(stars)
 
     def _set_selected(self, row: ReportRow, wanted: bool) -> None:
         """이미 원하는 상태면 그대로 둔다(P를 두 번 눌러도 빠지지 않게)."""
@@ -1475,12 +1545,15 @@ class BestCutTab(QWidget):
 
     def _reset_choices(self) -> None:
         self._choices.clear()
+        self._ratings.clear()
         self._save_choices()
         self._refresh_selection()
 
     def _save_choices(self) -> None:
         """직접 고른 것을 앱을 꺼도 남게 저장한다(지금 화면의 사진 기준, choice_store)."""
-        choice_store.sync([r.path for r in self._auto_rows or []], self._choices)
+        paths = [r.path for r in self._auto_rows or []]
+        choice_store.sync(paths, self._choices)
+        choice_store.ratings.sync(paths, self._ratings)
 
     def _rows_for_paths(self, paths: list[Path]) -> list[ReportRow]:
         by_path = {r.path: r for r in self._rows or []}
@@ -1580,6 +1653,7 @@ class BestCutTab(QWidget):
             is_client=lambda path: path in self._client_picks,
             on_compare=lambda path: self._open_compare(self._index_of_path(path)),
             auto_advance=load_bool(self._settings, CULL_AUTO_KEY, True),
+            on_rate=self._set_rating,
             parent=self,
         )
         self._cull.finished.connect(self._on_cull_closed)
@@ -1594,6 +1668,14 @@ class BestCutTab(QWidget):
             if index is not None:
                 self._select_index(index)  # 마지막으로 본 사진을 표·갤러리에서도 고른다
                 self._gallery.set_current(index)
+
+    def stats_source(self):
+        """촬영 통계용(파일 › 촬영 통계): 미리보기 사진, C컷(기준이 있을 때만), 남기는 컷. 미리보기 전이면 None."""
+        if not self._rows or not self._photos:
+            return None
+        thresholds = self._current_grouping().thresholds
+        flagged = {r.path for r in self._rows if _is_badcut(r)} if thresholds != NO_BADCUT else None
+        return list(self._photos), flagged, {r.path for r in self._rows if r.selected}
 
     def _index_of_path(self, path: Path) -> int | None:
         return next((i for i, r in enumerate(self._rows or []) if r.path == path), None)
@@ -1712,6 +1794,8 @@ class BestCutTab(QWidget):
             return "점수 계산 실패"
         rank, count = self._ranks_by_path.get(row.path, (0, 0))
         eyes = "눈뜸 없음" if row.face is None else f"눈뜸 {row.face:.2f}"
+        if row.face_count > 1:
+            eyes += f" (얼굴 {row.face_count}명, 가장 낮은 {row.face_min:.2f})"
         if row.smile is not None:
             eyes += f" · 미소 {row.smile:.2f}"
         sharpness = f"선명도 장면 안 {rank}위/{count}" if rank else "선명도 —"
@@ -1782,6 +1866,10 @@ class BestCutTab(QWidget):
         bad_rows = [r for r in self._rows or [] if _is_badcut(r)]
         if not bad_rows or self._badcut_dir is None:
             return
+        bad_paths = [Path(r.path) for r in bad_rows]
+        if not confirm_space(self, self._badcut_dir, selection_bytes(bad_paths), "C컷 폴더",
+                             sources=[p.parent for p in bad_paths], move=True):
+            return
         confirm = QMessageBox.question(
             self,
             "C컷 이동 확인",
@@ -1843,6 +1931,7 @@ class BestCutTab(QWidget):
                 self._photos = [p for p in self._photos if p.path not in moved]
             for path in moved:
                 self._choices.pop(path, None)
+                self._ratings.pop(path, None)
             choice_store.forget(moved)
             self._rows_grouping = None
         else:
@@ -1997,7 +2086,7 @@ class BestCutTab(QWidget):
         rating = self._xmp_rating_spin.value()
         best = [r.path for r in self._rows if r.selected]
         rejects = [r.path for r in self._rows if _is_badcut(r)]
-        plan = plan_xmp(best, rejects)
+        plan = plan_xmp(best, rejects, ratings=self._ratings)
         with_raw = [row for row in plan if row.xmp is not None]
         if not with_raw:
             QMessageBox.information(
@@ -2013,6 +2102,9 @@ class BestCutTab(QWidget):
         no_raw = len(plan) - len(with_raw)
         lines = [f"베스트컷 {best_count}장에 {'★' * rating}, C컷 {reject_count}장에 거부 표시를 "
                  "RAW 옆 .xmp에 씁니다(RAW·JPG 파일은 그대로)."]
+        rated = sum(1 for row in with_raw if row.rating)
+        if rated:
+            lines.append(f"컬링에서 별점을 매긴 {rated}장은 그 별점으로 씁니다.")
         lines.append(f"새로 만들기 {len(with_raw) - existing}개 · 기존 .xmp 고치기 {existing}개"
                      "(별점·거부 칸만, 고치기 전 파일은 백업)")
         if no_raw:
@@ -2082,6 +2174,32 @@ class BestCutTab(QWidget):
         self._split_spin.setEnabled(self._split_checkbox.isChecked())
         self._on_grouping_changed()
 
+    def _on_keep_brackets_changed(self, checked: bool) -> None:
+        save_bool(self._settings, KEEP_BRACKETS_SETTINGS_KEY, checked)
+        self._update_options_button()
+        self._on_grouping_changed()
+
+    def _bracket_map(self) -> dict:
+        """지금 미리보기 사진의 브라케팅 묶음(경로 → Bracket). 사진 목록이 바뀔 때만 다시 찾는다."""
+        photos = self._photos
+        if self._brackets_source is not photos:
+            self._brackets_source = photos
+            self._brackets = find_brackets(photos or [])
+        return self._brackets
+
+    def _on_eyes_mode_changed(self, checked: bool) -> None:
+        save_bool(self._settings, EYES_MIN_SETTINGS_KEY, checked)
+        self._update_options_button()
+        self._on_grouping_changed()
+
+    def _update_options_button(self) -> None:
+        actions = self._options_button.menu().actions()
+        on = [a.text().split(":")[0] for a in actions if a.isChecked()]
+        self._options_button.setText("옵션 ✎" if on else "옵션")
+        self._options_button.setToolTip(
+            "고르는 방식 옵션" + (f" — 켜짐: {', '.join(on)}" if on else " (모두 꺼짐 — 기본)")
+        )
+
     def _on_keep_changed(self, value: int) -> None:
         save_float(self._settings, KEEP_PERCENT_SETTINGS_KEY, value)
         self._on_grouping_changed()
@@ -2131,6 +2249,7 @@ class BestCutTab(QWidget):
                 keep_percent=grouping.keep_percent,
                 exclude=_exclude_for(grouping.thresholds),
                 weights=dict(grouping.weights) or None,
+                eyes_mode=grouping.eyes_mode,
             )
         except OSError as e:
             # 미리보기 뒤에 파일이 옮겨졌거나 지워진 경우 — 새로 미리보기해야 한다.
@@ -2253,15 +2372,22 @@ class BestCutTab(QWidget):
             choice, order = "제외", 1
         if row.manual_choice is not None:
             choice += " (직접)"
+        if row.rating:
+            choice += " " + "★" * row.rating
         client_note = self._client_picks.get(row.path)
         if client_note is not None:
             choice += " · 고객"
+        bracket = self._brackets.get(row.path)
+        if bracket is not None:
+            choice += " · 브라케팅"
         choice_item = _SortItem(choice, (order, i))
         tips = []
         if badcut:
             tips.append(f"C컷: {row.badcut_reason}")
         if client_note is not None:
             tips.append("고객이 고른 사진" + (f" — 메모: {client_note}" if client_note else ""))
+        if bracket is not None:
+            tips.append(bracket.describe())
         if tips:
             choice_item.setToolTip("\n".join(tips))
         self._table.setItem(table_row, 4, choice_item)
@@ -2279,8 +2405,14 @@ class BestCutTab(QWidget):
         self._table.setItem(table_row, 6, sharpness_item)
         self._table.setItem(table_row, 7, _bar_item(f"{row.exposure:.2f}", None if unscored else row.exposure))
         eyes_item = _bar_item("" if row.face is None else f"{row.face:.2f}", row.face)
+        eyes_tips = []
+        if row.face_count > 1:
+            mode = "가장 낮은 사람" if self._eyes_min_action.isChecked() else "평균"
+            eyes_tips.append(f"얼굴 {row.face_count}명 · 가장 낮은 사람 {row.face_min:.2f} (지금 기준: {mode})")
         if row.smile is not None:
-            eyes_item.setToolTip(f"미소 {row.smile:.2f}")
+            eyes_tips.append(f"미소 {row.smile:.2f}")
+        if eyes_tips:
+            eyes_item.setToolTip("\n".join(eyes_tips))
         self._table.setItem(table_row, 8, eyes_item)
         self._table.setItem(table_row, 9, QTableWidgetItem(row.reason))
         # 남기는 컷은 초록, C컷은 빨강, 나머지는 장면을 하나 걸러 옅은 회색으로 장면 경계를
@@ -2345,6 +2477,8 @@ class BestCutTab(QWidget):
                     GalleryPhoto(
                         i, row.path, row.selected, row.manual_choice is not None, row.total, _is_badcut(row),
                         client=row.path in self._client_picks,
+                        bracket=self._brackets.get(row.path) is not None,
+                        stars=row.rating or 0,
                     )
                 )
         # 장면 순서는 그대로, 남기는 컷만 볼 때 빈 장면은 뺀다
@@ -2392,6 +2526,8 @@ class BestCutTab(QWidget):
             return row.selected
         if key == "client":
             return row.path in self._client_picks
+        if key == "stars3":
+            return (row.rating or 0) >= 3
         return True
 
     def _refresh_client_picks(self) -> None:
@@ -2444,6 +2580,10 @@ class BestCutTab(QWidget):
         move = self._move_radio.isChecked()
         verb = "이동" if move else "복사"
         selected_count = sum(1 for r in self._rows if r.selected)
+        selected_paths = [Path(r.path) for r in self._rows if r.selected]
+        if not confirm_space(self, self._output_dir, selection_bytes(selected_paths), "베스트컷 폴더",
+                             sources=[p.parent for p in selected_paths], move=move):
+            return
         manual = format_manual_choice_summary(self._rows)
         confirm = QMessageBox.question(
             self,

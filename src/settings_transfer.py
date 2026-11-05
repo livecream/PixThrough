@@ -22,6 +22,7 @@ from PySide6.QtCore import QSettings
 
 import choice_store
 import history
+import projects
 import score_store
 from version import __version__
 
@@ -36,7 +37,9 @@ class Summary:
     records: dict[str, int]  # 저장소 이름 → 기록 수
 
     def describe(self) -> str:
-        names = {"choices": "직접 고른 컷", "scene_edits": "직접 고친 장면", "client_picks": "고객이 고른 사진"}
+        names = {"choices": "직접 고른 컷", "scene_edits": "직접 고친 장면", "client_picks": "고객이 고른 사진",
+                 "ratings": "별점",
+                 "projects": "촬영 건"}
         parts = [f"설정 {self.settings}개"]
         parts += [f"{names.get(k, k)} {n}장" for k, n in self.records.items() if n]
         return " · ".join(parts)
@@ -65,16 +68,18 @@ def collect(settings: QSettings) -> dict:
         "exported": datetime.datetime.now().isoformat(timespec="seconds"),
         "settings": values,
         "records": {name: store.export_entries() for name, store in choice_store.RECORD_STORES.items()},
+        "projects": [p.to_json() for p in projects.load()],
     }
 
 
 def summarize(data: dict) -> Summary:
     settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     records = data.get("records") if isinstance(data.get("records"), dict) else {}
-    return Summary(
-        len(settings),
-        {name: len(records.get(name) or {}) for name in choice_store.RECORD_STORES if isinstance(records.get(name) or {}, dict)},
-    )
+    counts = {name: len(records.get(name) or {}) for name in choice_store.RECORD_STORES
+              if isinstance(records.get(name) or {}, dict)}
+    if isinstance(data.get("projects"), list):
+        counts["projects"] = len(data["projects"])
+    return Summary(len(settings), counts)
 
 
 def export_to(settings: QSettings, path: Path, record: bool = True) -> Summary:
@@ -105,6 +110,25 @@ def read_file(path: Path) -> dict:
     return data
 
 
+def _import_projects(items: object) -> int:
+    """촬영 건 목록을 더한다(같은 폴더의 촬영 건은 가져온 이름으로)."""
+    if not isinstance(items, list):
+        return 0
+    current = projects.load()
+    by_root = {str(p.root): p for p in current}
+    added = 0
+    for item in items:
+        try:
+            project = projects.Project.from_json(item)
+        except (KeyError, ValueError, TypeError):
+            continue
+        by_root[str(project.root)] = project
+        added += 1
+    if added:
+        projects.save(list(by_root.values()))
+    return added
+
+
 def backup_dir() -> Path:
     return score_store.cache_dir().parent / "settings_backup"
 
@@ -124,6 +148,7 @@ def import_from(settings: QSettings, path: Path) -> tuple[Summary, Path]:
     settings.sync()
     records = data.get("records") if isinstance(data.get("records"), dict) else {}
     added = {name: store.import_entries(records.get(name)) for name, store in choice_store.RECORD_STORES.items()}
+    added["projects"] = _import_projects(data.get("projects"))
     summary = Summary(applied, added)
     history.record("설정 가져오기", summary.describe(), Path(path).parent, Path(path))
     return summary, backup

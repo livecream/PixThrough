@@ -240,7 +240,7 @@ def build_proof(
     history.record(
         "고객 셀렉 페이지",
         f"{package.name}: 사진 {len(photos)}장" + (" + 휴대폰용 한 파일" if phone_path else ""),
-        output_dir, package / "index.html",
+        output_dir, package / "index.html", source=Path(folder),
     )
     return ProofResult(package, zip_path, photos, failed, phone_path)
 
@@ -253,6 +253,15 @@ def _data_uri(page_photo: Path, long_edge: int) -> str:
     buffer = io.BytesIO()
     image.save(buffer, "JPEG", quality=PHONE_QUALITY, optimize=True)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def estimate_page_bytes(count: int, long_edge: int, phone_long_edge: int | None = None) -> int:
+    """페이지 폴더 + zip(+휴대폰용 한 파일) 용량 어림(남은 공간 확인용, 넉넉히)."""
+    photos = int(count * long_edge * (long_edge * 2 / 3) * 0.3)
+    total = photos * 2  # 폴더 + 같은 사진이 든 zip
+    if phone_long_edge:
+        total += estimate_phone_bytes(count, phone_long_edge)
+    return total
 
 
 def estimate_phone_bytes(count: int, long_edge: int) -> int:

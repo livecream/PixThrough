@@ -29,6 +29,7 @@ class Entry:
     summary: str
     folder: Path | None
     log_file: Path | None
+    source: Path | None = None  # 작업한 원본 사진 폴더(결과 폴더가 따로일 때 — 촬영 건 진행 상황용)
 
 
 def enable(path: Path | None = None) -> Path:
@@ -47,7 +48,21 @@ def disable() -> None:
     _path = None
 
 
-def record(kind: str, summary: str, folder: Path | None = None, log_file: Path | None = None) -> None:
+def common_folder(paths) -> Path | None:
+    """여러 파일이 담긴 폴더들의 공통 상위 폴더(없으면 None)."""
+    import os
+
+    folders = {str(Path(p).parent) for p in paths}
+    if not folders:
+        return None
+    try:
+        return Path(os.path.commonpath(sorted(folders)))
+    except ValueError:  # 드라이브가 다름(Windows)
+        return None
+
+
+def record(kind: str, summary: str, folder: Path | None = None, log_file: Path | None = None,
+           source: Path | None = None) -> None:
     if _path is None:
         return
     line = json.dumps(
@@ -57,6 +72,7 @@ def record(kind: str, summary: str, folder: Path | None = None, log_file: Path |
             "summary": summary,
             "folder": str(folder) if folder else None,
             "log_file": str(log_file) if log_file else None,
+            "source": str(source) if source else None,
         },
         ensure_ascii=False,
     )
@@ -91,6 +107,7 @@ def load(limit: int = MAX_ENTRIES) -> list[Entry]:
                     str(data["summary"]),
                     Path(data["folder"]) if data.get("folder") else None,
                     Path(data["log_file"]) if data.get("log_file") else None,
+                    Path(data["source"]) if data.get("source") else None,
                 )
             )
         except (ValueError, KeyError, TypeError):

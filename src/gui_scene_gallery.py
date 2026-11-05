@@ -32,6 +32,7 @@ _SCENE_ROLE = Qt.ItemDataRole.UserRole + 1
 KEPT_BORDER = QColor(52, 168, 83)
 FLAGGED_BORDER = QColor(214, 54, 40)
 CLIENT_BADGE = QColor(26, 115, 232)
+BRACKET_BADGE = QColor(142, 68, 173)  # 브라케팅(노출 연사) 묶음
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class GalleryPhoto:
     total: float
     flagged: bool = False  # C컷(흔들림·눈감음)으로 옮길 사진
     client: bool = False  # 고객 셀렉에서 고객이 고른 사진(표시만)
+    bracket: bool = False  # 브라케팅(노출 연사) 묶음의 사진
+    stars: int = 0  # 컬링에서 매긴 별점(0 = 없음)
 
 
 @dataclass(frozen=True)
@@ -167,6 +170,14 @@ class _SceneDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(badge, 4, 4)
             painter.setPen(QColor("white"))
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "고객")
+        if photo.bracket:
+            painter.setFont(font)
+            badge = QRect(box.x() + 6, box.bottom() - 26, 36, 20)
+            painter.setBrush(BRACKET_BADGE)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor("white"))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "AEB")
         if current:
             painter.setPen(QPen(palette.highlight().color(), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -181,7 +192,7 @@ class _SceneDelegate(QStyledItemDelegate):
             Qt.AlignmentFlag.AlignHCenter,
             metrics.elidedText(photo.path.name, Qt.TextElideMode.ElideMiddle, thumb),
         )
-        detail = f"종합 {photo.total:.2f}" + ("  · 직접" if photo.manual else "")
+        detail = ("★" * photo.stars + "  " if photo.stars else "") + f"종합 {photo.total:.2f}" + ("  · 직접" if photo.manual else "")
         painter.setPen(palette.placeholderText().color())
         painter.drawText(name_rect.translated(0, metrics.height()), Qt.AlignmentFlag.AlignHCenter, detail)
 
@@ -191,6 +202,7 @@ class SceneGallery(QListView):
     photo_activated = Signal(int)
     toggle_requested = Signal(int)
     choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
+    rating_requested = Signal(int, int)  # 1~5 = 별점(남김), 0 = 별점 지우기
     compare_requested = Signal(int)  # C = 나란히 비교
     cull_requested = Signal(int)  # F = 전체 화면 컬링
     scene_edit_requested = Signal(int, str)  # S = 여기서 나누기("split"), M = 앞 장면과 합치기("join")
@@ -337,6 +349,10 @@ class SceneGallery(QListView):
             self.toggle_requested.emit(self._current)
         elif key in (Qt.Key.Key_P, Qt.Key.Key_X) and self._current is not None:
             self.choice_requested.emit(self._current, key == Qt.Key.Key_P)
+        elif Qt.Key.Key_0 <= key <= Qt.Key.Key_5 and self._current is not None and not (
+            event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
+        ):
+            self.rating_requested.emit(self._current, int(key) - int(Qt.Key.Key_0))
         elif key == Qt.Key.Key_F and self._current is not None:
             self.cull_requested.emit(self._current)
         elif key == Qt.Key.Key_C and self._current is not None:

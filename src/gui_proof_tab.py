@@ -36,7 +36,8 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_dnd import extract_dropped_folders
-from gui_errors import overlap_warning, show_error
+from file_ops import selection_bytes
+from gui_errors import confirm_space, overlap_warning, show_error
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import (
     load_bool,
@@ -71,6 +72,7 @@ from proof_gallery import (
     ProofResult,
     build_proof,
     copy_selection,
+    estimate_page_bytes,
     estimate_phone_bytes,
     list_photos,
     match_selection,
@@ -450,6 +452,13 @@ class ProofTab(QWidget):
         folder, output = self._input_dir, self._output_dir
         title = self._title_edit.text().strip() or folder.name
         args = self._page_args()
+        try:
+            count = len(scan_folder(folder, args["recursive"], include_unpaired_raw=True))
+        except OSError:
+            count = 0
+        needed = estimate_page_bytes(count, args["long_edge"], args["phone_long_edge"])
+        if not confirm_space(self, output, needed, "저장 폴더"):
+            return
         self._start("build", "페이지 만드는 중...", lambda progress: build_proof(
             folder, output, title, on_progress=progress, **args
         ))
@@ -600,6 +609,8 @@ class ProofTab(QWidget):
             f"{missing}\n계속하시겠습니까?",
         )
         if confirm != QMessageBox.StandardButton.Yes:
+            return
+        if not confirm_space(self, self._copy_dir, selection_bytes([m.source for m in self._matched]), "복사할 폴더"):
             return
         matched, copy_dir, folder = list(self._matched), self._copy_dir, self._input_dir
         self._start("copy", "복사 중...", lambda progress: copy_selection(matched, copy_dir, folder, progress))

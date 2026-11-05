@@ -20,6 +20,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShort
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QProgressDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -35,14 +36,19 @@ from PySide6.QtWidgets import (
 import app_log
 import choice_store
 import history
+import projects
 import settings_transfer
 from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
+from gui_projects import ProjectsDialog
+from gui_shoot_stats import StatsDialog
+from gui_worker import FunctionWorker
+from shoot_stats import collect, compute
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
 from gui_navigation import navigator
 from gui_photo_selection_tab import PhotoSelectionTab
-from gui_settings import clear_recent, make_settings, recent_folders
+from gui_settings import clear_recent, make_settings, pick_directory, recent_folders
 from gui_update import UpdateController
 from version import __version__
 
@@ -51,6 +57,7 @@ from version import __version__
 DEFAULT_SIZE = (1180, 780)
 GEOMETRY_SETTINGS_KEY = "window/geometry"
 PAGE_SETTINGS_KEY = "window/page"
+PROJECT_SETTINGS_KEY = "project/current"  # 마지막으로 연 촬영 건(창 제목)
 SIDEBAR_WIDTH = 200
 _PAGE_ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -68,7 +75,10 @@ MENU = (
     (
         "사진 파일 정리",
         (
-            Page("rename", "시간순 정렬", "여러 바디의 사진·영상을 촬영 시각 순으로 00001부터 번호를 붙입니다.",
+            Page("import", "카드 가져오기",
+                 "메모리카드의 사진·영상을 촬영 날짜별 폴더로 복사하고(백업 드라이브에도), 원본과 같은지 확인합니다.",
+                 QStyle.StandardPixmap.SP_DriveFDIcon),
+            Page("rename", "시간순 정렬", "여러 바디의 사진·영상을 촬영 시각 순으로 번호를 붙여 이름을 바꿉니다(이름 규칙은 직접 정할 수 있음).",
                  QStyle.StandardPixmap.SP_FileDialogDetailedView),
             Page("organize", "폴더 정리", "RAW·영상 분리, 날짜별 정리, 짝 안 맞는 파일·중복 파일·빈 폴더를 정리합니다.",
                  QStyle.StandardPixmap.SP_DirOpenIcon),
@@ -172,6 +182,15 @@ class MainWindow(QMainWindow):
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         file_menu = self.menuBar().addMenu("파일")
+        projects_action = QAction("촬영 건…", self)
+        projects_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        projects_action.setToolTip("촬영 하나를 이름과 폴더로 기억해 이어서 작업합니다")
+        projects_action.triggered.connect(self.show_projects)
+        file_menu.addAction(projects_action)
+        file_menu.addSeparator()
+        current = self._settings.value(PROJECT_SETTINGS_KEY, "")
+        project = next((p for p in projects.load() if p.id == current), None) if current else None
+        self._set_project_title(project.name if project else None)
         self._recent_menu = file_menu.addMenu("최근 폴더")
         self._recent_menu.setToolTipsVisible(True)
         self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -179,6 +198,10 @@ class MainWindow(QMainWindow):
         history_action.setToolTip("앱에서 한 복사·이동·정리 등 파일 작업을 최근 것부터 봅니다")
         history_action.triggered.connect(lambda: HistoryDialog(self).exec())
         file_menu.addAction(history_action)
+        stats_action = QAction("촬영 통계…", self)
+        stats_action.setToolTip("바디·렌즈·시간대·ISO·셔터 분포(베스트컷 미리보기가 있으면 C컷 비율까지)")
+        stats_action.triggered.connect(self.show_shoot_stats)
+        file_menu.addAction(stats_action)
         file_menu.addSeparator()
         client = QAction("고객 선택 결과 가져오기…", self)
         client.setToolTip("고객 셀렉 결과 파일을 베스트컷 화면의 미리보기 사진과 맞춰 \"고객\" 표시를 붙입니다")
@@ -210,6 +233,64 @@ class MainWindow(QMainWindow):
         open_logs.setToolTip("앱 기록(pixthrough.log)과 업데이트 기록(update.log)이 있는 폴더")
         open_logs.triggered.connect(self.open_log_folder)
         help_menu.addAction(open_logs)
+
+    def show_shoot_stats(self) -> None:
+        """베스트컷 미리보기가 있으면 그 사진(C컷·남김 비율 포함), 없으면 폴더를 골라 통계를 본다."""
+        source = self._photo_selection_tab._best_cut_tab.stats_source()
+        if source is not None:
+            photos, flagged, kept = source
+            StatsDialog(compute(photos, flagged, kept), "베스트컷·C컷 화면의 미리보기 사진", self).exec()
+            return
+        directory = pick_directory(self, "통계를 볼 사진 폴더 선택 (하위 폴더 포함)")
+        if not directory:
+            return
+        folder = Path(directory)
+        progress = QProgressDialog("촬영 정보 읽는 중...", "취소", 0, 0, self)
+        progress.setWindowTitle("촬영 통계")
+        progress.setMinimumDuration(300)
+        worker = FunctionWorker(lambda on_progress: collect(folder, True, on_progress), "촬영 통계")
+
+        def on_progress(done: int, total: int) -> None:
+            progress.setMaximum(total)
+            progress.setValue(done)
+
+        def on_done(photos) -> None:
+            progress.close()
+            StatsDialog(compute(photos), f"{folder} (하위 폴더 포함)", self).exec()
+
+        def on_failed(message: str) -> None:
+            progress.close()
+            show_error(self, "촬영 통계를 만들지 못했습니다", message)
+
+        worker.progress.connect(on_progress)
+        worker.finished_ok.connect(on_done)
+        worker.failed.connect(on_failed)
+        worker.cancelled.connect(progress.close)
+        progress.canceled.connect(worker.request_cancel)
+        self._stats_worker = worker
+        worker.start()
+
+    def show_projects(self) -> None:
+        dialog = ProjectsDialog(self)
+        dialog.opened.connect(self._open_project)
+        dialog.exec()
+
+    def _open_project(self, project, page: str) -> None:
+        """촬영 건을 열면 각 화면에 그 폴더를 넣고 다음에 할 화면으로 간다."""
+        if self.is_busy():
+            QMessageBox.warning(self, "작업 진행 중", "작업이 끝난 뒤에 촬영 건을 여세요.")
+            return
+        root = project.root
+        for key in FileOrganizeTab.PAGES:
+            folders = projects.photo_folders(root) if key == "rename" else [root]
+            self._file_organize_tab.page_widget(key).receive_folders(folders, replace=True)
+        self._photo_selection_tab.receive_folders([root], replace=True)
+        self._settings.setValue(PROJECT_SETTINGS_KEY, project.id)
+        self._set_project_title(project.name)
+        self._select_page(page)
+
+    def _set_project_title(self, name: str | None) -> None:
+        self.setWindowTitle(f"PixThrough v{__version__}" + (f" — {name}" if name else ""))
 
     def _export_settings(self) -> None:
         stamp = datetime.date.today().strftime("%Y%m%d")

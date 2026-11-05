@@ -367,3 +367,13 @@ def format_remaining(seconds: float) -> str:
     if minutes < 60:
         return f"약 {minutes}분"
     return f"약 {minutes // 60}시간 {minutes % 60}분" if minutes % 60 else f"약 {minutes // 60}시간"
+
+
+def space_warning(check, what: str) -> str:
+    """disk_space.check 결과로 공간이 모자랄 때 보여줄 경고(충분하거나 모르면 "")."""
+    if check is None or check.enough:
+        return ""
+    return (
+        f"⚠ {what} 드라이브의 남은 공간이 {format_bytes(check.free)}인데 약 {format_bytes(check.needed)}가 "
+        "필요합니다 — 공간을 비우거나 다른 드라이브를 고르세요."
+    )

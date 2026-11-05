@@ -194,3 +194,35 @@ def test_select_best_keeps_nothing_when_every_photo_is_excluded(tmp_path):
 
     assert selection.best is None
     assert selection.kept_indices == []
+
+
+def test_eyes_mode_min_uses_lowest_person_and_badcut_sees_it(tmp_path):
+    """단체 사진 옵션: 한 명이라도 눈 감은 컷은 평균이 높아도 뒤로 밀리고, C컷 판정도 그 값으로."""
+    from dataclasses import replace
+
+    from scoring import PhotoScore
+    from selector import EYES_MIN, apply_eyes_mode
+
+    group = PhotoScore(path=tmp_path / "a.jpg", sharpness=1.0, exposure=1.0, face=0.8, total=1.0,
+                       face_min=0.1, face_count=5)
+    single = replace(group, path=tmp_path / "b.jpg", face=0.7, face_min=0.7, face_count=1)
+    no_face = replace(group, path=tmp_path / "c.jpg", face=None, face_min=None, face_count=0)
+    assert apply_eyes_mode([group, single, no_face], "mean") == [group, single, no_face]
+    mins = apply_eyes_mode([group, single, no_face], EYES_MIN)
+    assert [s.face for s in mins] == [0.1, 0.7, None]
+
+
+def test_select_best_eyes_mode_changes_pick(tmp_path):
+    from scoring import PhotoScore
+    from selector import EYES_MIN
+
+    a = _make_flat(tmp_path / "a.png")
+    b = _make_flat(tmp_path / "b.png")
+    scene = [_meta(a, 0), _meta(b, 1)]
+    def entry(path, face, face_min):
+        stat = path.stat()
+        return (stat.st_mtime, stat.st_size, PhotoScore(path=path, sharpness=10.0, exposure=0.5, face=face,
+                                                         total=10.0, face_min=face_min, face_count=3))
+    cache = {a: entry(a, 0.9, 0.05), b: entry(b, 0.8, 0.75)}  # a: 평균은 높지만 한 명이 눈 감음
+    assert select_best(scene, cache=cache).best.path == a
+    assert select_best(scene, cache=cache, eyes_mode=EYES_MIN).best.path == b
