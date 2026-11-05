@@ -1,8 +1,3 @@
-import pytest
-
-pytest.importorskip("PySide6.QtWidgets")
-
-
 def test_saved_values_fall_back_to_defaults(tmp_path):
     from PySide6.QtCore import QSettings
 

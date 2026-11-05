@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication
+
+if TYPE_CHECKING:  # QtGui·QtWidgets는 쓸 때 읽는다(화면 없는 테스트 환경 — libEGL 없음)
+    from PySide6.QtWidgets import QApplication
 
 FONT_SCALE_KEY = "appearance/font_scale"
 THEME_KEY = "appearance/theme"
@@ -28,8 +31,10 @@ def theme(settings: QSettings) -> str:
     return value if value in dict(THEMES) else "system"
 
 
-def apply_font_scale(app: QApplication, percent: int) -> None:
+def apply_font_scale(app: "QApplication", percent: int) -> None:
     """앱 기본 글자 크기를 처음 크기의 percent%로(여러 번 불러도 처음 크기 기준)."""
+    from PySide6.QtGui import QFont
+
     base = app.property(_BASE_PROPERTY)
     if base is None:
         base = app.font().pointSizeF()
@@ -39,7 +44,7 @@ def apply_font_scale(app: QApplication, percent: int) -> None:
     app.setFont(font)
 
 
-def apply_theme(app: QApplication, name: str) -> bool:
+def apply_theme(app: "QApplication", name: str) -> bool:
     """테마를 바꾼다. 이 Qt가 지원하지 않으면(6.8 미만) False."""
     hints = app.styleHints()
     if not hasattr(hints, "setColorScheme"):
@@ -49,6 +54,6 @@ def apply_theme(app: QApplication, name: str) -> bool:
     return True
 
 
-def apply_saved(app: QApplication, settings: QSettings) -> None:
+def apply_saved(app: "QApplication", settings: QSettings) -> None:
     apply_font_scale(app, font_scale(settings))
     apply_theme(app, theme(settings))
