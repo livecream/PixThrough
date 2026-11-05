@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,10 +26,34 @@ from PySide6.QtWidgets import (
 
 import history
 import projects
+from batch_score import prescore
+from gui_worker import CancellableWorker, PreviewCancelled
 from gui_settings import pick_directory
 from gui_widgets import compact, make_primary
 
 _ID_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class _PrescoreWorker(CancellableWorker):
+    progress = Signal(int, int, str, int, int)
+    finished_ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, folders: list[Path]) -> None:
+        super().__init__()
+        self._folders = folders
+
+    def run(self) -> None:
+        def on_progress(*args) -> None:
+            self.progress.emit(*args)
+            self.check_cancel()
+
+        try:
+            self.finished_ok.emit(prescore(self._folders, on_progress))
+        except PreviewCancelled:
+            self.cancelled.emit()
+        except Exception as e:  # noqa: BLE001 - 화면에 알림
+            self.failed.emit(str(e))
 _COLUMNS = ("촬영 건", "진행", "마지막 작업", "폴더")
 
 
@@ -53,7 +78,7 @@ class ProjectsDialog(QDialog):
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.verticalHeader().setVisible(False)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -77,6 +102,13 @@ class ProjectsDialog(QDialog):
         self._remove_button = compact(QPushButton("목록에서 지우기"))
         self._remove_button.setToolTip("<p>목록에서만 지웁니다. 사진 폴더와 파일은 그대로입니다.</p>")
         self._remove_button.clicked.connect(self._remove)
+        self._prescore_button = compact(QPushButton("미리 채점"))
+        self._prescore_button.setToolTip(
+            "<p>고른 촬영 건(여러 개는 Ctrl/⌘·Shift로)의 사진을 차례로 채점해 둡니다. 다 끝나면 열 때 "
+            "베스트컷 결과가 바로 나옵니다 — 밤새 돌려 두기 좋습니다. 사진 파일은 그대로입니다.</p>"
+        )
+        self._prescore_button.clicked.connect(self._prescore)
+        self._worker = None
         close_button = compact(QPushButton("닫기"))
         close_button.clicked.connect(self.reject)
         buttons = QHBoxLayout()
@@ -84,6 +116,7 @@ class ProjectsDialog(QDialog):
         buttons.addWidget(self._rename_button)
         buttons.addWidget(self._folder_button)
         buttons.addWidget(self._remove_button)
+        buttons.addWidget(self._prescore_button)
         buttons.addStretch(1)
         buttons.addWidget(close_button)
         buttons.addWidget(self._open_button)
@@ -131,17 +164,75 @@ class ProjectsDialog(QDialog):
             self._table.selectRow(index)
         self._refresh_buttons()
 
+    def _selected_all(self) -> list[projects.Project]:
+        ids = []
+        for item in self._table.selectedItems():
+            project_id = item.data(_ID_ROLE)
+            if project_id not in ids:
+                ids.append(project_id)
+        by_id = {p.id: p for p in self._projects}
+        return [by_id[i] for i in ids if i in by_id]
+
     def _selected(self) -> projects.Project | None:
-        items = self._table.selectedItems()
-        if not items:
-            return None
-        project_id = items[0].data(_ID_ROLE)
-        return next((p for p in self._projects if p.id == project_id), None)
+        """하나만 골랐을 때 그 촬영 건(여럿이면 None — 열기·이름 바꾸기는 하나만)."""
+        chosen = self._selected_all()
+        return chosen[0] if len(chosen) == 1 else None
 
     def _refresh_buttons(self) -> None:
         project = self._selected()
         for button in (self._open_button, self._rename_button, self._folder_button, self._remove_button):
             button.setEnabled(project is not None)
+        count = len(self._selected_all())
+        self._prescore_button.setText(f"미리 채점 ({count}개)" if count > 1 else "미리 채점")
+        self._prescore_button.setEnabled(count > 0 and self._worker is None)
+
+    def _prescore(self) -> None:
+        chosen = [p for p in self._selected_all() if p.root.exists()]
+        if not chosen:
+            QMessageBox.warning(self, "미리 채점", "고른 촬영 건의 폴더가 없습니다(옮겨졌거나 드라이브가 분리됨).")
+            return
+        progress = QProgressDialog("준비 중...", "멈추기", 0, 0, self)
+        progress.setWindowTitle("미리 채점")
+        progress.setMinimumWidth(460)
+        progress.setMinimumDuration(0)
+        names = [p.name for p in chosen]
+        folders = [p.root for p in chosen]
+        worker = _PrescoreWorker(folders)
+
+        def on_progress(number: int, count: int, stage: str, done: int, total: int) -> None:
+            progress.setLabelText(f"촬영 건 {number}/{count} · {names[number - 1]}\n{stage} ({done}/{total})")
+            progress.setMaximum(max(total, 1))
+            progress.setValue(done)
+
+        def finish(message: str) -> None:
+            progress.close()
+            self._worker = None
+            self._refresh_buttons()
+            QMessageBox.information(self, "미리 채점", message)
+
+        def on_done(results) -> None:
+            lines = []
+            for name, result in zip(names, results):
+                if result.error:
+                    lines.append(f"· {name}: 읽지 못함 — {result.error}")
+                else:
+                    lines.append(f"· {name}: {result.photos}장" + (f" (점수 못 냄 {result.failed}장)" if result.failed else ""))
+            finish("채점을 마쳤습니다. 이제 열면 베스트컷 결과가 바로 나옵니다.\n" + "\n".join(lines))
+
+        worker.progress.connect(on_progress)
+        worker.finished_ok.connect(on_done)
+        worker.failed.connect(lambda message: finish(f"채점하다 멈췄습니다: {message}\n그때까지 계산한 점수는 저장돼 있습니다."))
+        worker.cancelled.connect(lambda: finish("멈췄습니다. 그때까지 계산한 점수는 저장돼 있어 다음에 이어서 계산합니다."))
+        progress.canceled.connect(worker.request_cancel)
+        self._worker = worker
+        self._refresh_buttons()
+        worker.start()
+
+    def reject(self) -> None:  # noqa: D102 - 채점 중이면 닫지 않는다(스레드가 끝나야 함)
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "미리 채점 중", "채점을 멈춘 뒤에 닫으세요.")
+            return
+        super().reject()
 
     def _new(self) -> None:
         directory = pick_directory(self, "촬영 건 사진 폴더 선택 (가장 위 폴더)")
