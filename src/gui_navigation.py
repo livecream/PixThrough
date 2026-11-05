@@ -26,11 +26,47 @@ PAGE_LABELS = {
 }
 
 
+# 한 번에 처리(편의 2, 사용자 결정: 단계마다 확인): 카드 가져오기 → 시간순 정렬 → 베스트컷 미리보기
+FLOW_STEPS = ("import", "rename", "selection")
+FLOW_TITLES = {"import": "카드 가져오기", "rename": "시간순 정렬", "selection": "베스트컷 미리보기"}
+
+
 class Navigator(QObject):
     requested = Signal(str, object)  # 화면 이름, 넘길 폴더 목록(list[Path])
+    # 한 번에 처리: 다음 화면으로 폴더를 넣고 그 화면의 미리보기까지(파일을 바꾸는 단계는 화면의 확인 그대로)
+    flow_requested = Signal(str, object)  # 화면 이름, 폴더
+    flow_changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flow_step: str | None = None  # 한 번에 처리 중이면 지금 단계, 아니면 None
+        self.flow_note = ""
 
     def go(self, page: str, folders: list[Path]) -> None:
         self.requested.emit(page, list(folders))
+
+    # --- 한 번에 처리 -------------------------------------------------------------
+    def start_flow(self) -> None:
+        self.flow_step = FLOW_STEPS[0]
+        self.flow_note = ""
+        self.flow_changed.emit()
+
+    def stop_flow(self, note: str = "") -> None:
+        self.flow_step = None
+        self.flow_note = note
+        self.flow_changed.emit()
+
+    def flow_step_done(self, step: str, folders: list[Path]) -> None:
+        """화면이 자기 단계를 끝냈을 때 부른다. 한 번에 처리 중이면 다음 단계 화면으로 넘어간다."""
+        if self.flow_step != step:
+            return
+        index = FLOW_STEPS.index(step)
+        if index + 1 >= len(FLOW_STEPS):
+            self.stop_flow("마쳤습니다 — 이제 베스트컷을 골라 복사하세요.")
+            return
+        self.flow_step = FLOW_STEPS[index + 1]
+        self.flow_changed.emit()
+        self.flow_requested.emit(self.flow_step, list(folders))
 
 
 _navigator: Navigator | None = None

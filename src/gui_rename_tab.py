@@ -32,7 +32,7 @@ from clock_sync import format_offset
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
 from gui_errors import confirm_space, overlap_warning, show_error
-from gui_navigation import NextStep, NextStepBar
+from gui_navigation import NextStep, NextStepBar, navigator
 from gui_preview_pane import PreviewPane
 from gui_reveal import add_file_actions
 from gui_widgets import (
@@ -702,6 +702,7 @@ class RenameTab(QWidget):
             steps += [NextStep("proof", folders), NextStep("organize", folders)]
         self._next_steps.set_steps(steps)
         self._refresh()
+        navigator().flow_step_done("rename", list(folders))
 
     # --- 공통 ---------------------------------------------------------------------
     def _cancel(self) -> None:

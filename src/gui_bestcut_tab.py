@@ -137,7 +137,7 @@ from gui_scene_gallery import (
     SceneGallery,
 )
 from gui_input_folders import InputFolderPanel
-from gui_navigation import NextStep, NextStepBar
+from gui_navigation import NextStep, NextStepBar, navigator
 from gui_weight_tuning import WeightTuningDialog, weights_differ
 from gui_reveal import add_file_actions, start_file_drag
 from gui_widgets import (
@@ -1370,6 +1370,7 @@ class BestCutTab(QWidget):
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
         done_text = "지난 결과를 다시 띄웠습니다" if self._restoring else "완료"
+        navigator().flow_step_done("selection", list(self._input_dirs))
         self._status_label.setText(done_text)
         self._restoring = False
         save_bool(self._settings, RESTORE_LAST_KEY, True)
