@@ -179,6 +179,16 @@ class MainWindow(QMainWindow):
         self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
         navigator().requested.connect(self._navigate)
+        # 화면 바꾸기 Ctrl(⌘)+1~6(왼쪽 메뉴 순서), 지금 화면 미리보기 Ctrl(⌘)+Enter (편의 6)
+        keys = [p.key for _title, pages in MENU for p in pages]
+        for number, key in enumerate(keys, start=1):
+            QShortcut(QKeySequence(f"Ctrl+{number}"), self, activated=lambda k=key: self._select_page(k))
+        for row in range(self._menu.count()):
+            data = self._menu.item(row).data(_PAGE_ROLE)
+            if data is not None:
+                self._menu.item(row).setToolTip(f"{data[1].description} (Ctrl/⌘+{keys.index(data[1].key) + 1})")
+        for sequence in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(sequence), self, activated=self._run_current_preview)
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         file_menu = self.menuBar().addMenu("파일")
@@ -408,6 +418,17 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is open_button:
             self.open_log_folder()
+
+    def _current_page_widget(self):
+        if self._current_page in FileOrganizeTab.PAGES:
+            return self._file_organize_tab.page_widget(self._current_page)
+        return self._photo_selection_tab._best_cut_tab
+
+    def _run_current_preview(self) -> None:
+        """지금 화면의 "미리보기"를 누른다(파일을 바꾸지 않는 단계만 — 실행·복사 버튼은 누르지 않음)."""
+        button = getattr(self._current_page_widget(), "_preview_button", None)
+        if button is not None and button.isEnabled() and button.isVisible():
+            button.click()
 
     def _select_page(self, key: str) -> None:
         """메뉴에서 key 화면을 고른다(없는 이름이면 첫 화면)."""
