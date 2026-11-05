@@ -15,11 +15,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTranslator, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTimer, QTranslator, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QProgressDialog,
     QHBoxLayout,
     QLabel,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QStackedWidget,
     QStyle,
     QVBoxLayout,
@@ -41,12 +43,15 @@ import settings_transfer
 from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
+from gui_appearance import (
+    FONT_SCALE_KEY, FONT_SCALES, THEME_KEY, THEMES, apply_font_scale, apply_saved, apply_theme, font_scale, theme,
+)
 from gui_projects import ProjectsDialog
 from gui_shoot_stats import StatsDialog
 from gui_worker import FunctionWorker
 from shoot_stats import collect, compute
 from gui_help import ShortcutsDialog, WelcomeDialog, remember_welcome, should_show_welcome
-from gui_navigation import navigator
+from gui_navigation import FLOW_STEPS, FLOW_TITLES, navigator
 from gui_photo_selection_tab import PhotoSelectionTab
 from gui_settings import clear_recent, make_settings, pick_directory, recent_folders
 from gui_update import UpdateController
@@ -164,7 +169,26 @@ class MainWindow(QMainWindow):
 
         for label in (self._title, self._subtitle):
             label.setContentsMargins(9, 0, 9, 0)  # 아래 화면들의 안쪽 여백과 맞춤
+        # 한 번에 처리 중이면 위에 진행 줄(단계 ✓ · 지금 · 남은 것, 그만하기)
+        self._flow_bar = QFrame()
+        self._flow_bar.setObjectName("flowBar")
+        self._flow_bar.setStyleSheet(
+            "#flowBar { background: rgba(26,115,232,0.12); border: 1px solid rgba(26,115,232,0.45); border-radius: 6px; }"
+        )
+        self._flow_label = QLabel()
+        self._flow_label.setWordWrap(True)
+        self._flow_stop = QPushButton("그만하기")
+        self._flow_stop.clicked.connect(lambda: navigator().stop_flow())
+        self._flow_close = QPushButton("닫기")
+        self._flow_close.clicked.connect(self._flow_bar.hide)
+        flow_row = QHBoxLayout(self._flow_bar)
+        flow_row.setContentsMargins(10, 4, 6, 4)
+        flow_row.addWidget(self._flow_label, stretch=1)
+        flow_row.addWidget(self._flow_stop)
+        flow_row.addWidget(self._flow_close)
+        self._flow_bar.hide()
         content = QVBoxLayout()
+        content.addWidget(self._flow_bar)
         content.addWidget(self._title)
         content.addWidget(self._subtitle)
         content.addWidget(self._pages, stretch=1)
@@ -179,6 +203,18 @@ class MainWindow(QMainWindow):
         self._select_page(self._settings.value(PAGE_SETTINGS_KEY, "rename"))
 
         navigator().requested.connect(self._navigate)
+        navigator().flow_requested.connect(self._continue_flow)
+        navigator().flow_changed.connect(self._update_flow_bar)
+        # 화면 바꾸기 Ctrl(⌘)+1~6(왼쪽 메뉴 순서), 지금 화면 미리보기 Ctrl(⌘)+Enter (편의 6)
+        keys = [p.key for _title, pages in MENU for p in pages]
+        for number, key in enumerate(keys, start=1):
+            QShortcut(QKeySequence(f"Ctrl+{number}"), self, activated=lambda k=key: self._select_page(k))
+        for row in range(self._menu.count()):
+            data = self._menu.item(row).data(_PAGE_ROLE)
+            if data is not None:
+                self._menu.item(row).setToolTip(f"{data[1].description} (Ctrl/⌘+{keys.index(data[1].key) + 1})")
+        for sequence in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(sequence), self, activated=self._run_current_preview)
 
         self.updates = UpdateController(self, is_busy=self.is_busy)
         file_menu = self.menuBar().addMenu("파일")
@@ -216,6 +252,7 @@ class MainWindow(QMainWindow):
         import_settings.setToolTip("내보낸 설정 파일을 이 컴퓨터에 가져옵니다(가져오기 전 상태는 백업)")
         import_settings.triggered.connect(self._import_settings)
         file_menu.addAction(import_settings)
+        self._build_view_menu()
         help_menu = self.menuBar().addMenu("도움말")
         welcome = QAction("처음 사용 안내…", self)
         welcome.triggered.connect(self.show_welcome)
@@ -409,6 +446,96 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is open_button:
             self.open_log_folder()
 
+    def _build_view_menu(self) -> None:
+        """보기 › 글자 크기·테마(편의 7) — 고르면 바로 바꾸고 기억한다."""
+        view_menu = self.menuBar().addMenu("보기")
+        size_menu = view_menu.addMenu("글자 크기")
+        size_group = QActionGroup(self)
+        current = font_scale(self._settings)
+        for percent, label in FONT_SCALES:
+            action = size_menu.addAction(f"{label} ({percent}%)")
+            action.setCheckable(True)
+            action.setChecked(percent == current)
+            action.triggered.connect(lambda _checked=False, p=percent: self._set_font_scale(p))
+            size_group.addAction(action)
+        theme_menu = view_menu.addMenu("테마")
+        theme_group = QActionGroup(self)
+        current_theme = theme(self._settings)
+        for key, label in THEMES:
+            action = theme_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == current_theme)
+            action.triggered.connect(lambda _checked=False, k=key: self._set_theme(k))
+            theme_group.addAction(action)
+
+    def _set_font_scale(self, percent: int) -> None:
+        self._settings.setValue(FONT_SCALE_KEY, percent)
+        apply_font_scale(QApplication.instance(), percent)
+        self._apply_title_fonts()
+
+    def _set_theme(self, name: str) -> None:
+        self._settings.setValue(THEME_KEY, name)
+        if not apply_theme(QApplication.instance(), name):
+            QMessageBox.information(self, "테마", "이 버전의 화면 라이브러리는 테마 바꾸기를 지원하지 않아, 다음에 켤 때도 시스템 설정을 따릅니다.")
+
+    def _apply_title_fonts(self) -> None:
+        """제목·메뉴 묶음 글자는 직접 정한 크기라 앱 글자 크기에 맞춰 다시 정한다."""
+        base = QApplication.instance().font()
+        title_font = QFont(base)
+        title_font.setPointSizeF(base.pointSizeF() * 1.35)
+        title_font.setBold(True)
+        self._title.setFont(title_font)
+        header_font = QFont(base)
+        header_font.setBold(True)
+        header_font.setPointSizeF(max(8.0, base.pointSizeF() - 1))
+        for row in range(self._menu.count()):
+            item = self._menu.item(row)
+            if item.data(_PAGE_ROLE) is None:
+                item.setFont(header_font)
+
+    def _update_flow_bar(self) -> None:
+        nav = navigator()
+        if nav.flow_step is None:
+            if nav.flow_note:
+                self._flow_label.setText(f"한 번에 처리 · {nav.flow_note}")
+                self._flow_stop.hide()
+                self._flow_close.show()
+                self._flow_bar.show()
+            else:
+                self._flow_bar.hide()
+            return
+        current = FLOW_STEPS.index(nav.flow_step)
+        parts = []
+        for i, step in enumerate(FLOW_STEPS):
+            title = FLOW_TITLES[step]
+            parts.append(f"✓ {title}" if i < current else f"<b>▶ {title}</b>" if i == current else title)
+        hint = {
+            "import": "표를 확인하고 \"가져오기\"를 누르세요",
+            "rename": "표를 확인하고 \"적용\"을 누르세요",
+            "selection": "미리보기가 끝나면 마칩니다",
+        }[nav.flow_step]
+        self._flow_label.setText(f"한 번에 처리: {'  →  '.join(parts)}<br><small>{hint}</small>")
+        self._flow_stop.show()
+        self._flow_close.hide()
+        self._flow_bar.show()
+
+    def _continue_flow(self, page: str, folders: list) -> None:
+        """한 번에 처리의 다음 단계: 그 화면에 폴더를 넣고 미리보기까지(실행은 사용자가 확인한 뒤)."""
+        self._navigate(page, folders, replace=True)
+        if self._current_page == page:
+            QTimer.singleShot(0, self._run_current_preview)
+
+    def _current_page_widget(self):
+        if self._current_page in FileOrganizeTab.PAGES:
+            return self._file_organize_tab.page_widget(self._current_page)
+        return self._photo_selection_tab._best_cut_tab
+
+    def _run_current_preview(self) -> None:
+        """지금 화면의 "미리보기"를 누른다(파일을 바꾸지 않는 단계만 — 실행·복사 버튼은 누르지 않음)."""
+        button = getattr(self._current_page_widget(), "_preview_button", None)
+        if button is not None and button.isEnabled() and button.isVisible():
+            button.click()
+
     def _select_page(self, key: str) -> None:
         """메뉴에서 key 화면을 고른다(없는 이름이면 첫 화면)."""
         if key in PhotoSelectionTab.LEGACY_PAGES:  # 예전 "베스트컷 선별"/"C컷 정리" 메뉴
@@ -477,6 +604,7 @@ def main() -> None:
         pass  # 기록 파일을 못 만들어도(권한 등) 앱은 그대로 쓴다
     app = QApplication(sys.argv)
     install_korean_translation(app)
+    apply_saved(app, make_settings())  # 보기 › 글자 크기·테마
     try:
         history.enable()  # 파일 작업 기록(파일 › 작업 기록)
     except OSError:

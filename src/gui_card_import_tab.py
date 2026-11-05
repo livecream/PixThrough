@@ -43,7 +43,7 @@ from card_import import (
 from gui_dnd import extract_dropped_folders
 from gui_errors import confirm_space, folders_overlap, show_error
 from gui_format import format_bytes, space_warning
-from gui_navigation import NextStep, NextStepBar
+from gui_navigation import NextStep, NextStepBar, navigator
 from gui_reveal import add_file_actions
 from gui_settings import load_bool, load_folder, make_settings, pick_directory, save_bool, save_folder
 from gui_widgets import (
@@ -118,6 +118,12 @@ class CardImportTab(QWidget):
         self._preview_button = make_primary(QPushButton("미리보기"))
         self._preview_button.setToolTip("<p>무엇을 어디로 복사할지 보여줍니다. 아직 아무것도 복사하지 않습니다.</p>")
         self._preview_button.clicked.connect(self._run_preview)
+        self._flow_button = compact(QPushButton("한 번에 처리…"))
+        self._flow_button.setToolTip(
+            "<p>카드 가져오기 → 시간순 정렬 → 베스트컷 미리보기를 이어서 진행합니다. 단계마다 미리보기 표를 "
+            "보여주고, 파일을 바꾸는 단계(가져오기·이름 바꾸기)는 지금처럼 확인을 누른 뒤에 실행합니다.</p>"
+        )
+        self._flow_button.clicked.connect(self._start_flow)
         self._cancel_button = compact(QPushButton("취소"))
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self._cancel)
@@ -179,6 +185,7 @@ class CardImportTab(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._preview_button)
+        button_row.addWidget(self._flow_button)
         button_row.addWidget(self._cancel_button)
         button_row.addSpacing(12)
         button_row.addLayout(status_row(self._progress_bar, self._status_label), stretch=1)
@@ -299,6 +306,15 @@ class CardImportTab(QWidget):
             self._on_plan_done,
         )
 
+    def _start_flow(self) -> None:
+        if self._busy:
+            return
+        if self._source is None or self._destination is None:
+            QMessageBox.warning(self, "폴더 필요", "카드와 가져올 곳을 먼저 고르세요.")
+            return
+        navigator().start_flow()
+        self._run_preview()
+
     def _on_plan_done(self, plan: ImportPlan) -> None:
         self._set_busy(False)
         self._plan = plan
@@ -414,6 +430,12 @@ class CardImportTab(QWidget):
                 if self._table.item(i, 0).data(_PATH_ROLE) in failed:
                     paint_row(self._table, i, FLAGGED_ROW)
         dates = sorted({r.destination.parent for r in results if r.destination is not None and not r.error})
+        if navigator().flow_step == "import":
+            if outcome.errors or not dates:
+                navigator().stop_flow("가져오지 못한 파일이 있어 멈췄습니다 — 확인한 뒤 이어서 진행하세요.")
+            else:
+                navigator().flow_step_done("import", dates)
+                return
         if dates:
             self._next_steps.set_steps([
                 NextStep("rename", tuple(dates), "가져온 날짜 폴더"),
@@ -438,6 +460,8 @@ class CardImportTab(QWidget):
         self._status_label.setText("멈추는 중...")
 
     def _on_cancelled(self) -> None:
+        if navigator().flow_step == "import":
+            navigator().stop_flow("취소해서 멈췄습니다.")
         importing = self._importing
         self._importing = False
         self._set_busy(False)

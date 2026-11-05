@@ -21,7 +21,7 @@ from typing import Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import QAbstractItemView, QListView, QStyledItemDelegate
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QListView, QStyledItemDelegate
 
 THUMB = 150  # 썸네일 칸 한 변(처음 값)
 THUMB_MIN, THUMB_MAX, THUMB_STEP = 100, 240, 20
@@ -203,6 +203,7 @@ class SceneGallery(QListView):
     toggle_requested = Signal(int)
     choice_requested = Signal(int, bool)  # P = 넣기(True), X = 빼기(False)
     rating_requested = Signal(int, int)  # 1~5 = 별점(남김), 0 = 별점 지우기
+    drag_requested = Signal(int, bool)  # 사진을 끌어 다른 앱으로(줄 번호, Shift = 보이는 남기는 컷 전부)
     compare_requested = Signal(int)  # C = 나란히 비교
     cull_requested = Signal(int)  # F = 전체 화면 컬링
     scene_edit_requested = Signal(int, str)  # S = 여기서 나누기("split"), M = 앞 장면과 합치기("join")
@@ -311,8 +312,25 @@ class SceneGallery(QListView):
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         photo = self._photo_at(event.position().toPoint())
         self.setFocus()
+        self._press = None
         if photo is not None:
             self._choose(photo.row_index, scroll=False)
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._press = (event.position().toPoint(), photo.row_index)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        press = getattr(self, "_press", None)
+        if press is None or not event.buttons() & Qt.MouseButton.LeftButton:
+            return
+        if (event.position().toPoint() - press[0]).manhattanLength() < QApplication.startDragDistance():
+            return
+        self._press = None
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        self.drag_requested.emit(press[1], shift)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override signature
+        self._press = None
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         photo = self._photo_at(event.position().toPoint())

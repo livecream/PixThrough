@@ -30,10 +30,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QInputDialog,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -135,9 +137,9 @@ from gui_scene_gallery import (
     SceneGallery,
 )
 from gui_input_folders import InputFolderPanel
-from gui_navigation import NextStep, NextStepBar
+from gui_navigation import NextStep, NextStepBar, navigator
 from gui_weight_tuning import WeightTuningDialog, weights_differ
-from gui_reveal import add_file_actions
+from gui_reveal import add_file_actions, start_file_drag
 from gui_widgets import (
     BAR_ROLE,
     BarDelegate,
@@ -211,6 +213,8 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+# 지난 미리보기 결과 자동 복원(사용자 결정: 켜자마자 자동) — 미리보기가 끝나면 켜고, 입력 폴더를 바꾸면 끈다
+RESTORE_LAST_KEY = "bestcut/restore_last"
 KEEP_BRACKETS_SETTINGS_KEY = "bestcut/keep_brackets"  # 브라케팅 묶음 통째로 남기기(기본 꺼짐)
 EYES_MIN_SETTINGS_KEY = "bestcut/eyes_min"  # 단체 사진: 눈뜸은 가장 낮은 사람 기준(기본 꺼짐)
 XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
@@ -579,6 +583,9 @@ class BestCutTab(QWidget):
         self._owns_inputs = inputs is None
         self._inputs = inputs if inputs is not None else InputFolderPanel()
         self._inputs.changed.connect(self._invalidate_preview)
+        self._inputs.changed.connect(lambda *_: save_bool(self._settings, RESTORE_LAST_KEY, False))
+        self._auto_restore_done = False  # 이번에 앱을 켠 뒤 지난 결과를 한 번만 다시 띄운다
+        self._restoring = False
         self._output_dir: Path | None = None
         self._badcut_dir: Path | None = None  # C컷을 옮길 폴더
         # 실제 판정에 쓰는 C컷 기준. 스핀박스는 반올림해 보여주기만 하므로(기준 사진 눈뜸
@@ -925,7 +932,21 @@ class BestCutTab(QWidget):
         self._join_action.triggered.connect(lambda: self._edit_scene_at_selected(JOIN))
         self._reset_scenes_action = QAction("직접 고친 장면 모두 되돌리기", self)
         self._reset_scenes_action.triggered.connect(self._reset_scene_edits)
+        # 찾기·장면으로 가기(편의 5): 파일 이름 일부나 장면 번호 — 같은 글자로 다시 하면 다음 사진으로
+        self._goto_action = QAction("장면·사진으로 가기… (Ctrl+G)", self)
+        self._goto_action.setShortcut(QKeySequence("Ctrl+G"))
+        self._goto_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._goto_action.triggered.connect(self._go_to)
+        self.addAction(self._goto_action)
+        find_action = QAction(self)
+        find_action.setShortcut(QKeySequence.StandardKey.Find)
+        find_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        find_action.triggered.connect(self._go_to)
+        self.addAction(find_action)
+        self._last_goto = ""
         scene_menu = QMenu(self)
+        scene_menu.addAction(self._goto_action)
+        scene_menu.addSeparator()
         scene_menu.addAction(self._split_action)
         scene_menu.addAction(self._join_action)
         scene_menu.addSeparator()
@@ -958,6 +979,9 @@ class BestCutTab(QWidget):
         self._gallery.toggle_requested.connect(self._toggle_row)
         self._gallery.choice_requested.connect(self._choose_row)
         self._gallery.rating_requested.connect(self._rate_row)
+        self._gallery.drag_requested.connect(self._drag_photos)
+        self._table.viewport().installEventFilter(self)  # 표에서도 끌어내기
+        self._table_press: tuple | None = None
         self._gallery.compare_requested.connect(self._open_compare)
         self._gallery.cull_requested.connect(self._open_cull)
         self._gallery.scene_edit_requested.connect(self._edit_scene)
@@ -1345,7 +1369,11 @@ class BestCutTab(QWidget):
     ) -> None:
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
-        self._status_label.setText("완료")
+        done_text = "지난 결과를 다시 띄웠습니다" if self._restoring else "완료"
+        navigator().flow_step_done("selection", list(self._input_dirs))
+        self._status_label.setText(done_text)
+        self._restoring = False
+        save_bool(self._settings, RESTORE_LAST_KEY, True)
         log.info(
             "미리보기 끝: 사진 %d장, 장면 %d개, 점수 실패 %d장, %.1f초",
             len(rows), len({r.scene_id for r in rows}), sum(1 for r in rows if _is_unscored(r)),
@@ -1369,7 +1397,7 @@ class BestCutTab(QWidget):
         self._show_rows(rows, grouping)
         self._refresh_client_picks()  # 거르기 칸의 고객 선택 수
         if restored:
-            self._status_label.setText(f"완료 · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
+            self._status_label.setText(f"{done_text} · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
         # 미리보기가 도는 사이에 묶는 기준을 바꿨으면, 끝난 뒤 새 기준으로 다시 묶는다.
         if grouping != self._current_grouping():
             self._regroup_timer.start()
@@ -1451,6 +1479,78 @@ class BestCutTab(QWidget):
     def _index_at(self, table_row: int) -> int | None:
         item = self._table.item(table_row, 1)
         return item.data(_INDEX_ROLE) if item is not None else None
+
+    def _drag_photos(self, index: int, all_kept: bool) -> None:
+        """사진을 다른 앱으로 끌어낸다. Shift를 누르고 끌면 지금 보이는 남기는 컷 전부(파일은 그대로)."""
+        if not self._rows or index >= len(self._rows):
+            return
+        if all_kept:
+            paths = [r.path for r in self._rows if r.selected and self._row_visible(r)]
+        else:
+            paths = [self._rows[index].path]
+        pixmap = self._thumbnail_pixmap(self._rows[index].path, GALLERY_THUMB)
+        if all_kept and paths:
+            self._status_label.setText(f"남기는 컷 {len(paths)}장을 끌어 놓는 중…")
+        start_file_drag(self, paths, pixmap)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override signature
+        """표 줄을 끌면 그 사진(Shift: 보이는 남기는 컷 전부)을 다른 앱으로."""
+        if watched is self._table.viewport():
+            kind = event.type()
+            if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                item = self._table.itemAt(event.position().toPoint())
+                self._table_press = (event.position().toPoint(), self._index_at(item.row())) if item else None
+            elif kind == QEvent.Type.MouseMove and getattr(self, "_table_press", None) is not None \
+                    and event.buttons() & Qt.MouseButton.LeftButton:
+                start, index = self._table_press
+                if (event.position().toPoint() - start).manhattanLength() >= QApplication.startDragDistance():
+                    self._table_press = None
+                    if index is not None:
+                        self._drag_photos(index, bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+                    return True
+            elif kind == QEvent.Type.MouseButtonRelease:
+                self._table_press = None
+        return super().eventFilter(watched, event)
+
+    def _go_to(self) -> None:
+        """장면 번호(숫자)나 파일 이름 일부로 그 사진을 고른다. 같은 이름으로 다시 하면 다음 것으로."""
+        if not self._rows:
+            return
+        text, ok = QInputDialog.getText(
+            self, "장면·사진으로 가기", "장면 번호 또는 파일 이름(일부):", text=self._last_goto
+        )
+        text = text.strip()
+        if not ok or not text:
+            return
+        rows = self._rows
+        if text.isdigit():
+            matches = [i for i, r in enumerate(rows) if r.scene_id == int(text)][:1]
+            missing = f"장면 {text}번이 없습니다(장면 {max(r.scene_id for r in rows)}개)."
+        else:
+            needle = text.lower()
+            matches = [i for i, r in enumerate(rows) if needle in r.path.name.lower()]
+            missing = f"\"{text}\"이(가) 들어간 사진이 없습니다."
+        if not matches:
+            QMessageBox.information(self, "장면·사진으로 가기", missing)
+            return
+        current = self._selected_table_row()
+        if text == self._last_goto and current is not None:
+            later = [i for i in matches if i > current]
+            target = later[0] if later else matches[0]  # 끝까지 가면 처음부터
+        else:
+            target = matches[0]
+        self._last_goto = text
+        if not self._row_visible(rows[target]):
+            self._view_filter.setCurrentIndex(0)  # 거르기에 가려 있으면 모든 컷 보기로
+        self._select_index(target)
+        self._gallery.set_current(target)
+        if self._table.currentItem() is not None:
+            self._table.scrollToItem(self._table.currentItem())
+        position = matches.index(target) + 1
+        self._status_label.setText(
+            f"{rows[target].path.name} · 장면 {rows[target].scene_id}"
+            + (f" · 찾은 {len(matches)}장 중 {position}번째 (Ctrl+G로 다음)" if len(matches) > 1 else "")
+        )
 
     def _select_index(self, index: int) -> None:
         """결과 번호로 표의 줄을 고른다(갤러리 클릭 등)."""
@@ -2544,6 +2644,21 @@ class BestCutTab(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         super().showEvent(event)
         self._refresh_client_picks()
+        if not self._auto_restore_done:
+            self._auto_restore_done = True
+            QTimer.singleShot(0, self._restore_last_preview)
+
+    def _restore_last_preview(self) -> None:
+        """앱을 켠 뒤 처음 이 화면을 열면, 지난번에 미리보기한 폴더·기준으로 결과를 다시 띄운다(저장된
+        점수를 써서 바뀐 사진만 새로 계산 — 오래 걸리면 취소할 수 있다)."""
+        if (
+            self._rows is None and not self._busy and self._input_dirs
+            and all(folder.is_dir() for folder in self._input_dirs)
+            and load_bool(self._settings, RESTORE_LAST_KEY, False)
+        ):
+            self._restoring = True
+            self._run_preview()
+            self._status_label.setText("지난 결과를 다시 불러오는 중… (취소 가능)")
 
     def _on_only_kept_toggled(self, _index: int) -> None:
         if self._rows:
@@ -2649,6 +2764,7 @@ class BestCutTab(QWidget):
             self._status_label.setText("취소하는 중...")
 
     def _on_preview_cancelled(self) -> None:
+        self._restoring = False
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
         self._preview_button.setEnabled(True)
@@ -2663,6 +2779,7 @@ class BestCutTab(QWidget):
         )
 
     def _on_error(self, message: str) -> None:
+        self._restoring = False
         self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
