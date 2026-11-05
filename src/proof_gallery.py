@@ -255,6 +255,15 @@ def _data_uri(page_photo: Path, long_edge: int) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def estimate_page_bytes(count: int, long_edge: int, phone_long_edge: int | None = None) -> int:
+    """페이지 폴더 + zip(+휴대폰용 한 파일) 용량 어림(남은 공간 확인용, 넉넉히)."""
+    photos = int(count * long_edge * (long_edge * 2 / 3) * 0.3)
+    total = photos * 2  # 폴더 + 같은 사진이 든 zip
+    if phone_long_edge:
+        total += estimate_phone_bytes(count, phone_long_edge)
+    return total
+
+
 def estimate_phone_bytes(count: int, long_edge: int) -> int:
     """휴대폰용 한 파일의 대략 크기(3:2 사진 기준, 사진마다 다름)."""
     return int(count * long_edge * (long_edge * 2 / 3) * PHONE_BYTES_PER_PIXEL)

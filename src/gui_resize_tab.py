@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 import app_log
 from gui_dnd import extract_dropped_folders
-from gui_errors import overlap_warning, show_error
+from gui_errors import confirm_space, overlap_warning, show_error
 from gui_format import format_resize_plan_summary, format_resize_result
 from gui_navigation import NextStep, NextStepBar
 from gui_settings import (
@@ -65,6 +65,7 @@ from resize import (
     ResizePlanRow,
     apply_resize_plan,
     build_resize_plan,
+    estimate_output_bytes,
     replan,
 )
 
@@ -412,6 +413,8 @@ class ResizeTab(QWidget):
             return
         long_edge = self._long_edge_spin.value()
         quality = self._quality_spin.value()
+        if not confirm_space(self, self._output_dir, estimate_output_bytes(rows), "저장 폴더"):
+            return
         confirm = QMessageBox.question(
             self,
             "축소해서 저장",

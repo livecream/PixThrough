@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, undo_moves
+from file_ops import ApplyError, FileOpResult, UndoOutcome, apply_selection, selection_bytes, undo_moves
 from grouping import (
     DEFAULT_SCENE_GAP_SECONDS,
     JOIN,
@@ -71,7 +71,7 @@ import app_log
 from clock_sync import shift_photos
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_files, extract_dropped_folders
-from gui_errors import overlap_warning, show_error
+from gui_errors import confirm_space, overlap_warning, show_error
 from gui_format import (
     bestcut_grouping_help,
     bestcut_scoring_help,
@@ -1782,6 +1782,10 @@ class BestCutTab(QWidget):
         bad_rows = [r for r in self._rows or [] if _is_badcut(r)]
         if not bad_rows or self._badcut_dir is None:
             return
+        bad_paths = [Path(r.path) for r in bad_rows]
+        if not confirm_space(self, self._badcut_dir, selection_bytes(bad_paths), "C컷 폴더",
+                             sources=[p.parent for p in bad_paths], move=True):
+            return
         confirm = QMessageBox.question(
             self,
             "C컷 이동 확인",
@@ -2444,6 +2448,10 @@ class BestCutTab(QWidget):
         move = self._move_radio.isChecked()
         verb = "이동" if move else "복사"
         selected_count = sum(1 for r in self._rows if r.selected)
+        selected_paths = [Path(r.path) for r in self._rows if r.selected]
+        if not confirm_space(self, self._output_dir, selection_bytes(selected_paths), "베스트컷 폴더",
+                             sources=[p.parent for p in selected_paths], move=move):
+            return
         manual = format_manual_choice_summary(self._rows)
         confirm = QMessageBox.question(
             self,

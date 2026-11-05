@@ -41,7 +41,7 @@ from card_import import (
     find_cards,
 )
 from gui_dnd import extract_dropped_folders
-from gui_errors import folders_overlap, show_error
+from gui_errors import confirm_space, folders_overlap, show_error
 from gui_format import format_bytes, space_warning
 from gui_navigation import NextStep, NextStepBar
 from gui_reveal import add_file_actions
@@ -363,6 +363,15 @@ class CardImportTab(QWidget):
         if plan.backup is not None:
             lines.append(f"백업: {plan.backup}")
         lines.append("\n카드의 파일은 그대로 두고, 복사본은 원본과 같은지 하나하나 확인합니다. 계속하시겠습니까?")
+        needed_main = sum(r.size for r in plan.rows if r.status != STATUS_EXISTS)
+        if not confirm_space(self, plan.destination, needed_main, "가져올 곳"):
+            return
+        if plan.backup is not None:
+            needed_backup = sum(r.size for r in plan.rows if r.backup_status != STATUS_EXISTS)
+            if disk_space.same_drive(plan.destination, plan.backup):
+                needed_backup += needed_main
+            if not confirm_space(self, plan.backup, needed_backup, "백업"):
+                return
         if QMessageBox.question(self, "카드 가져오기", "\n".join(lines)) != QMessageBox.StandardButton.Yes:
             return
         self._importing = True

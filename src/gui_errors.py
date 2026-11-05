@@ -97,3 +97,29 @@ def show_error(parent: QWidget | None, title: str, message: str) -> None:
         box.setDetailedText(details)
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
     box.exec()
+
+
+def confirm_space(parent: QWidget | None, target: Path | None, needed: int, what: str,
+                  sources: list[Path] | None = None, move: bool = False) -> bool:
+    """target 드라이브에 needed 바이트가 들어갈 자리가 없으면 경고하고 그래도 할지 묻는다.
+    이동인데 원본이 모두 같은 드라이브면 공간이 들지 않아 묻지 않는다. 계속해도 되면 True."""
+    import disk_space
+    from gui_format import space_warning
+
+    if target is None or needed <= 0:
+        return True
+    if move and sources and all(disk_space.same_drive(source, target) for source in sources):
+        return True
+    warning = space_warning(disk_space.check(target, needed), what)
+    if not warning:
+        return True
+    from PySide6.QtWidgets import QMessageBox
+
+    answer = QMessageBox.warning(
+        parent,
+        "남은 공간 부족",
+        warning.lstrip("⚠ ") + "\n\n하다가 공간이 모자라면 중간에 멈춥니다(이미 한 것은 남음). 그래도 시작할까요?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes

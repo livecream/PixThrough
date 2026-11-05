@@ -30,7 +30,7 @@ import app_log
 from clock_sync import format_offset
 from gui_clock_sync import ClockSyncDialog, describe_offsets, offset_store
 from gui_dnd import extract_dropped_folders
-from gui_errors import overlap_warning, show_error
+from gui_errors import confirm_space, overlap_warning, show_error
 from gui_navigation import NextStep, NextStepBar
 from gui_preview_pane import PreviewPane
 from gui_reveal import add_file_actions
@@ -612,6 +612,17 @@ class RenameTab(QWidget):
                 f"{len(self._rows)}개 파일의 이름을 원본 폴더에서 직접 바꿉니다 "
                 "(파일 내용은 그대로, 원래 이름은 되돌릴 수 없음).\n계속하시겠습니까?"
             )
+        if merge_output_dir is not None:
+            files = [r.old_path for r in self._rows] + [r.raw_old_path for r in self._rows if r.raw_old_path]
+            needed = 0
+            for file in files:
+                try:
+                    needed += file.stat().st_size
+                except OSError:
+                    pass
+            if not confirm_space(self, merge_output_dir, needed, "합칠 폴더",
+                                 sources=[f.parent for f in files], move=True):
+                return
         confirm = QMessageBox.question(self, "적용 확인", confirm_text)
         if confirm != QMessageBox.StandardButton.Yes:
             return
