@@ -26,10 +26,11 @@ EXIF가 없을 때 mtime으로 폴백하는 것과 동일한 방식). RAW 짝짓
 from __future__ import annotations
 
 import datetime
+import re
 import json
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -42,6 +43,18 @@ import history
 log = app_log.get("rename")
 
 DEFAULT_DIGITS = 5
+DEFAULT_TEMPLATE = "{순번}"  # 예전과 같은 00001
+
+# 이름 규칙 칸(사용자 결정: 직접 정하기). 영문 별칭도 받는다.
+TEMPLATE_TOKENS = {
+    "순번": "seq", "seq": "seq",
+    "날짜": "date", "date": "date",
+    "시각": "time", "time": "time",
+    "바디": "camera", "camera": "camera",
+    "원래이름": "name", "name": "name",
+}
+_TOKEN_RE = re.compile(r"\{([^{}:]+)(?::(\d{1,2}))?\}")
+_BAD_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mts", ".m4v"}
 
 
@@ -54,6 +67,7 @@ class RenamePlanRow:
     raw_new_path: Path | None
     datetime_original: datetime.datetime  # 바디 시차를 더한 시각(정렬 기준)
     clock_offset: float = 0.0  # 이 파일 바디에 더한 시차(초, clock_sync)
+    camera: str | None = None  # 카메라 기종(이름 규칙 {바디}), 모르면 None
 
 
 @dataclass(frozen=True)
@@ -62,6 +76,61 @@ class RenameResult:
     new_path: Path
     raw_old_path: Path | None
     raw_new_path: Path | None
+
+
+def template_error(template: str) -> str | None:
+    """이름 규칙이 쓸 수 없으면 이유, 괜찮으면 None. 이름이 겹치지 않게 {순번}은 꼭 있어야 한다."""
+    if not template.strip():
+        return "이름 규칙이 비어 있습니다."
+    tokens = _TOKEN_RE.findall(template)
+    unknown = [t for t, _d in tokens if t.strip() not in TEMPLATE_TOKENS]
+    if unknown:
+        return f"모르는 칸: {{{unknown[0]}}} — 쓸 수 있는 칸: {{순번}} {{순번:4}} {{날짜}} {{시각}} {{바디}} {{원래이름}}"
+    if not any(TEMPLATE_TOKENS[t.strip()] == "seq" for t, _d in tokens):
+        return "{순번}이 있어야 이름이 겹치지 않습니다."
+    leftover = _TOKEN_RE.sub("", template)
+    if "{" in leftover or "}" in leftover:
+        return "중괄호 { }가 짝이 맞지 않습니다."
+    if _BAD_CHARS.search(leftover):
+        return '파일 이름에 쓸 수 없는 글자(\\ / : * ? " < > |)가 있습니다.'
+    return None
+
+
+def format_stem(template: str, seq: int, taken: datetime.datetime, camera: str | None, original: str,
+                digits: int = DEFAULT_DIGITS) -> str:
+    """이름 규칙으로 확장자 뺀 새 이름을 만든다. {순번:4}처럼 자릿수를 정할 수 있다."""
+    def value(match: re.Match) -> str:
+        kind = TEMPLATE_TOKENS[match.group(1).strip()]
+        width = int(match.group(2)) if match.group(2) else None
+        if kind == "seq":
+            return f"{seq:0{width or digits}d}"
+        if kind == "date":
+            return taken.strftime("%Y%m%d")
+        if kind == "time":
+            return taken.strftime("%H%M%S")
+        if kind == "camera":
+            return (camera or "영상").replace(" ", "")
+        return original
+
+    stem = _TOKEN_RE.sub(value, template)
+    return _BAD_CHARS.sub("_", stem).strip(" .") or f"{seq:0{digits}d}"
+
+
+def rename_rows(rows: list[RenamePlanRow], template: str, digits: int = DEFAULT_DIGITS,
+                output_dir: Path | None = None) -> list[RenamePlanRow]:
+    """이미 만든 계획의 새 이름만 이름 규칙으로 다시 붙인다(사진을 다시 읽지 않음). output_dir이
+    있으면 합치기(RAW는 output_dir/RAW/), 없으면 제자리."""
+    result = []
+    for row in rows:
+        stem = format_stem(template, row.seq, row.datetime_original, row.camera, row.old_path.stem, digits)
+        if output_dir is not None:
+            new_path = Path(output_dir) / f"{stem}{row.old_path.suffix}"
+            raw_new = Path(output_dir) / "RAW" / f"{stem}{row.raw_old_path.suffix}" if row.raw_old_path else None
+        else:
+            new_path = row.old_path.with_name(f"{stem}{row.old_path.suffix}")
+            raw_new = row.raw_old_path.with_name(f"{stem}{row.raw_old_path.suffix}") if row.raw_old_path else None
+        result.append(replace(row, new_path=new_path, raw_new_path=raw_new))
+    return result
 
 
 def _scan_video_files(input_dir: Path, recursive: bool) -> list[Path]:
@@ -129,17 +198,18 @@ def _scan_and_number(
 
     offsets = offsets or {}
     keys = camera_keys([(path, meta) for path, meta, _dt in metas]) if any(offsets.values()) else {}
-    items: list[tuple[Path, datetime.datetime, float]] = []
-    for path, _meta, dt in metas:
+    items: list[tuple[Path, datetime.datetime, float, str | None]] = []
+    for path, meta, dt in metas:
         offset = offsets.get(keys.get(path), 0.0) if keys.get(path) is not None else 0.0
-        items.append((path, shifted(dt, keys.get(path), offsets), offset))
+        camera = meta.camera_model if meta is not None else None
+        items.append((path, shifted(dt, keys.get(path), offsets), offset, camera))
     items.sort(key=lambda item: (item[1], str(item[0])))
 
     numbered = []
-    for seq, (path, dt, offset) in enumerate(items, start=1):
+    for seq, (path, dt, offset, camera) in enumerate(items, start=1):
         is_video = path.suffix.lower() in VIDEO_EXTENSIONS
         raw = None if is_video else find_matching_raw(path)
-        numbered.append((seq, path, raw, dt, offset))
+        numbered.append((seq, path, raw, dt, offset, camera))
     return numbered
 
 
@@ -150,28 +220,20 @@ def build_rename_plan(
     on_progress: Callable[[int, int, Path], None] | None = None,
     cache: dict | None = None,
     offsets: dict[str, float] | None = None,
+    template: str = DEFAULT_TEMPLATE,
 ) -> list[RenamePlanRow]:
     """여러 입력 폴더의 사진+영상을 촬영 시각순으로 합쳐 정렬하고, 각자 원래 폴더에서
-    제자리로 리네임할 계획을 만든다 (원본 폴더는 그대로, 이름만 바뀜)."""
-    rows: list[RenamePlanRow] = []
-    for seq, path, raw, dt, offset in _scan_and_number(
-        input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
-    ):
-        stem = f"{seq:0{digits}d}"
-        new_path = path.with_name(f"{stem}{path.suffix}")
-        raw_new = raw.with_name(f"{stem}{raw.suffix}") if raw else None
-        rows.append(
-            RenamePlanRow(
-                seq=seq,
-                old_path=path,
-                new_path=new_path,
-                raw_old_path=raw,
-                raw_new_path=raw_new,
-                datetime_original=dt,
-                clock_offset=offset,
-            )
+    제자리로 리네임할 계획을 만든다 (원본 폴더는 그대로, 이름만 바뀜). template은 이름 규칙."""
+    error = template_error(template)
+    if error:
+        raise ValueError(error)
+    rows = [
+        RenamePlanRow(seq, path, path, raw, raw, dt, offset, camera)
+        for seq, path, raw, dt, offset, camera in _scan_and_number(
+            input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
         )
-    return rows
+    ]
+    return rename_rows(rows, template, digits)
 
 
 def build_merge_plan(
@@ -182,30 +244,21 @@ def build_merge_plan(
     on_progress: Callable[[int, int, Path], None] | None = None,
     cache: dict | None = None,
     offsets: dict[str, float] | None = None,
+    template: str = DEFAULT_TEMPLATE,
 ) -> list[RenamePlanRow]:
     """여러 입력 폴더의 사진+영상을 촬영 시각순으로 합쳐 정렬하고, 하나의 출력
     폴더로 모아 옮길 계획을 만든다. RAW는 output_dir/RAW/에 모인다 (apply_selection이
     베스트컷을 복사할 때 쓰는 것과 같은 레이아웃)."""
-    output_dir = Path(output_dir)
-    rows: list[RenamePlanRow] = []
-    for seq, path, raw, dt, offset in _scan_and_number(
-        input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
-    ):
-        stem = f"{seq:0{digits}d}"
-        new_path = output_dir / f"{stem}{path.suffix}"
-        raw_new = (output_dir / "RAW" / f"{stem}{raw.suffix}") if raw else None
-        rows.append(
-            RenamePlanRow(
-                seq=seq,
-                old_path=path,
-                new_path=new_path,
-                raw_old_path=raw,
-                raw_new_path=raw_new,
-                datetime_original=dt,
-                clock_offset=offset,
-            )
+    error = template_error(template)
+    if error:
+        raise ValueError(error)
+    rows = [
+        RenamePlanRow(seq, path, path, raw, raw, dt, offset, camera)
+        for seq, path, raw, dt, offset, camera in _scan_and_number(
+            input_dirs, recursive, on_progress=on_progress, cache=cache, offsets=offsets
         )
-    return rows
+    ]
+    return rename_rows(rows, template, digits, Path(output_dir))
 
 
 def _row_to_report_dict(row: RenamePlanRow) -> dict:

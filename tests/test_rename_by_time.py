@@ -356,3 +356,39 @@ def test_body_clock_offset_reorders_and_is_reported(tmp_path):
     assert [r.old_path.name for r in fixed] == ["a1.jpg", "b1.jpg", "a2.jpg"]
     assert fixed[1].clock_offset == -90 and fixed[0].clock_offset == 0
     assert fixed[1].datetime_original == t0 + _dt.timedelta(seconds=5)
+
+
+def test_name_template_tokens_and_validation():
+    import datetime as _dt
+
+    from rename_by_time import format_stem, template_error
+
+    taken = _dt.datetime(2026, 11, 3, 10, 30, 15)
+    assert format_stem("{순번}", 7, taken, "Canon EOS R5", "IMG_0001") == "00007"
+    assert format_stem("{날짜}_{순번:4}", 7, taken, None, "IMG_0001") == "20261103_0007"
+    assert format_stem("김OO_{바디}_{seq:3}_{time}", 12, taken, "Canon EOS R5", "x") == "김OO_CanonEOSR5_012_103015"
+    assert format_stem("{원래이름}-{순번}", 1, taken, None, "IMG_0001") == "IMG_0001-00001"
+    assert format_stem("{바디}{순번}", 1, taken, None, "a") == "영상00001"
+    assert template_error("{순번}") is None
+    assert "순번" in template_error("{날짜}_사진")
+    assert "모르는 칸" in template_error("{순번}_{고객}")
+    assert "쓸 수 없는 글자" in template_error("a/b_{순번}")
+    assert "짝" in template_error("{순번}_{날짜")
+    assert template_error("  ") is not None
+
+
+def test_rename_plan_with_template_keeps_raw_pair(tmp_path):
+    from rename_by_time import rename_rows
+
+    _make_jpeg(tmp_path / "IMG_0002.JPG", datetime.datetime(2026, 11, 3, 10, 0, 1))
+    (tmp_path / "IMG_0002.CR3").write_bytes(b"raw")
+    _make_jpeg(tmp_path / "IMG_0001.JPG", datetime.datetime(2026, 11, 3, 10, 0, 0))
+    rows = build_rename_plan([tmp_path], template="{날짜}_{순번:3}")
+    assert [(r.old_path.name, r.new_path.name) for r in rows] == [
+        ("IMG_0001.JPG", "20261103_001.JPG"), ("IMG_0002.JPG", "20261103_002.JPG"),
+    ]
+    assert rows[1].raw_new_path.name == "20261103_002.CR3"
+    again = rename_rows(rows, "{순번}")
+    assert [r.new_path.name for r in again] == ["00001.JPG", "00002.JPG"]
+    with pytest.raises(ValueError):
+        build_rename_plan([tmp_path], template="{날짜}")

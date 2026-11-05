@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
@@ -59,15 +60,20 @@ from gui_settings import (
 )
 from gui_worker import CancellableWorker, PreviewCancelled
 from rename_by_time import (
+    DEFAULT_TEMPLATE,
     RenamePlanRow,
     RenameResult,
     apply_merge_plan,
     apply_rename_plan,
     build_merge_plan,
     build_rename_plan,
+    format_stem,
+    rename_rows,
+    template_error,
 )
 
 log = app_log.get("rename")
+TEMPLATE_KEY = "rename/template"  # 이름 규칙(사용자가 정함, 기본 {순번})
 
 
 _COLUMNS = ("#", "촬영 시각", "지금 이름", "새 이름", "폴더", "RAW 짝", "바디 시차")
@@ -100,8 +106,10 @@ class PlanWorker(CancellableWorker):
         merge_output_dir: Path | None,
         scan_cache: dict | None = None,
         offsets: dict[str, float] | None = None,
+        template: str = DEFAULT_TEMPLATE,
     ) -> None:
         super().__init__()
+        self._template = template
         self._input_dirs = input_dirs
         self._recursive = recursive
         self._merge_output_dir = merge_output_dir
@@ -123,6 +131,7 @@ class PlanWorker(CancellableWorker):
                     on_progress=on_scan_progress,
                     cache=self._scan_cache,
                     offsets=self._offsets,
+                    template=self._template,
                 )
             else:
                 rows = build_rename_plan(
@@ -131,6 +140,7 @@ class PlanWorker(CancellableWorker):
                     on_progress=on_scan_progress,
                     cache=self._scan_cache,
                     offsets=self._offsets,
+                    template=self._template,
                 )
             self.finished_ok.emit(rows)
         except PreviewCancelled:
@@ -205,6 +215,21 @@ class RenameTab(QWidget):
 
         self._recursive_checkbox = QCheckBox("하위 폴더까지 포함")
         self._recursive_checkbox.stateChanged.connect(lambda _: self._invalidate_preview())
+
+        # 이름 규칙(사용자 결정: 직접 정하기) — 바꾸면 사진을 다시 읽지 않고 표의 새 이름만 다시 계산
+        self._template_edit = QLineEdit(str(self._settings.value(TEMPLATE_KEY, DEFAULT_TEMPLATE) or DEFAULT_TEMPLATE))
+        self._template_edit.setPlaceholderText(DEFAULT_TEMPLATE)
+        self._template_edit.setToolTip(
+            "<p>새 이름 규칙. 쓸 수 있는 칸:</p><ul>"
+            "<li><b>{순번}</b> 00001부터(꼭 있어야 함), <b>{순번:4}</b>처럼 자릿수</li>"
+            "<li><b>{날짜}</b> 20261103 · <b>{시각}</b> 103015 (바디 시차를 맞춘 촬영 시각)</li>"
+            "<li><b>{바디}</b> 카메라 기종(영상은 \"영상\") · <b>{원래이름}</b> 지금 파일 이름</li></ul>"
+            "<p>예: <code>{날짜}_{순번:4}</code>, <code>김OO_{순번}</code>. JPG와 RAW는 같은 이름이 됩니다.</p>"
+        )
+        self._template_edit.textChanged.connect(self._on_template_changed)
+        self._template_example = QLabel()
+        self._template_example.setEnabled(False)
+        self._template_warning = WarningLabel()
 
         self._merge_checkbox = QCheckBox("한 폴더로 합치기 (원본 바디 폴더에서는 파일이 빠짐)")
         self._merge_checkbox.stateChanged.connect(self._on_merge_toggled)
@@ -307,6 +332,11 @@ class RenameTab(QWidget):
         merge_output_row.addWidget(self._create_merge_output_button)
         merge_output_row.addWidget(self._open_merge_output_button)
         merge_form = QFormLayout()
+        template_row = QHBoxLayout()
+        template_row.addWidget(self._template_edit, stretch=1)
+        template_row.addWidget(self._template_example)
+        merge_form.addRow("이름 규칙 ⓘ:", template_row)
+        merge_form.addRow(self._template_warning)
         merge_form.addRow(self._merge_checkbox)
         merge_form.addRow("합칠 폴더:", merge_output_row)
         self._folder_warning = WarningLabel()
@@ -347,6 +377,7 @@ class RenameTab(QWidget):
             self._open_merge_output_button.setEnabled(self._merge_checkbox.isChecked())
 
         self.setLayout(layout)
+        self._on_template_changed(self._template_edit.text())
         self._refresh()
 
     @property
@@ -489,6 +520,24 @@ class RenameTab(QWidget):
             self._summary.setPlainText("바디 시차가 바뀌었습니다. 미리보기를 다시 눌러 주세요.")
 
     # --- 미리보기 -----------------------------------------------------------------
+    def _template(self) -> str:
+        text = self._template_edit.text().strip()
+        return text if text and template_error(text) is None else DEFAULT_TEMPLATE
+
+    def _on_template_changed(self, text: str) -> None:
+        error = template_error(text.strip()) if text.strip() else None
+        self._template_warning.set_warning(f"⚠ {error} (지금은 {DEFAULT_TEMPLATE}로 붙입니다)" if error else "")
+        if error is None:
+            self._settings.setValue(TEMPLATE_KEY, text.strip())
+        sample = format_stem(self._template(), 1, datetime.datetime.now(), "R5", "IMG_0001")
+        self._template_example.setText(f"예: {sample}.jpg")
+        if self._rows and not self._applied and not self._busy:
+            merge_output = self._merge_output_dir if self._merge_checkbox.isChecked() else None
+            self._rows = rename_rows(self._rows, self._template(), output_dir=merge_output)
+            self._populate(self._rows)
+            self._on_row_selected()
+            self._refresh()
+
     def _run_preview(self) -> None:
         if self._busy:
             QMessageBox.warning(
@@ -514,6 +563,7 @@ class RenameTab(QWidget):
             merge_output_dir,
             scan_cache=self._scan_cache,
             offsets=offset_store().get(),
+            template=self._template(),
         )
         self._plan_worker.progress.connect(self._on_progress)
         self._plan_worker.status.connect(self._status_label.setText)
