@@ -103,6 +103,8 @@
 
 화면 단축키(편의 6): Ctrl/⌘+1~6 = 왼쪽 메뉴 순서대로 화면 바꾸기(메뉴 항목 툴팁에 표시), Ctrl/⌘+Enter = 지금 화면의 "미리보기"(`_preview_button`이 있는 카드 가져오기·시간순 정렬·사진 축소·베스트컷만 — 파일을 바꾸는 실행·복사 버튼은 누르지 않음) — `MainWindow._run_current_preview`, 단축키 모음 "어디서나"에 추가.
 
+보기 설정(편의 7, 사용자 결정: 네 단계): 메뉴 "보기 › 글자 크기"(작게 90·보통 100·크게 115·아주 크게 130% — 앱을 켤 때 처음 기본 글자 크기 기준, `appearance/font_scale`)와 "보기 › 테마"(시스템·라이트·다크, `appearance/theme`, Qt 6.8+ `QStyleHints.setColorScheme`, 지원 안 하면 안내). 고르면 바로 바꾸고(제목·메뉴 묶음 글자도 다시 맞춤 — `_apply_title_fonts`), 앱을 켤 때 `gui_appearance.apply_saved`. 큰 글자에서는 창이 1180보다 넓어질 수 있음 — `src/gui_appearance.py`
+
 진행률(1.5.0 사용성 4): 모든 화면의 진행률 막대는 `gui_widgets.EtaProgressBar` — 막대 옆에 "약 2분 남음"(지금까지 속도로, 3초·5%가 지난 뒤부터, macOS 기본 모양은 막대 안 글자를 안 그려서 옆 글자로), 15초 넘게 걸린 작업이 끝났을 때 앱을 보고 있지 않으면 `QApplication.alert`(macOS Dock 튀기기, Windows 작업 표시줄 깜빡임). 단계가 이어지는 작업(스캔 → 채점)은 setValue(0)/setMaximum이 1.5초 안에 다시 오면 같은 작업으로 보고 한 번만 알림.
 
 최근 폴더(1.5.0 사용성 5): 폴더를 저장할 때마다(`gui_settings.save_folder`/`save_folder_list`) 화면과 상관없이 `recent/folders`에 최근 것부터 10개(없는 폴더는 뺌). 폴더 고르기 창은 모두 `pick_directory`로 가장 최근 폴더에서 열고, 메뉴 "파일 › 최근 폴더"에서 고르면 지금 화면에 넣음(여러 폴더 화면은 더하기, 하나 받는 화면은 바꾸기 — `_navigate(replace=False)`), "목록 지우기".

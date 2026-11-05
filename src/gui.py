@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QSize, Qt, QTimer, QTranslator, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -43,6 +43,9 @@ import settings_transfer
 from gui_errors import show_error
 from gui_file_organize_tab import FileOrganizeTab
 from gui_history import HistoryDialog
+from gui_appearance import (
+    FONT_SCALE_KEY, FONT_SCALES, THEME_KEY, THEMES, apply_font_scale, apply_saved, apply_theme, font_scale, theme,
+)
 from gui_projects import ProjectsDialog
 from gui_shoot_stats import StatsDialog
 from gui_worker import FunctionWorker
@@ -249,6 +252,7 @@ class MainWindow(QMainWindow):
         import_settings.setToolTip("내보낸 설정 파일을 이 컴퓨터에 가져옵니다(가져오기 전 상태는 백업)")
         import_settings.triggered.connect(self._import_settings)
         file_menu.addAction(import_settings)
+        self._build_view_menu()
         help_menu = self.menuBar().addMenu("도움말")
         welcome = QAction("처음 사용 안내…", self)
         welcome.triggered.connect(self.show_welcome)
@@ -442,6 +446,53 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is open_button:
             self.open_log_folder()
 
+    def _build_view_menu(self) -> None:
+        """보기 › 글자 크기·테마(편의 7) — 고르면 바로 바꾸고 기억한다."""
+        view_menu = self.menuBar().addMenu("보기")
+        size_menu = view_menu.addMenu("글자 크기")
+        size_group = QActionGroup(self)
+        current = font_scale(self._settings)
+        for percent, label in FONT_SCALES:
+            action = size_menu.addAction(f"{label} ({percent}%)")
+            action.setCheckable(True)
+            action.setChecked(percent == current)
+            action.triggered.connect(lambda _checked=False, p=percent: self._set_font_scale(p))
+            size_group.addAction(action)
+        theme_menu = view_menu.addMenu("테마")
+        theme_group = QActionGroup(self)
+        current_theme = theme(self._settings)
+        for key, label in THEMES:
+            action = theme_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == current_theme)
+            action.triggered.connect(lambda _checked=False, k=key: self._set_theme(k))
+            theme_group.addAction(action)
+
+    def _set_font_scale(self, percent: int) -> None:
+        self._settings.setValue(FONT_SCALE_KEY, percent)
+        apply_font_scale(QApplication.instance(), percent)
+        self._apply_title_fonts()
+
+    def _set_theme(self, name: str) -> None:
+        self._settings.setValue(THEME_KEY, name)
+        if not apply_theme(QApplication.instance(), name):
+            QMessageBox.information(self, "테마", "이 버전의 화면 라이브러리는 테마 바꾸기를 지원하지 않아, 다음에 켤 때도 시스템 설정을 따릅니다.")
+
+    def _apply_title_fonts(self) -> None:
+        """제목·메뉴 묶음 글자는 직접 정한 크기라 앱 글자 크기에 맞춰 다시 정한다."""
+        base = QApplication.instance().font()
+        title_font = QFont(base)
+        title_font.setPointSizeF(base.pointSizeF() * 1.35)
+        title_font.setBold(True)
+        self._title.setFont(title_font)
+        header_font = QFont(base)
+        header_font.setBold(True)
+        header_font.setPointSizeF(max(8.0, base.pointSizeF() - 1))
+        for row in range(self._menu.count()):
+            item = self._menu.item(row)
+            if item.data(_PAGE_ROLE) is None:
+                item.setFont(header_font)
+
     def _update_flow_bar(self) -> None:
         nav = navigator()
         if nav.flow_step is None:
@@ -553,6 +604,7 @@ def main() -> None:
         pass  # 기록 파일을 못 만들어도(권한 등) 앱은 그대로 쓴다
     app = QApplication(sys.argv)
     install_korean_translation(app)
+    apply_saved(app, make_settings())  # 보기 › 글자 크기·테마
     try:
         history.enable()  # 파일 작업 기록(파일 › 작업 기록)
     except OSError:
