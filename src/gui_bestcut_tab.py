@@ -211,6 +211,8 @@ SPLIT_DISTANCE_START = 20
 SPLIT_DISTANCE_MIN = 1
 SPLIT_DISTANCE_MAX = HASH_BITS - 1
 KEEP_PERCENT_SETTINGS_KEY = "bestcut/keep_percent"
+# 지난 미리보기 결과 자동 복원(사용자 결정: 켜자마자 자동) — 미리보기가 끝나면 켜고, 입력 폴더를 바꾸면 끈다
+RESTORE_LAST_KEY = "bestcut/restore_last"
 KEEP_BRACKETS_SETTINGS_KEY = "bestcut/keep_brackets"  # 브라케팅 묶음 통째로 남기기(기본 꺼짐)
 EYES_MIN_SETTINGS_KEY = "bestcut/eyes_min"  # 단체 사진: 눈뜸은 가장 낮은 사람 기준(기본 꺼짐)
 XMP_RATING_SETTINGS_KEY = "bestcut/xmp_rating"
@@ -579,6 +581,9 @@ class BestCutTab(QWidget):
         self._owns_inputs = inputs is None
         self._inputs = inputs if inputs is not None else InputFolderPanel()
         self._inputs.changed.connect(self._invalidate_preview)
+        self._inputs.changed.connect(lambda *_: save_bool(self._settings, RESTORE_LAST_KEY, False))
+        self._auto_restore_done = False  # 이번에 앱을 켠 뒤 지난 결과를 한 번만 다시 띄운다
+        self._restoring = False
         self._output_dir: Path | None = None
         self._badcut_dir: Path | None = None  # C컷을 옮길 폴더
         # 실제 판정에 쓰는 C컷 기준. 스핀박스는 반올림해 보여주기만 하므로(기준 사진 눈뜸
@@ -1345,7 +1350,10 @@ class BestCutTab(QWidget):
     ) -> None:
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
-        self._status_label.setText("완료")
+        done_text = "지난 결과를 다시 띄웠습니다" if self._restoring else "완료"
+        self._status_label.setText(done_text)
+        self._restoring = False
+        save_bool(self._settings, RESTORE_LAST_KEY, True)
         log.info(
             "미리보기 끝: 사진 %d장, 장면 %d개, 점수 실패 %d장, %.1f초",
             len(rows), len({r.scene_id for r in rows}), sum(1 for r in rows if _is_unscored(r)),
@@ -1369,7 +1377,7 @@ class BestCutTab(QWidget):
         self._show_rows(rows, grouping)
         self._refresh_client_picks()  # 거르기 칸의 고객 선택 수
         if restored:
-            self._status_label.setText(f"완료 · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
+            self._status_label.setText(f"{done_text} · 지난번에 직접 고른 {len(restored)}장을 불러왔습니다")
         # 미리보기가 도는 사이에 묶는 기준을 바꿨으면, 끝난 뒤 새 기준으로 다시 묶는다.
         if grouping != self._current_grouping():
             self._regroup_timer.start()
@@ -2544,6 +2552,21 @@ class BestCutTab(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override signature
         super().showEvent(event)
         self._refresh_client_picks()
+        if not self._auto_restore_done:
+            self._auto_restore_done = True
+            QTimer.singleShot(0, self._restore_last_preview)
+
+    def _restore_last_preview(self) -> None:
+        """앱을 켠 뒤 처음 이 화면을 열면, 지난번에 미리보기한 폴더·기준으로 결과를 다시 띄운다(저장된
+        점수를 써서 바뀐 사진만 새로 계산 — 오래 걸리면 취소할 수 있다)."""
+        if (
+            self._rows is None and not self._busy and self._input_dirs
+            and all(folder.is_dir() for folder in self._input_dirs)
+            and load_bool(self._settings, RESTORE_LAST_KEY, False)
+        ):
+            self._restoring = True
+            self._run_preview()
+            self._status_label.setText("지난 결과를 다시 불러오는 중… (취소 가능)")
 
     def _on_only_kept_toggled(self, _index: int) -> None:
         if self._rows:
@@ -2649,6 +2672,7 @@ class BestCutTab(QWidget):
             self._status_label.setText("취소하는 중...")
 
     def _on_preview_cancelled(self) -> None:
+        self._restoring = False
         self._busy = False
         self._cancel_preview_button.setEnabled(False)
         self._preview_button.setEnabled(True)
@@ -2663,6 +2687,7 @@ class BestCutTab(QWidget):
         )
 
     def _on_error(self, message: str) -> None:
+        self._restoring = False
         self._cancel_preview_button.setEnabled(False)
         self._busy = False
         self._preview_button.setEnabled(True)
